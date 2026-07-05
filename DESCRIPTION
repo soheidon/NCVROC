@@ -1,0 +1,25 @@
+Package: NCVROC
+Type: Package
+Title: Nested Cross-Validation for Combinatorial ROC-based Selection of Item-set Scores
+Version: 0.1.0
+Authors@R: person("Sohei", "Kato", email = "sohei.kato@example.com", role = c("aut", "cre"))
+Description: Develops short item-based screening scales through combinatorial
+    item-set selection, ROC-based evaluation, and nested cross-validation.
+    For psychological/clinical questionnaire data, identifies which small
+    subset of items best predicts a binary outcome using simple sum scores.
+    Assumes higher sum scores indicate higher probability of a positive outcome.
+License: MIT + file LICENSE
+Encoding: UTF-8
+LazyData: true
+RoxygenNote: 7.3.2
+Config/testthat/edition: 3
+Imports:
+    stats,
+    utils,
+    graphics
+Suggests:
+    testthat (>= 3.0.0),
+    knitr,
+    rmarkdown,
+    pROC
+VignetteBuilder: knitr

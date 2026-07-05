@@ -1,0 +1,161 @@
+---
+title: "NCVROC v0.1 — Introduction"
+author: "NCVROC"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{NCVROC-intro}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r, include = FALSE}
+knitr::opts_chunk$set(
+  collapse = TRUE,
+  comment = "#>"
+)
+```
+
+## Overview
+
+NCVROC develops short item-based screening scales through combinatorial
+item-set selection, ROC-based evaluation, and nested cross-validation.
+Given a set of questionnaire items and a binary outcome, NCVROC identifies
+which small subset of items best predicts the outcome using a simple sum
+score.
+
+Key assumptions:
+
+- **Higher sum score = higher probability of a positive outcome.** Users
+  must reverse-code items beforehand if needed.
+- The cutoff rule is `score >= cutoff` (fixed direction).
+- v0.1 does not handle missing values; any `NA` in the data causes an error.
+
+## Simulated data
+
+We create a dataset with 200 rows and 6 items scored 0–2. Items q1–q3
+carry signal for the outcome; q4–q6 are noise.
+
+```{r}
+library(NCVROC)
+
+set.seed(42)
+n <- 200
+
+# Signal items (q1–q3): higher values increase probability of positive outcome
+q1 <- sample(0:2, n, replace = TRUE)
+q2 <- sample(0:2, n, replace = TRUE)
+q3 <- sample(0:2, n, replace = TRUE)
+
+# Noise items (q4–q6): independent of outcome
+q4 <- sample(0:2, n, replace = TRUE)
+q5 <- sample(0:2, n, replace = TRUE)
+q6 <- sample(0:2, n, replace = TRUE)
+
+# Outcome: probability depends on sum of signal items
+signal_sum <- q1 + q2 + q3
+prob <- plogis(-2 + 0.5 * signal_sum)  # logistic transform
+y <- rbinom(n, 1, prob)
+
+d <- data.frame(y = y, q1 = q1, q2 = q2, q3 = q3, q4 = q4, q5 = q5, q6 = q6)
+
+table(y = d$y)
+```
+
+About `r sum(d$y)` positive cases out of `r nrow(d)`.
+
+## Exhaustive ROC evaluation
+
+First, we enumerate all 1- and 2-item combinations and evaluate their ROC
+performance on the full data. This is useful for quick screening but the
+metrics are **apparent (in-sample) estimates**.
+
+```{r}
+exhaustive <- exhaustive_sum_roc(d, "y", paste0("q", 1:6),
+                                  max_items = 2, progress = FALSE)
+head(exhaustive, 10)
+```
+
+The top models by AUC are dominated by signal items (q1–q3).
+
+## Nested cross-validation
+
+For validated performance estimates, we use nested cross-validation.
+The outer loop estimates generalization performance; the inner loop
+selects the best model without leaking test information.
+
+```{r}
+result <- nested_sum_roc(
+  data       = d,
+  outcome    = "y",
+  items      = paste0("q", 1:6),
+  max_items  = 2,
+  outer_k    = 3,
+  inner_k    = 2,
+  seed       = 123,
+  progress   = FALSE
+)
+```
+
+### Summary
+
+```{r}
+summary(result)
+```
+
+The mean AUC ± SD gives a cross-validated estimate of predictive
+performance.
+
+### Selected model frequency
+
+```{r}
+result$selected_model_frequency
+```
+
+This shows how often each item set was selected as the best model across
+outer folds.
+
+### Plot: model selection frequency
+
+```{r, fig.width = 7, fig.height = 4}
+plot(result, which = "selection")
+```
+
+### Plot: per-fold AUC
+
+```{r, fig.width = 6, fig.height = 4}
+plot(result, which = "auc")
+```
+
+The horizontal reference line at AUC = 0.5 marks chance-level performance.
+
+## Final scale on full data
+
+After cross-validation confirms that the selected items have predictive
+value, `fit_final_sum_scale()` fits the top models on the complete dataset.
+This gives the final candidate scales to recommend for future use.
+
+**Important:** The metrics returned by `fit_final_sum_scale()` are
+**apparent in-sample estimates**, not cross-validated. They will be
+optimistically biased. Use `nested_sum_roc()` for validated performance
+estimates.
+
+```{r}
+final <- fit_final_sum_scale(d, "y", paste0("q", 1:6),
+                              max_items = 2, progress = FALSE)
+head(final, 5)
+
+# Verify the performance_type attribute
+attr(final, "performance_type")
+```
+
+## Summary of apparent vs. nested CV performance
+
+| Function              | Performance estimate        | Use case                        |
+|-----------------------|-----------------------------|---------------------------------|
+| `exhaustive_sum_roc()` | Apparent (in-sample)       | Quick screening, exploration    |
+| `nested_sum_roc()`    | Nested cross-validated      | Validated performance estimation |
+| `fit_final_sum_scale()` | Apparent (in-sample)      | Final scale on full data        |
+
+Always use `nested_sum_roc()` when reporting performance. Use
+`fit_final_sum_scale()` only after validation, to create the final
+recommended item sets.

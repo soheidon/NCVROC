@@ -1,0 +1,30 @@
+# R
+.Rproj.user
+.Rhistory
+.RData
+.Ruserdata
+
+# Package build artifacts
+*.tar.gz
+NCVROC.Rcheck/
+src/*.o
+src/*.so
+src/*.dll
+
+# RStudio
+*.Rproj
+
+# Claude
+.claude/
+
+# vignette build products
+inst/doc/
+build/
+vignettes/*.html
+vignettes/*.R
+
+# macOS
+.DS_Store
+
+# Windows
+Thumbs.db

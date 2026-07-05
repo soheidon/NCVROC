@@ -1,0 +1,8 @@
+^\.Rproj\.user$
+^\.Rhistory$
+^\.RData$
+^\.claude$
+^README\.Rmd$
+^_pkgdown\.yml$
+^docs$
+^pkgdown$
