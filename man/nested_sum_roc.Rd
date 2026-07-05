@@ -71,7 +71,7 @@ v0.1; values > 1 warn and are reset to 1.}
 
 \item{seed}{Integer, seed for reproducibility (default `NULL`).}
 
-\item{engine}{Character, computation engine. Only `"R"` in v0.1.}
+\item{engine}{Character, computation engine. `"R"` (default) or `"Rcpp"`.}
 
 \item{progress}{Logical, show progress bars? Default `TRUE`.}
 

@@ -15,7 +15,7 @@ fit_final_sum_scale(
   cutoff_method = c("youden", "closest_topleft"),
   rank_by = c("auc", "youden", "sensitivity", "specificity", "accuracy"),
   top_n = 20,
-  engine = "R",
+  engine = c("R", "Rcpp"),
   progress = TRUE
 )
 }
@@ -42,7 +42,7 @@ fit_final_sum_scale(
 
 \item{top_n}{Integer, return only the top N models (default 20).}
 
-\item{engine}{Character, computation engine. Only `"R"` is available in v0.1.}
+\item{engine}{Character, computation engine. `"R"` (default) or `"Rcpp"`.}
 
 \item{progress}{Logical, show progress bar? Default `TRUE`.}
 }

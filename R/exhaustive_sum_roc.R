@@ -28,7 +28,7 @@
 #' @param top_n Integer, return only the top N models. `NULL` returns all models.
 #' @param prefer_fewer_items Logical. If `TRUE` and multiple models tie on
 #'   `rank_by`, models with fewer items are ranked higher. Default `TRUE`.
-#' @param engine Character, computation engine. Only `"R"` is available in v0.1.
+#' @param engine Character, computation engine. `"R"` (default) or `"Rcpp"`.
 #' @param progress Logical, show progress bar? Default `TRUE`.
 #'
 #' @return A data.frame with columns: `rank`, `items` (comma-separated string),
@@ -57,12 +57,13 @@ exhaustive_sum_roc <- function(data,
                                rank_by = c("auc", "youden", "sensitivity", "specificity", "accuracy"),
                                top_n = NULL,
                                prefer_fewer_items = TRUE,
-                               engine = "R",
+                               engine = c("R", "Rcpp"),
                                progress = TRUE) {
 
   # ---- Argument validation ----
   cutoff_method <- match.arg(cutoff_method)
   rank_by <- match.arg(rank_by)
+  engine <- match.arg(engine)
 
   if (!is.null(top_n)) {
     if (!is.numeric(top_n) || length(top_n) != 1 || top_n <= 0) {
@@ -86,59 +87,69 @@ exhaustive_sum_roc <- function(data,
   combos <- enumerate_combinations(items, min_items = min_items, max_items = max_items)
   n_combos <- length(combos)
 
-  # ---- Progress bar ----
-  if (progress) {
-    pb <- utils::txtProgressBar(min = 0, max = n_combos, style = 3)
-    on.exit(close(pb), add = TRUE)
-  }
+  if (engine == "Rcpp") {
+    # ---- Rcpp engine ----
+    x_mat <- as.matrix(x[, items, drop = FALSE])
+    combo_indices <- lapply(combos, function(v) match(v, items) - 1L)
 
-  # ---- Evaluate each combination ----
-  results <- vector("list", n_combos)
+    results <- evaluate_combos_cpp(x_mat, y, combo_indices, cutoff_method)
+    results$items <- sapply(combos, format_items)
 
-  for (i in seq_len(n_combos)) {
-    combo_items <- combos[[i]]
-    k <- length(combo_items)
+  } else {
+    # ---- R engine ----
 
-    # Simple sum score
-    scores <- rowSums(x[, combo_items, drop = FALSE])
-
-    # Frequency table
-    freq <- compute_score_frequencies(scores, y)
-
-    # AUC
-    auc_val <- compute_auc_from_table(freq$pos_counts, freq$neg_counts)
-
-    # Full ROC metrics at all cutoffs
-    metrics <- compute_roc_metrics_from_table(freq$pos_counts, freq$neg_counts)
-
-    # Optimal cutoff
-    best <- find_optimal_cutoff(metrics, method = cutoff_method)
-
-    results[[i]] <- data.frame(
-      items       = format_items(combo_items),
-      n_items     = k,
-      auc         = auc_val,
-      cutoff      = best$cutoff,
-      sensitivity = best$sensitivity,
-      specificity = best$specificity,
-      youden      = best$youden,
-      accuracy    = best$accuracy,
-      ppv         = best$ppv,
-      npv         = best$npv,
-      n_positive  = n_pos,
-      n_negative  = n_neg,
-      stringsAsFactors = FALSE
-    )
-
+    # Progress bar
     if (progress) {
-      utils::setTxtProgressBar(pb, i)
+      pb <- utils::txtProgressBar(min = 0, max = n_combos, style = 3)
+      on.exit(close(pb), add = TRUE)
     }
+
+    results <- vector("list", n_combos)
+
+    for (i in seq_len(n_combos)) {
+      combo_items <- combos[[i]]
+      k <- length(combo_items)
+
+      # Simple sum score
+      scores <- rowSums(x[, combo_items, drop = FALSE])
+
+      # Frequency table
+      freq <- compute_score_frequencies(scores, y)
+
+      # AUC
+      auc_val <- compute_auc_from_table(freq$pos_counts, freq$neg_counts)
+
+      # Full ROC metrics at all cutoffs
+      metrics <- compute_roc_metrics_from_table(freq$pos_counts, freq$neg_counts)
+
+      # Optimal cutoff
+      best <- find_optimal_cutoff(metrics, method = cutoff_method)
+
+      results[[i]] <- data.frame(
+        items       = format_items(combo_items),
+        n_items     = k,
+        auc         = auc_val,
+        cutoff      = best$cutoff,
+        sensitivity = best$sensitivity,
+        specificity = best$specificity,
+        youden      = best$youden,
+        accuracy    = best$accuracy,
+        ppv         = best$ppv,
+        npv         = best$npv,
+        n_positive  = n_pos,
+        n_negative  = n_neg,
+        stringsAsFactors = FALSE
+      )
+
+      if (progress) {
+        utils::setTxtProgressBar(pb, i)
+      }
+    }
+
+    results <- do.call(rbind, results)
   }
 
-  # ---- Combine and sort ----
-  results <- do.call(rbind, results)
-
-  # Build sort key
+  # ---- Sort ----
   sort_col <- results[[rank_by]]
   if (prefer_fewer_items) {
     # Descending rank_by, then ascending n_items

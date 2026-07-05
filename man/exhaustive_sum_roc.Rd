@@ -16,7 +16,7 @@ exhaustive_sum_roc(
   rank_by = c("auc", "youden", "sensitivity", "specificity", "accuracy"),
   top_n = NULL,
   prefer_fewer_items = TRUE,
-  engine = "R",
+  engine = c("R", "Rcpp"),
   progress = TRUE
 )
 }
@@ -48,7 +48,7 @@ Euclidean distance to (0,1) in ROC space). Default `"youden"`.}
 \item{prefer_fewer_items}{Logical. If `TRUE` and multiple models tie on
 `rank_by`, models with fewer items are ranked higher. Default `TRUE`.}
 
-\item{engine}{Character, computation engine. Only `"R"` is available in v0.1.}
+\item{engine}{Character, computation engine. `"R"` (default) or `"Rcpp"`.}
 
 \item{progress}{Logical, show progress bar? Default `TRUE`.}
 }

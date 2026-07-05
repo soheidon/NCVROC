@@ -2,6 +2,7 @@
 
 #' @importFrom graphics plot.new text
 #' @importFrom stats sd setNames
+#' @useDynLib NCVROC, .registration = TRUE
 #' @keywords internal
 "_PACKAGE"
 

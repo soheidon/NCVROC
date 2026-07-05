@@ -309,7 +309,7 @@
 #'   v0.1; values > 1 warn and are reset to 1.
 #' @param stratified Logical, use stratified folds? Must be `TRUE` in v0.1.
 #' @param seed Integer, seed for reproducibility (default `NULL`).
-#' @param engine Character, computation engine. Only `"R"` in v0.1.
+#' @param engine Character, computation engine. `"R"` (default) or `"Rcpp"`.
 #' @param progress Logical, show progress bars? Default `TRUE`.
 #' @param verbose Logical, print progress messages? Default `TRUE`.
 #' @param return Character, `"full"` (all details) or `"summary"` (summary
@@ -465,7 +465,7 @@ nested_sum_roc <- function(data,
       rank_by          = preselect_by,
       top_n            = NULL,
       prefer_fewer_items = TRUE,
-      engine           = "R",
+      engine           = engine,
       progress         = FALSE
     )
 

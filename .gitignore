@@ -28,3 +28,5 @@ vignettes/*.R
 
 # Windows
 Thumbs.db
+Rplots.pdf
+tests/testthat/Rplots.pdf

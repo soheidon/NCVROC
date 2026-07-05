@@ -28,7 +28,7 @@
 #' @param rank_by Metric for ranking models. One of `"auc"`, `"youden"`,
 #'   `"sensitivity"`, `"specificity"`, or `"accuracy"`. Default `"auc"`.
 #' @param top_n Integer, return only the top N models (default 20).
-#' @param engine Character, computation engine. Only `"R"` is available in v0.1.
+#' @param engine Character, computation engine. `"R"` (default) or `"Rcpp"`.
 #' @param progress Logical, show progress bar? Default `TRUE`.
 #'
 #' @return A data.frame with the same structure as [exhaustive_sum_roc()]:
@@ -63,10 +63,11 @@ fit_final_sum_scale <- function(data,
                                 rank_by = c("auc", "youden", "sensitivity",
                                             "specificity", "accuracy"),
                                 top_n = 20,
-                                engine = "R",
+                                engine = c("R", "Rcpp"),
                                 progress = TRUE) {
   cutoff_method <- match.arg(cutoff_method)
   rank_by <- match.arg(rank_by)
+  engine <- match.arg(engine)
 
   result <- exhaustive_sum_roc(
     data             = data,

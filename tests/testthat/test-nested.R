@@ -1,14 +1,5 @@
 # test-nested.R — Tests for nested_sum_roc()
 
-make_nested_test_data <- function() {
-  data.frame(
-    y  = c(1, 1, 1, 0, 0, 0, 1, 1, 0, 0, 1, 1, 0, 0, 0),
-    q1 = c(2, 1, 2, 1, 0, 1, 2, 2, 0, 0, 2, 1, 1, 0, 1),
-    q2 = c(1, 2, 1, 0, 1, 0, 2, 1, 1, 0, 1, 2, 0, 1, 0),
-    q3 = c(2, 2, 1, 1, 0, 1, 2, 2, 0, 1, 2, 2, 0, 0, 1)
-  )
-}
-
 # ---- Return structure ----
 
 test_that("nested_sum_roc returns object of class ncvroc_result", {
