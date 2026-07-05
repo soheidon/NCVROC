@@ -9,7 +9,7 @@
 Develops short item-based screening scales through combinatorial item-set selection, ROC-based evaluation, and nested cross-validation. For psychological/clinical questionnaire data, identifies which small subset of items best predicts a binary outcome using simple sum scores. Assumes higher sum scores indicate higher probability of a positive outcome.
 }
 \author{
-\strong{Maintainer}: Sohei \email{soheidon@users.noreply.github.com}
+\strong{Maintainer}: Sohei Ide \email{soheidon@users.noreply.github.com}
 
 }
 \keyword{internal}
