@@ -1,4 +1,4 @@
-# NCVROC 0.1.0
+# NCVROC 0.2.0
 
 **N**ested **C**ross-**V**alidation for Combinatorial **ROC**-based Selection of Item-set Scores
 
@@ -45,7 +45,7 @@ exhaustive_sum_roc(
   rank_by           = c("auc", "youden", "sensitivity", "specificity", "accuracy"),
   top_n             = NULL,
   prefer_fewer_items = TRUE,
-  engine            = "R",
+  engine            = c("R", "Rcpp"),
   progress          = TRUE
 )
 ```
@@ -53,6 +53,8 @@ exhaustive_sum_roc(
 **Returns:** data.frame with columns `rank`, `items`, `n_items`, `auc`, `cutoff`, `sensitivity`, `specificity`, `youden`, `accuracy`, `ppv`, `npv`, `n_positive`, `n_negative`. Sorted by `rank_by` descending.
 
 **Performance is apparent (in-sample), not cross-validated.**
+
+Default is `engine = "R"`. For ~7x speedup, use `engine = "Rcpp"`.
 
 ---
 
@@ -79,7 +81,7 @@ nested_sum_roc(
   inner_repeats      = 1,
   stratified         = TRUE,
   seed               = NULL,
-  engine             = "R",
+  engine             = c("R", "Rcpp"),
   progress           = TRUE,
   verbose            = TRUE,
   return             = c("full", "summary"),
@@ -119,12 +121,14 @@ fit_final_sum_scale(
   cutoff_method  = c("youden", "closest_topleft"),
   rank_by        = c("auc", "youden", "sensitivity", "specificity", "accuracy"),
   top_n          = 20,
-  engine         = "R",
+  engine         = c("R", "Rcpp"),
   progress       = TRUE
 )
 ```
 
 **Returns:** data.frame with `attr(result, "performance_type") <- "apparent"`. These are in-sample estimates, not cross-validated. Use `nested_sum_roc()` for validated performance.
+
+Default is `engine = "R"`. For ~7x speedup, use `engine = "Rcpp"`.
 
 ---
 
@@ -176,6 +180,16 @@ plot(result, which = "selection")
 
 # Final scale
 fit_final_sum_scale(d, "y", paste0("q", 1:5), max_items = 2)
+```
+
+## Rcpp engine
+
+Specify `engine = "Rcpp"` in `exhaustive_sum_roc()`, `nested_sum_roc()`, or
+`fit_final_sum_scale()` to use the native C++ backend. Results are numerically
+identical to the R engine; typical speedup is ~7x on moderate workloads.
+
+```r
+exhaustive_sum_roc(d, "y", paste0("q", 1:5), max_items = 2, engine = "Rcpp")
 ```
 
 ## License

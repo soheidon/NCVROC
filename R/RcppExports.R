@@ -2,6 +2,6 @@
 # Generator token: 10BE3573-1514-4C36-9D1C-5A225CD40393
 
 evaluate_combos_cpp <- function(x, y, combo_indices, cutoff_method) {
-    .Call('_NCVROC_evaluate_combos_cpp', PACKAGE = 'NCVROC', x, y, combo_indices, cutoff_method)
+    .Call(`_NCVROC_evaluate_combos_cpp`, x, y, combo_indices, cutoff_method)
 }
 
