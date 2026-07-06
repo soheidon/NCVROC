@@ -1,4 +1,4 @@
-# NCVROC 0.4.0
+# NCVROC 0.5.0
 
 **N**ested **C**ross-**V**alidation for Combinatorial **ROC**-based Selection of Item-set Scores
 
@@ -282,6 +282,8 @@ ncvroc(
   engine            = "Rcpp",
   seed              = NULL,
   final_search      = TRUE,
+  final_top_n       = 20,
+  final_rank_by     = c("auc", "youden", "sensitivity", "specificity", "accuracy"),
   save_results      = FALSE,
   output_dir        = ".",
   progress          = TRUE,
@@ -293,7 +295,10 @@ ncvroc(
 `outcome` accepts a bare symbol (`OCD_C`) or character string (`"OCD_C"`).
 `items` accepts bare range (`Q1:Q112`), bare names with `c()`, character vector, existing variable, or numeric positions.
 
-**Returns:** S3 object of class `"ncvroc_analysis"`. `print()` shows a formatted summary.
+`selection_criterion` controls which candidate is selected during nested CV.
+`final_rank_by` controls how the final full-data candidate table is ranked.
+
+**Returns:** S3 object of class `"ncvroc_analysis"`. `print()` shows a formatted summary including best final model and top candidates.
 
 ---
 
@@ -445,34 +450,6 @@ summary(result)
 | `fit_final_sum_scale()` | Apparent (in-sample) | Final scale on full data |
 
 ---
-
-## Quick example
-
-```r
-library(NCVROC)
-
-set.seed(42)
-d <- data.frame(
-  y  = sample(0:1, 100, replace = TRUE),
-  q1 = sample(0:2, 100, replace = TRUE),
-  q2 = sample(0:2, 100, replace = TRUE),
-  q3 = sample(0:2, 100, replace = TRUE),
-  q4 = sample(0:2, 100, replace = TRUE),
-  q5 = sample(0:2, 100, replace = TRUE)
-)
-
-# Exhaustive search
-exhaustive_sum_roc(d, "y", paste0("q", 1:5), max_items = 2)
-
-# Nested CV
-result <- nested_sum_roc(d, "y", paste0("q", 1:5),
-  max_items = 2, outer_k = 3, inner_k = 2, seed = 42, progress = FALSE)
-summary(result)
-plot(result, which = "selection")
-
-# Final scale
-fit_final_sum_scale(d, "y", paste0("q", 1:5), max_items = 2)
-```
 
 ## Rcpp engine
 
