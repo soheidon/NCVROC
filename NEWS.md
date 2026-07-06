@@ -1,3 +1,13 @@
+# NCVROC 0.6.0
+
+## New features
+
+- Added `plot.ncvroc_analysis()` S3 method. Users can now call
+  `plot(result)` directly on an `ncvroc()` return value instead of
+  manually extracting `result$nested_result`. Supports `which = "all"`
+  (default, shows both selection frequency and per-fold AUC),
+  `which = "selection"`, and `which = "auc"`.
+
 # NCVROC 0.5.0
 
 ## Improvements

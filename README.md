@@ -1,4 +1,4 @@
-# NCVROC 0.5.0
+# NCVROC 0.6.0
 
 **N**ested **C**ross-**V**alidation for Combinatorial **ROC**-based Selection of Item-set Scores
 
