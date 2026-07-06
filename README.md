@@ -298,7 +298,7 @@ ncvroc(
 `selection_criterion` controls which candidate is selected during nested CV.
 `final_rank_by` controls how the final full-data candidate table is ranked.
 
-**Returns:** S3 object of class `"ncvroc_analysis"`. `print()` shows a formatted summary including best final model and top candidates.
+**Returns:** S3 object of class `"ncvroc_analysis"`. `print()`, `summary()`, and `plot()` S3 methods are available.
 
 ---
 
@@ -417,6 +417,7 @@ result <- ncvroc(d, y, Q1:Q5, max_items = 2, mode = "quick",
   seed = 42, final_search = FALSE)
 print(result)
 summary(result$nested_result)
+plot(result)
 ```
 
 ### Configuration workflow (v0.3.0)

@@ -287,3 +287,39 @@ test_that("save_results writes final_candidates.csv and final_model.csv", {
   expect_true(file.exists(file.path(tmp, "final_candidates.csv")))
   expect_true(file.exists(file.path(tmp, "final_model.csv")))
 })
+
+# ---- Plot method ----
+
+test_that("plot.ncvroc_analysis() with which='selection' works", {
+  dat <- make_ncvroc_test_data()
+  result <- do.call(ncvroc, c(list(data = dat, outcome = "y", items = c("Q1", "Q2"),
+                                   final_search = FALSE), COMMON_CV))
+  expect_silent(plot(result, which = "selection"))
+})
+
+test_that("plot.ncvroc_analysis() with which='auc' works", {
+  dat <- make_ncvroc_test_data()
+  result <- do.call(ncvroc, c(list(data = dat, outcome = "y", items = c("Q1", "Q2"),
+                                   final_search = FALSE), COMMON_CV))
+  expect_silent(plot(result, which = "auc"))
+})
+
+test_that("plot.ncvroc_analysis() with which='all' works", {
+  dat <- make_ncvroc_test_data()
+  result <- do.call(ncvroc, c(list(data = dat, outcome = "y", items = c("Q1", "Q2"),
+                                   final_search = FALSE), COMMON_CV))
+  expect_silent(plot(result, which = "all"))
+})
+
+test_that("plot.ncvroc_analysis() with invalid which errors", {
+  dat <- make_ncvroc_test_data()
+  result <- do.call(ncvroc, c(list(data = dat, outcome = "y", items = c("Q1", "Q2"),
+                                   final_search = FALSE), COMMON_CV))
+  expect_error(plot(result, which = "invalid"), "arg.*should be one of")
+})
+
+test_that("plot.ncvroc_analysis() with NULL nested_result errors", {
+  x <- list(nested_result = NULL)
+  class(x) <- "ncvroc_analysis"
+  expect_error(plot(x), "nested_result is NULL")
+})

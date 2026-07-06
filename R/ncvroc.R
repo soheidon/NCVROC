@@ -359,3 +359,30 @@ print.ncvroc_analysis <- function(x, ...) {
 
   invisible(x)
 }
+
+# ---- Plot method ----
+
+#' Plot an NCVROC analysis result
+#'
+#' @param x An `ncvroc_analysis` object.
+#' @param which What to plot: `"all"` (both selection and AUC),
+#'   `"selection"` (model selection frequency), or `"auc"` (per-fold AUC).
+#' @param ... Passed to `plot.ncvroc_result()`.
+#'
+#' @return Invisibly returns `x`.
+#' @export
+plot.ncvroc_analysis <- function(x,
+                                  which = c("all", "selection", "auc"),
+                                  ...) {
+  if (is.null(x$nested_result)) {
+    stop("x$nested_result is NULL; plot() requires a nested CV result.")
+  }
+  which <- match.arg(which)
+  if (which == "all") {
+    plot(x$nested_result, which = "selection", ...)
+    plot(x$nested_result, which = "auc", ...)
+  } else {
+    plot(x$nested_result, which = which, ...)
+  }
+  invisible(x)
+}
