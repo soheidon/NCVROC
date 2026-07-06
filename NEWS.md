@@ -1,3 +1,16 @@
+# NCVROC 0.4.0.9000 (development)
+
+## Improvements
+
+- Added `final_top_n` to `ncvroc()` to control how many final candidate
+  models are stored and printed.
+- Added `final_rank_by` to `ncvroc()` to control the ranking criterion for
+  the full-data final exhaustive search.
+- `ncvroc()` now returns `final_candidates` and `final_model` for convenient
+  reporting.
+- When `save_results = TRUE`, `ncvroc()` now also saves `final_candidates.csv`
+  and `final_model.csv`.
+
 # NCVROC 0.4.0
 
 ## New features

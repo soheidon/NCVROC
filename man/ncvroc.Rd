@@ -25,6 +25,8 @@ ncvroc(
   engine = "Rcpp",
   seed = NULL,
   final_search = TRUE,
+  final_top_n = 20,
+  final_rank_by = c("auc", "youden", "sensitivity", "specificity", "accuracy"),
   save_results = FALSE,
   output_dir = ".",
   progress = TRUE,
@@ -76,6 +78,12 @@ to auto-set based on `mode`.}
 
 \item{final_search}{Logical, run exhaustive search on full dataset
 after nested CV (default TRUE).}
+
+\item{final_top_n}{Number of top final candidates to store (`NULL` for
+all, `0` for none). Default 20.}
+
+\item{final_rank_by}{Metric for ranking final full-data candidate table:
+`"auc"`, `"youden"`, `"sensitivity"`, `"specificity"`, or `"accuracy"`.}
 
 \item{save_results}{Logical, write CSV outputs (default FALSE).}
 

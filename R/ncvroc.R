@@ -85,6 +85,10 @@
 #' @param seed Integer seed for reproducibility (default NULL).
 #' @param final_search Logical, run exhaustive search on full dataset
 #'   after nested CV (default TRUE).
+#' @param final_top_n Number of top final candidates to store (`NULL` for
+#'   all, `0` for none). Default 20.
+#' @param final_rank_by Metric for ranking final full-data candidate table:
+#'   `"auc"`, `"youden"`, `"sensitivity"`, `"specificity"`, or `"accuracy"`.
 #' @param save_results Logical, write CSV outputs (default FALSE).
 #' @param output_dir Directory for saved CSVs (default `"."`).
 #' @param progress Logical, show progress bars (default TRUE).
@@ -128,6 +132,8 @@ ncvroc <- function(data,
                    engine = "Rcpp",
                    seed = NULL,
                    final_search = TRUE,
+                   final_top_n = 20,
+                   final_rank_by = c("auc", "youden", "sensitivity", "specificity", "accuracy"),
                    save_results = FALSE,
                    output_dir = ".",
                    progress = TRUE,
@@ -140,6 +146,7 @@ ncvroc <- function(data,
   items_expr   <- substitute(items)
   outcome_name <- .resolve_outcome(outcome_expr, caller_env)
   item_names   <- .resolve_items(data, items_expr, caller_env)
+  final_rank_by <- match.arg(final_rank_by)
 
   # ---- 2. Prepare analysis data ----
   analysis_dat <- subset(data, select = c(outcome_name, item_names))
@@ -190,7 +197,7 @@ ncvroc <- function(data,
       positive_label      = positive_label,
       negative_label      = negative_label,
       cutoff_method       = cutoff_method,
-      rank_by             = selection_criterion,
+      rank_by             = final_rank_by,
       top_n               = NULL,
       prefer_fewer_items  = TRUE,
       engine              = engine,
@@ -198,6 +205,21 @@ ncvroc <- function(data,
     )
   } else {
     final_exhaustive_ranked <- NULL
+  }
+
+  # ---- 5b. Slice final candidates ----
+  if (final_search && !is.null(final_exhaustive_ranked)) {
+    final_model <- final_exhaustive_ranked[1, , drop = FALSE]
+    if (is.null(final_top_n)) {
+      final_candidates <- final_exhaustive_ranked
+    } else if (final_top_n > 0) {
+      final_candidates <- utils::head(final_exhaustive_ranked, final_top_n)
+    } else {
+      final_candidates <- NULL
+    }
+  } else {
+    final_model <- NULL
+    final_candidates <- NULL
   }
 
   # ---- 6. Optional save ----
@@ -237,6 +259,14 @@ ncvroc <- function(data,
       utils::write.csv(final_exhaustive_ranked,
         file.path(output_dir, "final_exhaustive_results_ranked.csv"), row.names = FALSE)
     }
+    if (!is.null(final_candidates)) {
+      utils::write.csv(final_candidates,
+        file.path(output_dir, "final_candidates.csv"), row.names = FALSE)
+    }
+    if (!is.null(final_model)) {
+      utils::write.csv(final_model,
+        file.path(output_dir, "final_model.csv"), row.names = FALSE)
+    }
   }
 
   # ---- 7. Return ----
@@ -249,7 +279,11 @@ ncvroc <- function(data,
     nested_cv_summary         = nested_result$summary,
     selected_model_frequency  = nested_result$selected_model_frequency,
     outer_predictions         = nested_result$outer_predictions,
-    final_exhaustive_ranked   = final_exhaustive_ranked
+    final_exhaustive_ranked   = final_exhaustive_ranked,
+    final_candidates          = final_candidates,
+    final_model               = final_model,
+    final_top_n               = final_top_n,
+    final_rank_by             = final_rank_by
   )
   class(result) <- "ncvroc_analysis"
   result
@@ -302,6 +336,26 @@ print.ncvroc_analysis <- function(x, ...) {
   }
 
   cat("\nFinal exhaustive search: ", if (is.null(x$final_exhaustive_ranked)) "no" else "yes", "\n", sep = "")
+
+  if (!is.null(x$final_exhaustive_ranked)) {
+    cat("Final candidate ranking: ", x$final_rank_by, "\n", sep = "")
+    n_shown <- if (is.null(x$final_candidates)) 0 else nrow(x$final_candidates)
+    cat("Final candidates shown:  ", n_shown, "\n", sep = "")
+  }
+
+  if (!is.null(x$final_model)) {
+    cat("\nBest final model:\n")
+    print(x$final_model)
+  }
+
+  if (!is.null(x$final_candidates)) {
+    cat("\nTop final candidate models:\n")
+    print(if (is.null(x$final_top_n) && nrow(x$final_candidates) > 20) {
+      utils::head(x$final_candidates, 20)
+    } else {
+      x$final_candidates
+    })
+  }
 
   invisible(x)
 }

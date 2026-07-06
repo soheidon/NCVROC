@@ -93,6 +93,51 @@ So `mode = "balanced"` suggests `preselect_top_n = 500`, but an explicit
 
 ---
 
+### Final candidate output
+
+`ncvroc()` runs the final exhaustive search by default and stores the ranked
+full-data candidate table in `result$final_exhaustive_ranked`.
+
+For convenience, it also stores:
+
+```r
+result$final_candidates   # top N rows (controlled by final_top_n)
+result$final_model        # best single model (first row)
+```
+
+`selection_criterion` controls which candidate is selected during nested CV.
+
+`final_rank_by` controls how the final full-data candidate table is ranked.
+
+```r
+result <- ncvroc(
+  data    = analysis_dat,
+  outcome = OCD_C,
+  items   = Q1:Q112,
+  max_items = 4,
+  mode    = "balanced",
+  final_rank_by = "auc",
+  final_top_n = 20,
+  seed    = 20260705,
+  save_results = TRUE
+)
+
+result$final_candidates
+result$final_model
+```
+
+Use `final_rank_by` to choose the ranking criterion:
+
+```r
+final_rank_by = "auc"          # default
+final_rank_by = "youden"
+final_rank_by = "sensitivity"
+final_rank_by = "specificity"
+final_rank_by = "accuracy"
+```
+
+---
+
 ## Reference
 
 ### `exhaustive_sum_roc()`

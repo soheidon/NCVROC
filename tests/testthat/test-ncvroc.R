@@ -166,6 +166,8 @@ test_that("ncvroc() save_results writes all expected CSV files", {
   expect_true(file.exists(file.path(tmp, "nested_cv_summary.csv")))
   expect_true(file.exists(file.path(tmp, "nested_cv_selected_model_frequency.csv")))
   expect_true(file.exists(file.path(tmp, "final_exhaustive_results_ranked.csv")))
+  expect_true(file.exists(file.path(tmp, "final_candidates.csv")))
+  expect_true(file.exists(file.path(tmp, "final_model.csv")))
 
   summary_csv <- read.csv(file.path(tmp, "nested_cv_summary.csv"))
   expect_s3_class(summary_csv, "data.frame")
@@ -182,5 +184,106 @@ test_that("ncvroc() save_results without final_search omits final CSV", {
                          output_dir = tmp), COMMON_CV))
 
   expect_false(file.exists(file.path(tmp, "final_exhaustive_results_ranked.csv")))
+  expect_false(file.exists(file.path(tmp, "final_candidates.csv")))
+  expect_false(file.exists(file.path(tmp, "final_model.csv")))
   expect_true(file.exists(file.path(tmp, "nested_cv_summary.csv")))
+})
+
+# ---- Final candidate display options ----
+
+COMMON_CV_FINAL <- list(
+  outer_k = 2, inner_k = 2, outer_repeats = 1, inner_repeats = 1,
+  max_items = 2, engine = "R", progress = FALSE, verbose = FALSE,
+  seed = 42, final_search = TRUE
+)
+
+test_that("final_top_n = 2 stores at most 2 rows", {
+  dat <- make_ncvroc_test_data()
+  result <- do.call(ncvroc, c(list(data = dat, outcome = "y", items = c("Q1", "Q2"),
+                                   final_top_n = 2), COMMON_CV_FINAL))
+  expect_lte(nrow(result$final_candidates), 2)
+})
+
+test_that("final_top_n = 1 stores exactly 1 row", {
+  dat <- make_ncvroc_test_data()
+  result <- do.call(ncvroc, c(list(data = dat, outcome = "y", items = c("Q1", "Q2"),
+                                   final_top_n = 1), COMMON_CV_FINAL))
+  expect_equal(nrow(result$final_candidates), 1)
+})
+
+test_that("final_top_n = NULL stores all rows", {
+  dat <- make_ncvroc_test_data()
+  result <- do.call(ncvroc, c(list(data = dat, outcome = "y", items = c("Q1", "Q2"),
+                                   final_top_n = NULL), COMMON_CV_FINAL))
+  expect_equal(nrow(result$final_candidates), nrow(result$final_exhaustive_ranked))
+})
+
+test_that("final_top_n = 0 stores NULL", {
+  dat <- make_ncvroc_test_data()
+  result <- do.call(ncvroc, c(list(data = dat, outcome = "y", items = c("Q1", "Q2"),
+                                   final_top_n = 0), COMMON_CV_FINAL))
+  expect_null(result$final_candidates)
+})
+
+test_that("final_search = FALSE gives NULL for all final fields", {
+  dat <- make_ncvroc_test_data()
+  result <- do.call(ncvroc, c(list(data = dat, outcome = "y", items = c("Q1", "Q2"),
+                                   final_search = FALSE), COMMON_CV))
+  expect_null(result$final_exhaustive_ranked)
+  expect_null(result$final_candidates)
+  expect_null(result$final_model)
+})
+
+test_that("final_model equals first row of final_exhaustive_ranked", {
+  dat <- make_ncvroc_test_data()
+  result <- do.call(ncvroc, c(list(data = dat, outcome = "y", items = c("Q1", "Q2")),
+                              COMMON_CV_FINAL))
+  expect_equal(result$final_model$items, result$final_exhaustive_ranked$items[1])
+  expect_equal(result$final_model$auc, result$final_exhaustive_ranked$auc[1])
+})
+
+test_that("final_rank_by = 'auc' works", {
+  dat <- make_ncvroc_test_data()
+  result <- do.call(ncvroc, c(list(data = dat, outcome = "y", items = c("Q1", "Q2"),
+                                   final_rank_by = "auc"), COMMON_CV_FINAL))
+  expect_equal(result$final_rank_by, "auc")
+  expect_s3_class(result$final_exhaustive_ranked, "data.frame")
+})
+
+test_that("final_rank_by = 'youden' works", {
+  dat <- make_ncvroc_test_data()
+  result <- do.call(ncvroc, c(list(data = dat, outcome = "y", items = c("Q1", "Q2"),
+                                   final_rank_by = "youden"), COMMON_CV_FINAL))
+  expect_equal(result$final_rank_by, "youden")
+  expect_s3_class(result$final_exhaustive_ranked, "data.frame")
+})
+
+test_that("final_rank_by = 'sensitivity' works", {
+  dat <- make_ncvroc_test_data()
+  result <- do.call(ncvroc, c(list(data = dat, outcome = "y", items = c("Q1", "Q2"),
+                                   final_rank_by = "sensitivity"), COMMON_CV_FINAL))
+  expect_equal(result$final_rank_by, "sensitivity")
+  expect_s3_class(result$final_exhaustive_ranked, "data.frame")
+})
+
+test_that("invalid final_rank_by errors clearly", {
+  dat <- make_ncvroc_test_data()
+  expect_error(
+    do.call(ncvroc, c(list(data = dat, outcome = "y", items = c("Q1", "Q2"),
+                           final_rank_by = "invalid"), COMMON_CV_FINAL)),
+    "arg.*should be one of"
+  )
+})
+
+test_that("save_results writes final_candidates.csv and final_model.csv", {
+  dat <- make_ncvroc_test_data()
+  tmp <- file.path(tempdir(), paste0("ncvroc_test_", sample.int(1e6, 1)))
+  on.exit(unlink(tmp, recursive = TRUE), add = TRUE)
+
+  do.call(ncvroc, c(list(data = dat, outcome = "y", items = c("Q1", "Q2"),
+                         save_results = TRUE, output_dir = tmp), COMMON_CV_FINAL))
+
+  expect_true(file.exists(file.path(tmp, "final_exhaustive_results_ranked.csv")))
+  expect_true(file.exists(file.path(tmp, "final_candidates.csv")))
+  expect_true(file.exists(file.path(tmp, "final_model.csv")))
 })
