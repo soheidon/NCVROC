@@ -26,6 +26,73 @@ remotes::install_github("soheidon/NCVROC")
 
 ---
 
+## Configuration style
+
+`ncvroc()` has sensible defaults. Users can start with a short call:
+
+```r
+result <- ncvroc(
+  data    = analysis_dat,
+  outcome = OCD_C,
+  items   = Q1:Q112,
+  max_items = 4,
+  mode    = "balanced",
+  seed    = 20260705
+)
+```
+
+`mode` controls the default size of the preselected candidate set:
+
+| mode           | preselect_top_n |
+| -------------- | --------------: |
+| `"quick"`      |             100 |
+| `"balanced"`   |             500 |
+| `"thorough"`   |            1000 |
+| `"exhaustive"` |  all candidates |
+
+Other arguments keep their own defaults unless explicitly changed.
+For example, this changes only the computation engine:
+
+```r
+result <- ncvroc(
+  data    = analysis_dat,
+  outcome = OCD_C,
+  items   = Q1:Q112,
+  max_items = 4,
+  mode    = "balanced",
+  engine  = "R",
+  seed    = 20260705
+)
+```
+
+This is equivalent to using `mode = "balanced"` while overriding only `engine`.
+Users can override any individual setting:
+
+```r
+result <- ncvroc(
+  data    = analysis_dat,
+  outcome = OCD_C,
+  items   = Q1:Q112,
+  max_items = 4,
+  mode    = "balanced",
+  inner_repeats = 5,
+  preselect_top_n = 1000,
+  engine  = "Rcpp",
+  seed    = 20260705
+)
+```
+
+In general, the rule is:
+
+```text
+defaults < mode-based suggestion < explicitly supplied arguments
+```
+
+So `mode = "balanced"` suggests `preselect_top_n = 500`, but an explicit
+`preselect_top_n` value overrides that suggestion.
+
+---
+
 ## Reference
 
 ### `exhaustive_sum_roc()`
