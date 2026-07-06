@@ -1,3 +1,14 @@
+# NCVROC 0.4.0
+
+## New features
+
+- Added `ncvroc()` as the primary user-facing entry point. Resolves outcome
+  and item columns using base-R style selection (`items = Q1:Q112`, bare
+  symbols, character vectors, existing variables, or numeric positions).
+  Combines data preparation, nested CV, optional final exhaustive search, and
+  optional CSV output into a single function call.
+- Added `print.ncvroc_analysis()` S3 method for formatted summary output.
+
 # NCVROC 0.3.0
 
 ## New features

@@ -7,6 +7,6 @@
 #' @useDynLib NCVROC, .registration = TRUE
 #' @importFrom Rcpp evalCpp
 #' @importFrom graphics plot.new text
-#' @importFrom stats sd setNames
+#' @importFrom stats complete.cases sd setNames
 #' @keywords internal
 "_PACKAGE"

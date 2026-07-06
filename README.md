@@ -1,4 +1,4 @@
-# NCVROC 0.3.0
+# NCVROC 0.4.0
 
 **N**ested **C**ross-**V**alidation for Combinatorial **ROC**-based Selection of Item-set Scores
 
@@ -144,6 +144,47 @@ make_stratified_folds(y, k = 5, repeats = 1, seed = NULL)
 
 ---
 
+### `ncvroc()` (v0.4.0)
+
+Primary entry point for a complete NCVROC analysis in a single call. Resolves outcome and item columns using base-R style selection, prepares data, runs nested CV, optionally performs a final exhaustive search, and optionally saves CSV outputs.
+
+```r
+ncvroc(
+  data,
+  outcome,
+  items,
+  min_items         = 1,
+  max_items         = 4,
+  mode              = c("balanced", "quick", "thorough", "exhaustive"),
+  outer_k           = 5,
+  inner_k           = 4,
+  outer_repeats     = 5,
+  inner_repeats     = 1,
+  preselect_top_n   = NULL,
+  preselect_by      = "auc",
+  selection_criterion = "auc",
+  cutoff_method     = "youden",
+  positive_label    = 1,
+  negative_label    = 0,
+  stratified        = TRUE,
+  engine            = "Rcpp",
+  seed              = NULL,
+  final_search      = TRUE,
+  save_results      = FALSE,
+  output_dir        = ".",
+  progress          = TRUE,
+  verbose           = TRUE,
+  return            = "full"
+)
+```
+
+`outcome` accepts a bare symbol (`OCD_C`) or character string (`"OCD_C"`).
+`items` accepts bare range (`Q1:Q112`), bare names with `c()`, character vector, existing variable, or numeric positions.
+
+**Returns:** S3 object of class `"ncvroc_analysis"`. `print()` shows a formatted summary.
+
+---
+
 ### `ncvroc_config()` (v0.3.0)
 
 Bundle all analysis parameters into a single configuration object. Use with `run_ncvroc()` to reduce verbosity in analysis scripts.
@@ -238,15 +279,36 @@ suggest_preselect_top_n(
 
 ---
 
-## Quick example (configuration workflow)
+## Quick example
 
 ```r
 library(NCVROC)
 
+set.seed(42)
+d <- data.frame(
+  y  = sample(0:1, 100, replace = TRUE),
+  Q1 = sample(0:2, 100, replace = TRUE),
+  Q2 = sample(0:2, 100, replace = TRUE),
+  Q3 = sample(0:2, 100, replace = TRUE),
+  Q4 = sample(0:2, 100, replace = TRUE),
+  Q5 = sample(0:2, 100, replace = TRUE)
+)
+
+# Single-call analysis with base-R style column selection
+result <- ncvroc(d, y, Q1:Q5, max_items = 2, mode = "quick",
+  outer_k = 3, inner_k = 2, outer_repeats = 1, engine = "R",
+  seed = 42, final_search = FALSE)
+print(result)
+summary(result$nested_result)
+```
+
+### Configuration workflow (v0.3.0)
+
+```r
 # Define the analysis intent once
 cfg <- ncvroc_config(
   outcome   = "y",
-  items     = paste0("q", 1:5),
+  items     = paste0("Q", 1:5),
   max_items = 2,
   mode      = "quick",
   engine    = "Rcpp"
@@ -254,26 +316,8 @@ cfg <- ncvroc_config(
 
 print(cfg)
 
-# Run with the config
-d <- data.frame(
-  y  = sample(0:1, 100, replace = TRUE),
-  q1 = sample(0:2, 100, replace = TRUE),
-  q2 = sample(0:2, 100, replace = TRUE),
-  q3 = sample(0:2, 100, replace = TRUE),
-  q4 = sample(0:2, 100, replace = TRUE),
-  q5 = sample(0:2, 100, replace = TRUE)
-)
-
-result <- run_ncvroc(d, paste0("q", 1:5), cfg, seed = 42)
+result <- run_ncvroc(d, paste0("Q", 1:5), cfg, seed = 42)
 summary(result)
-```
-
-```r
-# Items=NULL workflow: create config first, supply items at run time
-cfg_no_items <- ncvroc_config("y", items = NULL, max_items = 2,
-                              mode = "balanced", outer_k = 5, engine = "Rcpp")
-
-result <- run_ncvroc(d, paste0("q", 1:5), cfg_no_items, seed = 42)
 ```
 
 ---
@@ -282,6 +326,7 @@ result <- run_ncvroc(d, paste0("q", 1:5), cfg_no_items, seed = 42)
 
 | Function | Performance | Use case |
 |---|---|---|
+| `ncvroc()` | Nested cross-validated | Single-call entry point (recommended) |
 | `exhaustive_sum_roc()` | Apparent (in-sample) | Quick screening, exploration |
 | `nested_sum_roc()` | Nested cross-validated | Validated performance estimation |
 | `run_ncvroc()` | Nested cross-validated | Convenience wrapper (config-driven) |
