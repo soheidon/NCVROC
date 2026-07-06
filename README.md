@@ -1,4 +1,4 @@
-# NCVROC 0.2.0
+# NCVROC 0.3.0
 
 **N**ested **C**ross-**V**alidation for Combinatorial **ROC**-based Selection of Item-set Scores
 
@@ -144,12 +144,147 @@ make_stratified_folds(y, k = 5, repeats = 1, seed = NULL)
 
 ---
 
+### `ncvroc_config()` (v0.3.0)
+
+Bundle all analysis parameters into a single configuration object. Use with `run_ncvroc()` to reduce verbosity in analysis scripts.
+
+```r
+ncvroc_config(
+  outcome,
+  items             = NULL,
+  min_items         = 1,
+  max_items         = 4,
+  mode              = c("balanced", "quick", "thorough", "exhaustive"),
+  outer_k           = 5,
+  inner_k           = 4,
+  outer_repeats     = 5,
+  inner_repeats     = 1,
+  preselect_top_n   = NULL,
+  preselect_by      = "auc",
+  selection_criterion = "auc",
+  cutoff_method     = c("youden", "closest_topleft"),
+  positive_label    = 1,
+  negative_label    = 0,
+  stratified        = TRUE,
+  engine            = c("Rcpp", "R")
+)
+```
+
+`mode` controls the default `preselect_top_n`:
+
+| Mode | Preselection | Use case |
+|---|---|---|
+| `"quick"` | Top 100 | Fast screening, exploration |
+| `"balanced"` | Top 500 (default) | Routine analysis |
+| `"thorough"` | Top 1000 | Comprehensive search |
+| `"exhaustive"` | All candidates | Full enumeration (may be slow) |
+
+**Returns:** S3 object of class `"ncvroc_config"`. `print()` shows a formatted summary with a warning if `preselect_top_n >= 100,000`.
+
+---
+
+### `run_ncvroc()` (v0.3.0)
+
+Convenience wrapper around `nested_sum_roc()` that reads all parameters from an `ncvroc_config` object.
+
+```r
+run_ncvroc(
+  data,
+  items,
+  config,
+  seed     = NULL,
+  progress = TRUE,
+  verbose  = TRUE,
+  return   = c("full", "summary")
+)
+```
+
+**Returns:** `ncvroc_result` object (same as `nested_sum_roc()`).
+
+---
+
+### `count_item_combinations()` (v0.3.0)
+
+Count total k-item combinations without generating them.
+
+```r
+count_item_combinations(
+  items_or_n,
+  min_items = 1,
+  max_items = 4,
+  detail    = FALSE
+)
+```
+
+`items_or_n` accepts a character vector of item names or a single integer n.  
+`detail = TRUE` returns a data.frame with per-k breakdown.
+
+---
+
+### `suggest_preselect_top_n()` (v0.3.0)
+
+Suggest a practical `preselect_top_n` based on total combinations and analysis mode.
+
+```r
+suggest_preselect_top_n(
+  items_or_n,
+  min_items = 1,
+  max_items = 4,
+  mode      = c("balanced", "quick", "thorough", "exhaustive")
+)
+```
+
+**Returns:** single numeric value, capped at the total number of combinations.
+
+---
+
+## Quick example (configuration workflow)
+
+```r
+library(NCVROC)
+
+# Define the analysis intent once
+cfg <- ncvroc_config(
+  outcome   = "y",
+  items     = paste0("q", 1:5),
+  max_items = 2,
+  mode      = "quick",
+  engine    = "Rcpp"
+)
+
+print(cfg)
+
+# Run with the config
+d <- data.frame(
+  y  = sample(0:1, 100, replace = TRUE),
+  q1 = sample(0:2, 100, replace = TRUE),
+  q2 = sample(0:2, 100, replace = TRUE),
+  q3 = sample(0:2, 100, replace = TRUE),
+  q4 = sample(0:2, 100, replace = TRUE),
+  q5 = sample(0:2, 100, replace = TRUE)
+)
+
+result <- run_ncvroc(d, paste0("q", 1:5), cfg, seed = 42)
+summary(result)
+```
+
+```r
+# Items=NULL workflow: create config first, supply items at run time
+cfg_no_items <- ncvroc_config("y", items = NULL, max_items = 2,
+                              mode = "balanced", outer_k = 5, engine = "Rcpp")
+
+result <- run_ncvroc(d, paste0("q", 1:5), cfg_no_items, seed = 42)
+```
+
+---
+
 ## Apparent vs. nested CV performance
 
 | Function | Performance | Use case |
 |---|---|---|
 | `exhaustive_sum_roc()` | Apparent (in-sample) | Quick screening, exploration |
 | `nested_sum_roc()` | Nested cross-validated | Validated performance estimation |
+| `run_ncvroc()` | Nested cross-validated | Convenience wrapper (config-driven) |
 | `fit_final_sum_scale()` | Apparent (in-sample) | Final scale on full data |
 
 ---
