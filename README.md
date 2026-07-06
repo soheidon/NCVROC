@@ -33,8 +33,8 @@ remotes::install_github("soheidon/NCVROC")
 ```r
 result <- ncvroc(
   data    = analysis_dat,
-  outcome = OCD_C,
-  items   = Q1:Q112,
+  outcome = y,
+  items   = Q1:Q5,
   max_items = 4,
   mode    = "balanced",
   seed    = 20260705
@@ -56,8 +56,8 @@ For example, this changes only the computation engine:
 ```r
 result <- ncvroc(
   data    = analysis_dat,
-  outcome = OCD_C,
-  items   = Q1:Q112,
+  outcome = y,
+  items   = Q1:Q5,
   max_items = 4,
   mode    = "balanced",
   engine  = "R",
@@ -71,8 +71,8 @@ Users can override any individual setting:
 ```r
 result <- ncvroc(
   data    = analysis_dat,
-  outcome = OCD_C,
-  items   = Q1:Q112,
+  outcome = y,
+  items   = Q1:Q5,
   max_items = 4,
   mode    = "balanced",
   inner_repeats = 5,
@@ -112,8 +112,8 @@ result$final_model        # best single model (first row)
 ```r
 result <- ncvroc(
   data    = analysis_dat,
-  outcome = OCD_C,
-  items   = Q1:Q112,
+  outcome = y,
+  items   = Q1:Q5,
   max_items = 4,
   mode    = "balanced",
   final_rank_by = "auc",
@@ -292,8 +292,8 @@ ncvroc(
 )
 ```
 
-`outcome` accepts a bare symbol (`OCD_C`) or character string (`"OCD_C"`).
-`items` accepts bare range (`Q1:Q112`), bare names with `c()`, character vector, existing variable, or numeric positions.
+`outcome` accepts a bare symbol (`y`) or character string (`"y"`).
+`items` accepts bare range (`Q1:Q5`), bare names with `c()`, character vector, existing variable, or numeric positions.
 
 `selection_criterion` controls which candidate is selected during nested CV.
 `final_rank_by` controls how the final full-data candidate table is ranked.
