@@ -256,7 +256,7 @@ make_stratified_folds(y, k = 5, repeats = 1, seed = NULL)
 
 ---
 
-### `ncvroc()` (v0.4.0)
+### `ncvroc()`
 
 Primary entry point for a complete NCVROC analysis in a single call. Resolves outcome and item columns using base-R style selection, prepares data, runs nested CV, optionally performs a final exhaustive search, and optionally saves CSV outputs.
 
@@ -302,7 +302,7 @@ ncvroc(
 
 ---
 
-### `ncvroc_config()` (v0.3.0)
+### `ncvroc_config()`
 
 Bundle all analysis parameters into a single configuration object. Use with `run_ncvroc()` to reduce verbosity in analysis scripts.
 
@@ -341,7 +341,7 @@ ncvroc_config(
 
 ---
 
-### `run_ncvroc()` (v0.3.0)
+### `run_ncvroc()`
 
 Convenience wrapper around `nested_sum_roc()` that reads all parameters from an `ncvroc_config` object.
 
@@ -361,7 +361,7 @@ run_ncvroc(
 
 ---
 
-### `count_item_combinations()` (v0.3.0)
+### `count_item_combinations()`
 
 Count total k-item combinations without generating them.
 
@@ -379,7 +379,7 @@ count_item_combinations(
 
 ---
 
-### `suggest_preselect_top_n()` (v0.3.0)
+### `suggest_preselect_top_n()`
 
 Suggest a practical `preselect_top_n` based on total combinations and analysis mode.
 
@@ -420,7 +420,7 @@ summary(result$nested_result)
 plot(result)
 ```
 
-### Configuration workflow (v0.3.0)
+### Configuration workflow
 
 ```r
 # Define the analysis intent once
