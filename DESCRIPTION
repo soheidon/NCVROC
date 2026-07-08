@@ -1,7 +1,7 @@
 Package: NCVROC
 Type: Package
 Title: Nested Cross-Validation for Combinatorial ROC-based Selection of Item-set Scores
-Version: 0.6.0
+Version: 0.7.0
 Authors@R: person(given = "Sohei", family = "Ide", email = "soheidon@users.noreply.github.com", role = c("aut", "cre"))
 Description: Develops short item-based screening scales through combinatorial
     item-set selection, ROC-based evaluation, and nested cross-validation.

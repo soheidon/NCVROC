@@ -1,4 +1,4 @@
-# NCVROC 0.6.0
+# NCVROC 0.7.0
 
 **N**ested **C**ross-**V**alidation for Combinatorial **ROC**-based Selection of Item-set Scores
 
@@ -135,6 +135,31 @@ final_rank_by = "sensitivity"
 final_rank_by = "specificity"
 final_rank_by = "accuracy"
 ```
+
+---
+
+### Filtering final candidates by clinical constraints
+
+`ncvroc_results()` filters the final exhaustive candidate table by clinical
+constraints and returns the top matching models.
+
+```r
+# Best Youden among models with sensitivity >= 0.90 and specificity >= 0.85
+ncvroc_results(result, sensitivity = ">= 0.90", specificity = ">= 0.85",
+  rank_by = "youden", top_n = 10)
+
+# All models with at most 3 items and AUC >= 0.80
+ncvroc_results(result, n_items = "<= 3", auc = ">= 0.80",
+  rank_by = "auc", top_n = NULL)
+
+# Top 5 models by accuracy with sensitivity >= 0.85
+ncvroc_results(result, sensitivity = ">= 0.85",
+  rank_by = "accuracy", top_n = 5)
+```
+
+Conditions support six operators: `>=`, `>`, `<=`, `<`, `==`, `!=`. Multiple
+conditions are combined with AND logic. Available columns: `sensitivity`,
+`specificity`, `auc`, `youden`, `accuracy`, `ppv`, `npv`, `n_items`, `cutoff`.
 
 ---
 
@@ -298,7 +323,34 @@ ncvroc(
 `selection_criterion` controls which candidate is selected during nested CV.
 `final_rank_by` controls how the final full-data candidate table is ranked.
 
-**Returns:** S3 object of class `"ncvroc_analysis"`. `print()`, `summary()`, and `plot()` S3 methods are available.
+**Returns:** S3 object of class `"ncvroc_analysis"`. `print()`, `summary()`, and `plot()` S3 methods are available. Use `ncvroc_results()` to filter the final candidate table by clinical constraints.
+
+---
+
+### `ncvroc_results()`
+
+Filter and rank the final exhaustive candidate table by clinical or practical constraints.
+
+```r
+ncvroc_results(
+  x,
+  sensitivity  = NULL,
+  specificity  = NULL,
+  auc          = NULL,
+  youden       = NULL,
+  accuracy     = NULL,
+  ppv          = NULL,
+  npv          = NULL,
+  n_items      = NULL,
+  cutoff       = NULL,
+  rank_by = c("youden", "auc", "sensitivity", "specificity", "accuracy", "ppv", "npv"),
+  top_n  = 20
+)
+```
+
+Each condition is a string like `">= 0.90"` or `"<= 3"`. Six operators are supported: `>=`, `>`, `<=`, `<`, `==`, `!=`. Multiple conditions are combined with AND logic. Results are ranked by `rank_by` with stable tiebreakers. Set `top_n = NULL` to return all matching rows, or `0` for an empty table.
+
+**Returns:** data.frame (same columns as `final_exhaustive_ranked`). The `ncvroc_analysis` object must include `final_exhaustive_ranked` (i.e. `ncvroc()` called with `final_search = TRUE`).
 
 ---
 

@@ -3,10 +3,13 @@
 # Internal helpers:
 #   .resolve_outcome()
 #   .resolve_items()
+#   .parse_condition()
 #
 # Exported:
 #   ncvroc()
 #   print.ncvroc_analysis()
+#   plot.ncvroc_analysis()
+#   ncvroc_results()
 
 # ---- Internal helpers ----
 
@@ -385,4 +388,162 @@ plot.ncvroc_analysis <- function(x,
     plot(x$nested_result, which = which, ...)
   }
   invisible(x)
+}
+
+# ---- Condition-based final model reporting ----
+
+#' Parse a clinical constraint condition string
+#'
+#' Parses a condition like `">= 0.90"` or `"< 4"` into an operator and a
+#' numeric value. Only 6 operators are accepted: `>=`, `>`, `<=`, `<`, `==`, `!=`.
+#'
+#' @param condition A single character string (e.g. `">= 0.90"`), or NULL.
+#' @param colname Optional column name for error messages (not currently used).
+#' @return A list with elements `op` and `value`, or NULL if condition is NULL.
+#' @keywords internal
+.parse_condition <- function(condition, colname = NULL) {
+  if (is.null(condition)) return(NULL)
+
+  if (!is.character(condition) || length(condition) != 1 || is.na(condition)) {
+    stop("Condition must be a string like '>= 0.90', '< 4', or '== 3'.", call. = FALSE)
+  }
+
+  m <- regmatches(
+    condition,
+    regexec("^\\s*(>=|<=|==|!=|>|<)\\s*(-?\\d+(?:\\.\\d+)?(?:[eE][+-]?\\d+)?)\\s*$", condition)
+  )[[1]]
+
+  if (length(m) != 3) {
+    stop("Condition must be a string like '>= 0.90', '< 4', or '== 3'.", call. = FALSE)
+  }
+
+  value <- suppressWarnings(as.numeric(m[3]))
+
+  if (is.na(value)) {
+    stop("Condition must contain a numeric value.", call. = FALSE)
+  }
+
+  list(op = m[2], value = value)
+}
+
+#' Filter and rank final exhaustive results by clinical constraints
+#'
+#' From a complete `ncvroc_analysis` result, filter the final exhaustive
+#' candidate table by clinical constraints (e.g. sensitivity >= 0.90) and
+#' return the top matching models.
+#'
+#' @param x An `ncvroc_analysis` object (must have `final_exhaustive_ranked`).
+#' @param sensitivity Condition on sensitivity, e.g. `">= 0.90"`.
+#' @param specificity Condition on specificity, e.g. `">= 0.85"`.
+#' @param auc Condition on AUC.
+#' @param youden Condition on Youden's J.
+#' @param accuracy Condition on accuracy.
+#' @param ppv Condition on positive predictive value.
+#' @param npv Condition on negative predictive value.
+#' @param n_items Condition on number of items, e.g. `"<= 3"`.
+#' @param cutoff Condition on cutoff value.
+#' @param rank_by Metric for ranking matching candidates: `"youden"`, `"auc"`,
+#'   `"sensitivity"`, `"specificity"`, `"accuracy"`, `"ppv"`, or `"npv"`.
+#' @param top_n Number of top candidates to return (NULL for all, 0 for none).
+#'
+#' @return A data.frame of matching candidates, sorted by `rank_by` descending.
+#' @export
+#'
+#' @examples
+#' \donttest{
+#' set.seed(42)
+#' d <- data.frame(
+#'   y  = sample(0:1, 60, replace = TRUE),
+#'   Q1 = sample(0:2, 60, replace = TRUE),
+#'   Q2 = sample(0:2, 60, replace = TRUE),
+#'   Q3 = sample(0:2, 60, replace = TRUE),
+#'   Q4 = sample(0:2, 60, replace = TRUE),
+#'   Q5 = sample(0:2, 60, replace = TRUE)
+#' )
+#' result <- ncvroc(d, y, Q1:Q5, max_items = 2, mode = "quick",
+#'   outer_k = 2, inner_k = 2, outer_repeats = 1, engine = "R",
+#'   seed = 42, final_search = TRUE)
+#' ncvroc_results(result, sensitivity = ">= 0.90", specificity = ">= 0.85")
+#' }
+ncvroc_results <- function(x,
+                           sensitivity = NULL,
+                           specificity = NULL,
+                           auc          = NULL,
+                           youden       = NULL,
+                           accuracy     = NULL,
+                           ppv          = NULL,
+                           npv          = NULL,
+                           n_items      = NULL,
+                           cutoff       = NULL,
+                           rank_by = c("youden", "auc", "sensitivity", "specificity",
+                                       "accuracy", "ppv", "npv"),
+                           top_n = 20) {
+
+  if (is.null(x$final_exhaustive_ranked)) {
+    stop("x$final_exhaustive_ranked is NULL. Re-run ncvroc() with final_search = TRUE.", call. = FALSE)
+  }
+
+  rank_by <- match.arg(rank_by)
+
+  if (!is.null(top_n)) {
+    if (length(top_n) != 1 || !is.numeric(top_n) || is.na(top_n) || top_n < 0 || top_n != floor(top_n)) {
+      stop("top_n must be NULL, 0, or a single non-negative integer.", call. = FALSE)
+    }
+  }
+
+  dat <- x$final_exhaustive_ranked
+
+  conditions <- list(
+    sensitivity = sensitivity,
+    specificity = specificity,
+    auc         = auc,
+    youden      = youden,
+    accuracy    = accuracy,
+    ppv         = ppv,
+    npv         = npv,
+    n_items     = n_items,
+    cutoff      = cutoff
+  )
+
+  for (col in names(conditions)) {
+    cond <- conditions[[col]]
+    if (is.null(cond)) next
+
+    parsed <- .parse_condition(cond, col)
+
+    if (!col %in% names(dat)) {
+      stop(sprintf("Column '%s' not found in final_exhaustive_ranked.", col), call. = FALSE)
+    }
+
+    col_vals <- dat[[col]]
+
+    keep <- switch(parsed$op,
+      `>=` = col_vals >= parsed$value,
+      `>`  = col_vals >  parsed$value,
+      `<=` = col_vals <= parsed$value,
+      `<`  = col_vals <  parsed$value,
+      `==` = col_vals == parsed$value,
+      `!=` = col_vals != parsed$value
+    )
+
+    dat <- dat[keep, , drop = FALSE]
+  }
+
+  # Sort by rank_by descending with tiebreakers
+  tie_cols <- setdiff(c("youden", "auc", "sensitivity", "specificity", "accuracy"), rank_by)
+  tie_cols <- intersect(tie_cols, names(dat))
+
+  ord <- do.call(order, c(
+    lapply(c(rank_by, tie_cols), function(nm) -dat[[nm]])
+  ))
+
+  dat <- dat[ord, , drop = FALSE]
+
+  if (is.null(top_n)) {
+    dat
+  } else if (top_n == 0) {
+    dat[0, , drop = FALSE]
+  } else {
+    utils::head(dat, top_n)
+  }
 }

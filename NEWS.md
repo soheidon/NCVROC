@@ -1,3 +1,14 @@
+# NCVROC 0.7.0
+
+## New features
+
+- Added `ncvroc_results()` for filtering final exhaustive results by clinical
+  constraints. Supports conditions on `sensitivity`, `specificity`, `auc`,
+  `youden`, `accuracy`, `ppv`, `npv`, `n_items`, and `cutoff` with six
+  operators (`>=`, `>`, `<=`, `<`, `==`, `!=`). Multiple conditions are
+  combined with AND logic. Results are ranked by a user-specified metric with
+  stable tiebreakers.
+
 # NCVROC 0.6.0
 
 ## New features

@@ -323,3 +323,151 @@ test_that("plot.ncvroc_analysis() with NULL nested_result errors", {
   class(x) <- "ncvroc_analysis"
   expect_error(plot(x), "nested_result is NULL")
 })
+
+# ---- ncvroc_results ----
+
+make_ncvroc_results_x <- function() {
+  x <- list(final_exhaustive_ranked = data.frame(
+    items       = c("Q1", "Q2", "Q3"),
+    n_items     = c(1, 2, 3),
+    auc         = c(0.80, 0.85, 0.83),
+    cutoff      = c(1, 2, 2),
+    sensitivity = c(1.00, 0.90, 0.85),
+    specificity = c(0.75, 0.86, 0.90),
+    youden      = c(0.75, 0.76, 0.75),
+    accuracy    = c(0.78, 0.87, 0.88),
+    stringsAsFactors = FALSE
+  ))
+  class(x) <- "ncvroc_analysis"
+  x
+}
+
+test_that("sensitivity >= 0.90 filters correctly", {
+  x <- make_ncvroc_results_x()
+  res <- ncvroc_results(x, sensitivity = ">= 0.90")
+  expect_equal(nrow(res), 2)
+  expect_true(all(res$sensitivity >= 0.90))
+})
+
+test_that("specificity >= 0.86 filters correctly", {
+  x <- make_ncvroc_results_x()
+  res <- ncvroc_results(x, specificity = ">= 0.86")
+  expect_equal(nrow(res), 2)
+  expect_true(all(res$specificity >= 0.86))
+})
+
+test_that("two conditions combined with AND", {
+  x <- make_ncvroc_results_x()
+  res <- ncvroc_results(x, sensitivity = ">= 0.90", specificity = ">= 0.86")
+  expect_equal(nrow(res), 1)
+  expect_true(all(res$sensitivity >= 0.90))
+  expect_true(all(res$specificity >= 0.86))
+})
+
+test_that("auc >= 0.83 filters", {
+  x <- make_ncvroc_results_x()
+  res <- ncvroc_results(x, auc = ">= 0.83")
+  expect_equal(nrow(res), 2)
+  expect_true(all(res$auc >= 0.83))
+})
+
+test_that("n_items <= 2 filters", {
+  x <- make_ncvroc_results_x()
+  res <- ncvroc_results(x, n_items = "<= 2")
+  expect_equal(nrow(res), 2)
+  expect_true(all(res$n_items <= 2))
+})
+
+test_that("cutoff >= 2 filters", {
+  x <- make_ncvroc_results_x()
+  res <- ncvroc_results(x, cutoff = ">= 2")
+  expect_equal(nrow(res), 2)
+  expect_true(all(res$cutoff >= 2))
+})
+
+test_that("rank_by = 'auc' sorts AUC descending", {
+  x <- make_ncvroc_results_x()
+  res <- ncvroc_results(x, rank_by = "auc")
+  expect_true(all(diff(res$auc) <= 0))
+})
+
+test_that("rank_by = 'specificity' sorts specificity descending", {
+  x <- make_ncvroc_results_x()
+  res <- ncvroc_results(x, rank_by = "specificity")
+  expect_true(all(diff(res$specificity) <= 0))
+})
+
+test_that("tiebreakers don't error", {
+  x <- make_ncvroc_results_x()
+  expect_silent(ncvroc_results(x, rank_by = "youden"))
+})
+
+test_that("top_n = 1 returns one row", {
+  x <- make_ncvroc_results_x()
+  res <- ncvroc_results(x, top_n = 1)
+  expect_equal(nrow(res), 1)
+})
+
+test_that("top_n = NULL returns all matching rows", {
+  x <- make_ncvroc_results_x()
+  res <- ncvroc_results(x, top_n = NULL)
+  expect_equal(nrow(res), 3)
+})
+
+test_that("top_n = 0 returns 0-row data.frame", {
+  x <- make_ncvroc_results_x()
+  res <- ncvroc_results(x, top_n = 0)
+  expect_equal(nrow(res), 0)
+  expect_s3_class(res, "data.frame")
+})
+
+test_that("top_n = 1.5 errors", {
+  x <- make_ncvroc_results_x()
+  expect_error(ncvroc_results(x, top_n = 1.5), "non-negative integer")
+})
+
+test_that("top_n = -1 errors", {
+  x <- make_ncvroc_results_x()
+  expect_error(ncvroc_results(x, top_n = -1), "non-negative integer")
+})
+
+test_that("top_n = c(1, 2) errors", {
+  x <- make_ncvroc_results_x()
+  expect_error(ncvroc_results(x, top_n = c(1, 2)), "non-negative integer")
+})
+
+test_that("invalid condition '=> 0.90' errors", {
+  x <- make_ncvroc_results_x()
+  expect_error(ncvroc_results(x, sensitivity = "=> 0.90"), "must be a string like")
+})
+
+test_that("invalid condition 'greater than 0.90' errors", {
+  x <- make_ncvroc_results_x()
+  expect_error(ncvroc_results(x, sensitivity = "greater than 0.90"), "must be a string like")
+})
+
+test_that("invalid condition '>= abc' errors", {
+  x <- make_ncvroc_results_x()
+  expect_error(ncvroc_results(x, sensitivity = ">= abc"), "must be a string like")
+})
+
+test_that("invalid condition '0.90' (no operator) errors", {
+  x <- make_ncvroc_results_x()
+  expect_error(ncvroc_results(x, sensitivity = "0.90"), "must be a string like")
+})
+
+test_that("missing condition column errors", {
+  x <- make_ncvroc_results_x()
+  expect_error(ncvroc_results(x, ppv = ">= 0.80"), "Column 'ppv' not found")
+})
+
+test_that("missing final_exhaustive_ranked errors clearly", {
+  x <- list()
+  class(x) <- "ncvroc_analysis"
+  expect_error(ncvroc_results(x), "final_exhaustive_ranked is NULL")
+})
+
+test_that("invalid rank_by errors via match.arg", {
+  x <- make_ncvroc_results_x()
+  expect_error(ncvroc_results(x, rank_by = "invalid"), "should be one of")
+})
