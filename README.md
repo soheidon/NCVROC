@@ -136,6 +136,16 @@ final_rank_by = "specificity"
 final_rank_by = "accuracy"
 ```
 
+```r
+ncvroc_results(
+  result,
+  sensitivity = ">= 0.90",
+  specificity = ">= 0.85",
+  rank_by = "youden",
+  top_n = 20
+)
+```
+
 ---
 
 ### Filtering final candidates by clinical constraints
@@ -145,16 +155,30 @@ constraints and returns the top matching models.
 
 ```r
 # Best Youden among models with sensitivity >= 0.90 and specificity >= 0.85
-ncvroc_results(result, sensitivity = ">= 0.90", specificity = ">= 0.85",
-  rank_by = "youden", top_n = 10)
+ncvroc_results(
+  result,
+  sensitivity = ">= 0.90",
+  specificity = ">= 0.85",
+  rank_by = "youden",
+  top_n = 10
+)
 
 # All models with at most 3 items and AUC >= 0.80
-ncvroc_results(result, n_items = "<= 3", auc = ">= 0.80",
-  rank_by = "auc", top_n = NULL)
+ncvroc_results(
+  result,
+  n_items = "<= 3",
+  auc = ">= 0.80",
+  rank_by = "auc",
+  top_n = NULL
+)
 
 # Top 5 models by accuracy with sensitivity >= 0.85
-ncvroc_results(result, sensitivity = ">= 0.85",
-  rank_by = "accuracy", top_n = 5)
+ncvroc_results(
+  result,
+  sensitivity = ">= 0.85",
+  rank_by = "accuracy",
+  top_n = 5
+)
 ```
 
 Conditions support six operators: `>=`, `>`, `<=`, `<`, `==`, `!=`. Multiple
