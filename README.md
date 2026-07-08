@@ -136,6 +136,9 @@ final_rank_by = "specificity"
 final_rank_by = "accuracy"
 ```
 
+Use `ncvroc_results()` to filter the ranked table by clinical constraints
+before choosing a model:
+
 ```r
 ncvroc_results(
   result,
@@ -146,44 +149,9 @@ ncvroc_results(
 )
 ```
 
----
-
-### Filtering final candidates by clinical constraints
-
-`ncvroc_results()` filters the final exhaustive candidate table by clinical
-constraints and returns the top matching models.
-
-```r
-# Best Youden among models with sensitivity >= 0.90 and specificity >= 0.85
-ncvroc_results(
-  result,
-  sensitivity = ">= 0.90",
-  specificity = ">= 0.85",
-  rank_by = "youden",
-  top_n = 10
-)
-
-# All models with at most 3 items and AUC >= 0.80
-ncvroc_results(
-  result,
-  n_items = "<= 3",
-  auc = ">= 0.80",
-  rank_by = "auc",
-  top_n = NULL
-)
-
-# Top 5 models by accuracy with sensitivity >= 0.85
-ncvroc_results(
-  result,
-  sensitivity = ">= 0.85",
-  rank_by = "accuracy",
-  top_n = 5
-)
-```
-
-Conditions support six operators: `>=`, `>`, `<=`, `<`, `==`, `!=`. Multiple
-conditions are combined with AND logic. Available columns: `sensitivity`,
-`specificity`, `auc`, `youden`, `accuracy`, `ppv`, `npv`, `n_items`, `cutoff`.
+Conditions support six operators (`>=`, `>`, `<=`, `<`, `==`, `!=`) combined
+with AND logic. Available columns: `sensitivity`, `specificity`, `auc`,
+`youden`, `accuracy`, `ppv`, `npv`, `n_items`, `cutoff`.
 
 ---
 
