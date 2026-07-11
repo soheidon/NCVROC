@@ -1,3 +1,22 @@
+# NCVROC 0.8.0
+
+## New features
+
+- Added `roc_bruteforce()` for exhaustive item-combination ROC analysis
+  directly on the full dataset without cross-validation. Supports NSE column
+  resolution (bare symbols, bare ranges, character vectors, numeric positions),
+  structured S3 return values with `print()` method, and optional CSV output.
+  The alias `roc_bf()` provides identical functionality with a shorter name.
+
+## Improvements
+
+- Factor columns are now handled safely in `ncvroc()` via internal
+  `.prepare_ncvroc_data()` helper (factor to character to numeric). Previously,
+  `as.numeric()` on factors silently converted level codes, producing wrong
+  numeric values. The fix applies to both `ncvroc()` and `roc_bruteforce()`.
+- `ncvroc_results()` now accepts `roc_bruteforce_result` objects in addition
+  to `ncvroc_analysis` objects.
+
 # NCVROC 0.7.0
 
 ## New features

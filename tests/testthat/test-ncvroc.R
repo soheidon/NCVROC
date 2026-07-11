@@ -471,3 +471,23 @@ test_that("invalid rank_by errors via match.arg", {
   x <- make_ncvroc_results_x()
   expect_error(ncvroc_results(x, rank_by = "invalid"), "should be one of")
 })
+
+# ---- Factor safety regression ----
+
+test_that("factor outcome column is handled safely by .prepare_ncvroc_data", {
+  d <- make_ncvroc_test_data()
+  d$y <- factor(d$y)
+  result <- ncvroc(d, "y", Q1:Q3, max_items = 2, mode = "quick",
+    outer_k = 2, inner_k = 2, outer_repeats = 1, engine = "R",
+    seed = 42, final_search = FALSE)
+  expect_s3_class(result, "ncvroc_analysis")
+})
+
+test_that("factor item column is handled safely by .prepare_ncvroc_data", {
+  d <- make_ncvroc_test_data()
+  d$Q1 <- factor(d$Q1)
+  result <- ncvroc(d, "y", Q1:Q3, max_items = 2, mode = "quick",
+    outer_k = 2, inner_k = 2, outer_repeats = 1, engine = "R",
+    seed = 42, final_search = FALSE)
+  expect_s3_class(result, "ncvroc_analysis")
+})

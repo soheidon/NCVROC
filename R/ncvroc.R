@@ -27,6 +27,46 @@
   deparse(outcome_expr)
 }
 
+#' Prepare NCVROC analysis data with factor-safe numeric conversion
+#'
+#' Converts outcome and item columns to numeric, treating factors safely
+#' (via as.character() before as.numeric()), rejecting non-numeric values,
+#' and removing rows with missing values.
+#'
+#' @param data A data.frame.
+#' @param outcome_name Character column name for the outcome.
+#' @param item_names Character vector of item column names.
+#' @return A data.frame with only the selected columns, all numeric.
+#' @keywords internal
+.prepare_ncvroc_data <- function(data, outcome_name, item_names) {
+  selected <- data[c(outcome_name, item_names)]
+
+  safe_numeric <- function(x, name) {
+    if (is.factor(x)) {
+      x <- as.character(x)
+    }
+    if (is.character(x)) {
+      x <- trimws(x)
+      x[x == ""] <- NA_character_
+      converted <- suppressWarnings(as.numeric(x))
+      invalid <- !is.na(x) & is.na(converted)
+      if (any(invalid)) {
+        stop("Column '", name, "' contains non-numeric values.", call. = FALSE)
+      }
+      return(converted)
+    }
+    if (!is.numeric(x)) {
+      stop("Column '", name, "' must be numeric or coercible to numeric.", call. = FALSE)
+    }
+    as.numeric(x)
+  }
+
+  selected[[outcome_name]] <- safe_numeric(selected[[outcome_name]], outcome_name)
+  selected[item_names] <- Map(safe_numeric, selected[item_names], names(selected[item_names]))
+
+  selected[complete.cases(selected), , drop = FALSE]
+}
+
 #' Resolve items argument to a character vector of column names
 #'
 #' Supports bare column ranges (Q1:Q112), bare names with c(),
@@ -152,10 +192,9 @@ ncvroc <- function(data,
   final_rank_by <- match.arg(final_rank_by)
 
   # ---- 2. Prepare analysis data ----
-  analysis_dat <- subset(data, select = c(outcome_name, item_names))
-  analysis_dat[[outcome_name]] <- as.numeric(analysis_dat[[outcome_name]])
-  analysis_dat[item_names] <- lapply(analysis_dat[item_names], as.numeric)
-  analysis_dat <- analysis_dat[complete.cases(analysis_dat), ]
+  n_original <- nrow(data)
+  analysis_dat <- .prepare_ncvroc_data(data, outcome_name, item_names)
+  n_analyzed <- nrow(analysis_dat)
 
   # ---- 3. Create config ----
   cfg <- ncvroc_config(
@@ -278,6 +317,8 @@ ncvroc <- function(data,
     data                      = analysis_dat,
     outcome                   = outcome_name,
     items                     = item_names,
+    n_original                = n_original,
+    n_analyzed                = n_analyzed,
     nested_result             = nested_result,
     nested_cv_summary         = nested_result$summary,
     selected_model_frequency  = nested_result$selected_model_frequency,
@@ -306,6 +347,11 @@ print.ncvroc_analysis <- function(x, ...) {
 
   cat("NCVROC analysis\n\n")
 
+  cat("Analyzed observations:", x$n_analyzed, "\n")
+  if (!is.null(x$n_original) && x$n_original != x$n_analyzed) {
+    cat("  (", x$n_original - x$n_analyzed,
+        " rows removed due to missing values)\n", sep = "")
+  }
   cat("Outcome:              ", cfg$outcome, "\n", sep = "")
   cat("Items:                ", cfg$n_items, "\n", sep = "")
   cat("Candidate item sizes:  ", cfg$min_items, " to ", cfg$max_items, "\n", sep = "")
@@ -432,7 +478,7 @@ plot.ncvroc_analysis <- function(x,
 #' candidate table by clinical constraints (e.g. sensitivity >= 0.90) and
 #' return the top matching models.
 #'
-#' @param x An `ncvroc_analysis` object (must have `final_exhaustive_ranked`).
+#' @param x An `ncvroc_analysis` or `roc_bruteforce_result` object.
 #' @param sensitivity Condition on sensitivity, e.g. `">= 0.90"`.
 #' @param specificity Condition on specificity, e.g. `">= 0.85"`.
 #' @param auc Condition on AUC.
@@ -479,8 +525,15 @@ ncvroc_results <- function(x,
                                        "accuracy", "ppv", "npv"),
                            top_n = 20) {
 
-  if (is.null(x$final_exhaustive_ranked)) {
-    stop("x$final_exhaustive_ranked is NULL. Re-run ncvroc() with final_search = TRUE.", call. = FALSE)
+  if (inherits(x, "roc_bruteforce_result")) {
+    dat <- x$results
+  } else if (inherits(x, "ncvroc_analysis")) {
+    if (is.null(x$final_exhaustive_ranked)) {
+      stop("x$final_exhaustive_ranked is NULL. Re-run ncvroc() with final_search = TRUE.", call. = FALSE)
+    }
+    dat <- x$final_exhaustive_ranked
+  } else {
+    stop("x must be an ncvroc_analysis or roc_bruteforce_result object.", call. = FALSE)
   }
 
   rank_by <- match.arg(rank_by)
@@ -490,8 +543,6 @@ ncvroc_results <- function(x,
       stop("top_n must be NULL, 0, or a single non-negative integer.", call. = FALSE)
     }
   }
-
-  dat <- x$final_exhaustive_ranked
 
   conditions <- list(
     sensitivity = sensitivity,
@@ -512,7 +563,7 @@ ncvroc_results <- function(x,
     parsed <- .parse_condition(cond, col)
 
     if (!col %in% names(dat)) {
-      stop(sprintf("Column '%s' not found in final_exhaustive_ranked.", col), call. = FALSE)
+      stop(sprintf("Column '%s' not found in results.", col), call. = FALSE)
     }
 
     col_vals <- dat[[col]]

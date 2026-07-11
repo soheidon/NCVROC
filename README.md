@@ -1,6 +1,6 @@
 [English](README.md) | [日本語](docs/reference-ja.md)
 
-# NCVROC 0.7.0
+# NCVROC 0.8.0
 
 **N**ested **C**ross-**V**alidation for Combinatorial **ROC**-based Selection of Item-set Scores
 
@@ -491,10 +491,83 @@ summary(result)
 | Function | Performance | Use case |
 |---|---|---|
 | `ncvroc()` | Nested cross-validated | Single-call entry point (recommended) |
+| `roc_bruteforce()` | Apparent (in-sample) | Full-data exhaustive search with NSE |
 | `exhaustive_sum_roc()` | Apparent (in-sample) | Quick screening, exploration |
 | `nested_sum_roc()` | Nested cross-validated | Validated performance estimation |
 | `run_ncvroc()` | Nested cross-validated | Convenience wrapper (config-driven) |
 | `fit_final_sum_scale()` | Apparent (in-sample) | Final scale on full data |
+
+---
+
+## Brute-force ROC search without cross-validation
+
+Use `roc_bruteforce()` (or its alias `roc_bf()`) for exhaustive item-combination
+ROC analysis directly on the full dataset. It shares the same NSE column
+resolution as `ncvroc()`.
+
+> Performance is calculated on the same data used for item and cutoff
+> selection. These estimates may be optimistic. Use `ncvroc()` for nested
+> cross-validated performance estimation.
+
+```r
+result <- roc_bruteforce(
+  data    = d,
+  outcome = y,
+  items   = Q1:Q5,
+  max_items = 3,
+  rank_by = "youden",
+  engine  = "Rcpp",
+  top_n   = 20
+)
+
+result
+result$best_model
+result$candidates
+```
+
+Filter with `ncvroc_results()`, just like `ncvroc()` output:
+
+```r
+ncvroc_results(result, sensitivity = ">= 0.90", specificity = ">= 0.85")
+```
+
+The alias `roc_bf()` is equivalent:
+
+```r
+result <- roc_bf(d, y, Q1:Q5, max_items = 3, engine = "Rcpp")
+```
+
+---
+
+### `roc_bruteforce()`
+
+Full-data exhaustive item-combination ROC analysis with NSE column resolution.
+
+```r
+roc_bruteforce(
+  data,
+  outcome,
+  items,
+  min_items      = 1,
+  max_items      = 4,
+  cutoff_method  = c("youden", "closest_topleft"),
+  positive_label = 1,
+  negative_label = 0,
+  engine         = c("Rcpp", "R"),
+  rank_by        = c("auc", "youden", "sensitivity", "specificity", "accuracy"),
+  top_n          = 20,
+  progress       = interactive(),
+  save_results   = FALSE,
+  output_dir     = "."
+)
+```
+
+**Returns:** S3 object of class `"roc_bruteforce_result"` with `$results`
+(full table), `$candidates` (top_n subset), and `$best_model` (first row).
+`print()` displays a formatted summary. Use `ncvroc_results()` to filter
+by clinical constraints.
+
+The alias `roc_bf()` takes the same arguments and returns the same result.
 
 ---
 

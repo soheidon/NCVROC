@@ -20,7 +20,7 @@ ncvroc_results(
 )
 }
 \arguments{
-\item{x}{An `ncvroc_analysis` object (must have `final_exhaustive_ranked`).}
+\item{x}{An `ncvroc_analysis` or `roc_bruteforce_result` object.}
 
 \item{sensitivity}{Condition on sensitivity, e.g. `">= 0.90"`.}
 
