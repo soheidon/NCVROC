@@ -13,7 +13,7 @@ Assume higher sum scores indicate higher probability of a positive outcome. User
 ## Installation
 
 ```r
-# v0.1.0 pre-release (GitHub)
+# Install NCVROC from GitHub
 # install.packages("remotes")
 remotes::install_github("soheidon/NCVROC")
 ```
@@ -23,7 +23,9 @@ remotes::install_github("soheidon/NCVROC")
 1. **Higher score = more likely positive.** Reverse-code items beforehand if needed.
 2. **Cutoff rule:** `predicted_positive = score >= cutoff`.
 3. **AUC with ties:** `AUC = P(pos > neg) + 0.5 * P(pos == neg)`.
-4. **No missing values in v0.1.** Any `NA` causes an immediate error.
+4. **Missing values:** Empty strings and whitespace-only values are treated as
+   missing. Rows with missing values in the outcome or selected item columns are
+   removed before analysis.
 5. **Strict binary outcome.** Outcome column must contain only `positive_label` and `negative_label` values.
 
 ---
@@ -159,122 +161,6 @@ with AND logic. Available columns: `sensitivity`, `specificity`, `auc`,
 
 ## Reference
 
-### `exhaustive_sum_roc()`
-
-Enumerate all item combinations, compute simple sum scores, evaluate via ROC.
-
-```r
-exhaustive_sum_roc(
-  data,
-  outcome,
-  items,
-  min_items         = 1,
-  max_items         = 4,
-  positive_label    = 1,
-  negative_label    = 0,
-  cutoff_method     = c("youden", "closest_topleft"),
-  rank_by           = c("auc", "youden", "sensitivity", "specificity", "accuracy"),
-  top_n             = NULL,
-  prefer_fewer_items = TRUE,
-  engine            = c("R", "Rcpp"),
-  progress          = TRUE
-)
-```
-
-**Returns:** data.frame with columns `rank`, `items`, `n_items`, `auc`, `cutoff`, `sensitivity`, `specificity`, `youden`, `accuracy`, `ppv`, `npv`, `n_positive`, `n_negative`. Sorted by `rank_by` descending.
-
-**Performance is apparent (in-sample), not cross-validated.**
-
-Default is `engine = "R"`. For ~7x speedup, use `engine = "Rcpp"`.
-
----
-
-### `nested_sum_roc()`
-
-Nested cross-validation with outer loop for performance estimation, inner loop for model selection.
-
-```r
-nested_sum_roc(
-  data,
-  outcome,
-  items,
-  min_items          = 1,
-  max_items          = 4,
-  positive_label     = 1,
-  negative_label     = 0,
-  cutoff_method      = c("youden", "closest_topleft"),
-  preselect_top_n    = 20,
-  preselect_by       = "auc",
-  selection_criterion = "auc",
-  outer_k            = 5,
-  inner_k            = 4,
-  outer_repeats      = 1,
-  inner_repeats      = 1,
-  stratified         = TRUE,
-  seed               = NULL,
-  engine             = c("R", "Rcpp"),
-  progress           = TRUE,
-  verbose            = TRUE,
-  return             = c("full", "summary"),
-  output_dir         = NULL,
-  file_prefix        = "NCVROC"
-)
-```
-
-**Returns:** S3 object of class `"ncvroc_result"` with elements:
-
-| Element | Description |
-|---|---|
-| `summary` | data.frame: one row per outer fold with AUC, sensitivity, specificity, etc. |
-| `outer_results` | list: full per-fold details including predictions |
-| `selected_models` | character: item-set selected in each fold |
-| `selected_model_frequency` | data.frame: selection frequency of each item set |
-| `outer_predictions` | data.frame: all out-of-sample predictions with scores |
-| `settings` | list: all argument values |
-
-**S3 methods:** `print()`, `summary()`, `plot(which = "selection"|"auc")`.
-
----
-
-### `fit_final_sum_scale()`
-
-Thin wrapper around `exhaustive_sum_roc()` for fitting the final scale on the full dataset after cross-validation.
-
-```r
-fit_final_sum_scale(
-  data,
-  outcome,
-  items,
-  min_items      = 1,
-  max_items      = 4,
-  positive_label = 1,
-  negative_label = 0,
-  cutoff_method  = c("youden", "closest_topleft"),
-  rank_by        = c("auc", "youden", "sensitivity", "specificity", "accuracy"),
-  top_n          = 20,
-  engine         = c("R", "Rcpp"),
-  progress       = TRUE
-)
-```
-
-**Returns:** data.frame with `attr(result, "performance_type") <- "apparent"`. These are in-sample estimates, not cross-validated. Use `nested_sum_roc()` for validated performance.
-
-Default is `engine = "R"`. For ~7x speedup, use `engine = "Rcpp"`.
-
----
-
-### `make_stratified_folds()`
-
-Create stratified k-fold cross-validation indices.
-
-```r
-make_stratified_folds(y, k = 5, repeats = 1, seed = NULL)
-```
-
-**Returns:** named list of integer vectors. Names follow `"Rep1_Fold1"` format. If `k` exceeds the size of the smaller class, `k` is reduced with a warning.
-
----
-
 ### `ncvroc()`
 
 Primary entry point for a complete NCVROC analysis in a single call. Resolves outcome and item columns using base-R style selection, prepares data, runs nested CV, optionally performs a final exhaustive search, and optionally saves CSV outputs.
@@ -323,7 +209,8 @@ ncvroc(
 
 ### `ncvroc_results()`
 
-Filter and rank the final exhaustive candidate table by clinical or practical constraints.
+Filter and rank candidate models from an `ncvroc_analysis` or
+`roc_bruteforce_result` object using clinical or practical constraints.
 
 ```r
 ncvroc_results(
@@ -344,7 +231,44 @@ ncvroc_results(
 
 Each condition is a string like `">= 0.90"` or `"<= 3"`. Six operators are supported: `>=`, `>`, `<=`, `<`, `==`, `!=`. Multiple conditions are combined with AND logic. Results are ranked by `rank_by` with stable tiebreakers. Set `top_n = NULL` to return all matching rows, or `0` for an empty table.
 
-**Returns:** data.frame (same columns as `final_exhaustive_ranked`). The `ncvroc_analysis` object must include `final_exhaustive_ranked` (i.e. `ncvroc()` called with `final_search = TRUE`).
+**Returns:** A data.frame containing the filtered and ranked candidate models.
+
+`x` may be either:
+
+- an `ncvroc_analysis` object created with `final_search = TRUE`, or
+- a `roc_bruteforce_result` object returned by `roc_bruteforce()` or `roc_bf()`.
+
+---
+
+### `roc_bruteforce()`
+
+Full-data exhaustive item-combination ROC analysis with NSE column resolution.
+
+```r
+roc_bruteforce(
+  data,
+  outcome,
+  items,
+  min_items      = 1,
+  max_items      = 4,
+  cutoff_method  = c("youden", "closest_topleft"),
+  positive_label = 1,
+  negative_label = 0,
+  engine         = c("Rcpp", "R"),
+  rank_by        = c("auc", "youden", "sensitivity", "specificity", "accuracy"),
+  top_n          = 20,
+  progress       = interactive(),
+  save_results   = FALSE,
+  output_dir     = "."
+)
+```
+
+**Returns:** S3 object of class `"roc_bruteforce_result"` with `$results`
+(full table), `$candidates` (top_n subset), and `$best_model` (first row).
+`print()` displays a formatted summary with a warning that performance may be
+optimistic. Use `ncvroc_results()` to filter by clinical constraints.
+
+The alias `roc_bf()` takes the same arguments and returns the same result.
 
 ---
 
@@ -407,6 +331,122 @@ run_ncvroc(
 
 ---
 
+### `nested_sum_roc()`
+
+Nested cross-validation with outer loop for performance estimation, inner loop for model selection.
+
+```r
+nested_sum_roc(
+  data,
+  outcome,
+  items,
+  min_items          = 1,
+  max_items          = 4,
+  positive_label     = 1,
+  negative_label     = 0,
+  cutoff_method      = c("youden", "closest_topleft"),
+  preselect_top_n    = 20,
+  preselect_by       = "auc",
+  selection_criterion = "auc",
+  outer_k            = 5,
+  inner_k            = 4,
+  outer_repeats      = 1,
+  inner_repeats      = 1,
+  stratified         = TRUE,
+  seed               = NULL,
+  engine             = c("R", "Rcpp"),
+  progress           = TRUE,
+  verbose            = TRUE,
+  return             = c("full", "summary"),
+  output_dir         = NULL,
+  file_prefix        = "NCVROC"
+)
+```
+
+**Returns:** S3 object of class `"ncvroc_result"` with elements:
+
+| Element | Description |
+|---|---|
+| `summary` | data.frame: one row per outer fold with AUC, sensitivity, specificity, etc. |
+| `outer_results` | list: full per-fold details including predictions |
+| `selected_models` | character: item-set selected in each fold |
+| `selected_model_frequency` | data.frame: selection frequency of each item set |
+| `outer_predictions` | data.frame: all out-of-sample predictions with scores |
+| `settings` | list: all argument values |
+
+**S3 methods:** `print()`, `summary()`, `plot(which = "selection"|"auc")`.
+
+---
+
+### `exhaustive_sum_roc()`
+
+Enumerate all item combinations, compute simple sum scores, evaluate via ROC.
+
+```r
+exhaustive_sum_roc(
+  data,
+  outcome,
+  items,
+  min_items         = 1,
+  max_items         = 4,
+  positive_label    = 1,
+  negative_label    = 0,
+  cutoff_method     = c("youden", "closest_topleft"),
+  rank_by           = c("auc", "youden", "sensitivity", "specificity", "accuracy"),
+  top_n             = NULL,
+  prefer_fewer_items = TRUE,
+  engine            = c("R", "Rcpp"),
+  progress          = TRUE
+)
+```
+
+**Returns:** data.frame with columns `rank`, `items`, `n_items`, `auc`, `cutoff`, `sensitivity`, `specificity`, `youden`, `accuracy`, `ppv`, `npv`, `n_positive`, `n_negative`. Sorted by `rank_by` descending.
+
+**Performance is apparent (in-sample), not cross-validated.**
+
+Default is `engine = "R"`. For ~7x speedup, use `engine = "Rcpp"`.
+
+---
+
+### `fit_final_sum_scale()`
+
+Thin wrapper around `exhaustive_sum_roc()` for fitting the final scale on the full dataset after cross-validation.
+
+```r
+fit_final_sum_scale(
+  data,
+  outcome,
+  items,
+  min_items      = 1,
+  max_items      = 4,
+  positive_label = 1,
+  negative_label = 0,
+  cutoff_method  = c("youden", "closest_topleft"),
+  rank_by        = c("auc", "youden", "sensitivity", "specificity", "accuracy"),
+  top_n          = 20,
+  engine         = c("R", "Rcpp"),
+  progress       = TRUE
+)
+```
+
+**Returns:** data.frame with `attr(result, "performance_type") <- "apparent"`. These are in-sample estimates, not cross-validated. Use `nested_sum_roc()` for validated performance.
+
+Default is `engine = "R"`. For ~7x speedup, use `engine = "Rcpp"`.
+
+---
+
+### `make_stratified_folds()`
+
+Create stratified k-fold cross-validation indices.
+
+```r
+make_stratified_folds(y, k = 5, repeats = 1, seed = NULL)
+```
+
+**Returns:** named list of integer vectors. Names follow `"Rep1_Fold1"` format. If `k` exceeds the size of the smaller class, `k` is reduced with a warning.
+
+---
+
 ### `count_item_combinations()`
 
 Count total k-item combinations without generating them.
@@ -462,7 +502,7 @@ result <- ncvroc(d, y, Q1:Q5, max_items = 2, mode = "quick",
   outer_k = 3, inner_k = 2, outer_repeats = 1, engine = "R",
   seed = 42, final_search = FALSE)
 print(result)
-summary(result$nested_result)
+summary(result)
 plot(result)
 ```
 
@@ -537,48 +577,15 @@ The alias `roc_bf()` is equivalent:
 result <- roc_bf(d, y, Q1:Q5, max_items = 3, engine = "Rcpp")
 ```
 
----
-
-### `roc_bruteforce()`
-
-Full-data exhaustive item-combination ROC analysis with NSE column resolution.
-
-```r
-roc_bruteforce(
-  data,
-  outcome,
-  items,
-  min_items      = 1,
-  max_items      = 4,
-  cutoff_method  = c("youden", "closest_topleft"),
-  positive_label = 1,
-  negative_label = 0,
-  engine         = c("Rcpp", "R"),
-  rank_by        = c("auc", "youden", "sensitivity", "specificity", "accuracy"),
-  top_n          = 20,
-  progress       = interactive(),
-  save_results   = FALSE,
-  output_dir     = "."
-)
-```
-
-**Returns:** S3 object of class `"roc_bruteforce_result"` with `$results`
-(full table), `$candidates` (top_n subset), and `$best_model` (first row).
-`print()` displays a formatted summary. Use `ncvroc_results()` to filter
-by clinical constraints.
-
-The alias `roc_bf()` takes the same arguments and returns the same result.
-
----
-
 ## Rcpp engine
 
-Specify `engine = "Rcpp"` in `exhaustive_sum_roc()`, `nested_sum_roc()`, or
-`fit_final_sum_scale()` to use the native C++ backend. Results are numerically
-identical to the R engine; typical speedup is ~7x on moderate workloads.
+Specify `engine = "Rcpp"` in `ncvroc()`, `roc_bruteforce()`,
+`exhaustive_sum_roc()`, `nested_sum_roc()`, or `fit_final_sum_scale()` to use
+the native C++ backend. Results are numerically identical to the R engine;
+typical speedup is ~7x on moderate workloads.
 
 ```r
-exhaustive_sum_roc(d, "y", paste0("q", 1:5), max_items = 2, engine = "Rcpp")
+exhaustive_sum_roc(d, "y", paste0("Q", 1:5), max_items = 2, engine = "Rcpp")
 ```
 
 ## License
