@@ -1,4 +1,4 @@
-# NCVROC 0.7.0 リファレンス
+# NCVROC 0.8.0 リファレンス
 
 **N**ested **C**ross-**V**alidation for Combinatorial **ROC**-based Selection of Item-set Scores（項目セット得点の組み合わせROC選択のためのネスト交差検証）
 
@@ -11,7 +11,7 @@
 ## インストール
 
 ```r
-# v0.1.0 プレリリース（GitHub）
+# NCVROC を GitHub からインストール
 # install.packages("remotes")
 remotes::install_github("soheidon/NCVROC")
 ```
@@ -21,7 +21,7 @@ remotes::install_github("soheidon/NCVROC")
 1. **高得点 = 陽性の可能性が高い。** 必要に応じて事前に項目を逆転処理してください。
 2. **カットオフルール:** `predicted_positive = score >= cutoff`。
 3. **同点を考慮したAUC:** `AUC = P(pos > neg) + 0.5 * P(pos == neg)`。
-4. **v0.1では欠損値なし。** `NA`があると即座にエラーになります。
+4. **欠損値:** 空文字および空白のみの値は欠損として扱われます。アウトカム列または選択された項目列に欠損値を含む行は、分析前に除外されます。
 5. **厳密な二値アウトカム。** アウトカム列には`positive_label`と`negative_label`の値のみが含まれている必要があります。
 
 ---
@@ -152,122 +152,6 @@ ncvroc_results(
 
 ## リファレンス
 
-### `exhaustive_sum_roc()`
-
-すべての項目の組み合わせを列挙し、単純合計得点を計算し、ROCで評価します。
-
-```r
-exhaustive_sum_roc(
-  data,
-  outcome,
-  items,
-  min_items         = 1,
-  max_items         = 4,
-  positive_label    = 1,
-  negative_label    = 0,
-  cutoff_method     = c("youden", "closest_topleft"),
-  rank_by           = c("auc", "youden", "sensitivity", "specificity", "accuracy"),
-  top_n             = NULL,
-  prefer_fewer_items = TRUE,
-  engine            = c("R", "Rcpp"),
-  progress          = TRUE
-)
-```
-
-**戻り値:** `rank`, `items`, `n_items`, `auc`, `cutoff`, `sensitivity`, `specificity`, `youden`, `accuracy`, `ppv`, `npv`, `n_positive`, `n_negative`の列を持つdata.frame。`rank_by`の降順でソートされます。
-
-**パフォーマンスは見かけ上（インサンプル）のものであり、交差検証されていません。**
-
-デフォルトは`engine = "R"`です。約7倍の高速化のために`engine = "Rcpp"`を使用してください。
-
----
-
-### `nested_sum_roc()`
-
-外側ループでパフォーマンス推定、内側ループでモデル選択を行うネスト交差検証。
-
-```r
-nested_sum_roc(
-  data,
-  outcome,
-  items,
-  min_items          = 1,
-  max_items          = 4,
-  positive_label     = 1,
-  negative_label     = 0,
-  cutoff_method      = c("youden", "closest_topleft"),
-  preselect_top_n    = 20,
-  preselect_by       = "auc",
-  selection_criterion = "auc",
-  outer_k            = 5,
-  inner_k            = 4,
-  outer_repeats      = 1,
-  inner_repeats      = 1,
-  stratified         = TRUE,
-  seed               = NULL,
-  engine             = c("R", "Rcpp"),
-  progress           = TRUE,
-  verbose            = TRUE,
-  return             = c("full", "summary"),
-  output_dir         = NULL,
-  file_prefix        = "NCVROC"
-)
-```
-
-**戻り値:** クラス`"ncvroc_result"`のS3オブジェクト。以下の要素を含みます：
-
-| 要素 | 説明 |
-|---|---|
-| `summary` | data.frame: 外側foldごとに1行、AUC・感度・特異度などを含む |
-| `outer_results` | list: 予測を含むfoldごとの完全な詳細 |
-| `selected_models` | character: 各foldで選択された項目セット |
-| `selected_model_frequency` | data.frame: 各項目セットの選択頻度 |
-| `outer_predictions` | data.frame: スコア付きの全out-of-sample予測 |
-| `settings` | list: すべての引数値 |
-
-**S3メソッド:** `print()`, `summary()`, `plot(which = "selection"|"auc")`。
-
----
-
-### `fit_final_sum_scale()`
-
-交差検証後に全データセットで最終尺度を適合させるための、`exhaustive_sum_roc()`の薄いラッパー。
-
-```r
-fit_final_sum_scale(
-  data,
-  outcome,
-  items,
-  min_items      = 1,
-  max_items      = 4,
-  positive_label = 1,
-  negative_label = 0,
-  cutoff_method  = c("youden", "closest_topleft"),
-  rank_by        = c("auc", "youden", "sensitivity", "specificity", "accuracy"),
-  top_n          = 20,
-  engine         = c("R", "Rcpp"),
-  progress       = TRUE
-)
-```
-
-**戻り値:** `attr(result, "performance_type") <- "apparent"`を持つdata.frame。これらはインサンプル推定値であり、交差検証されていません。検証済みのパフォーマンスには`nested_sum_roc()`を使用してください。
-
-デフォルトは`engine = "R"`です。約7倍の高速化のために`engine = "Rcpp"`を使用してください。
-
----
-
-### `make_stratified_folds()`
-
-層化k分割交差検証のインデックスを作成します。
-
-```r
-make_stratified_folds(y, k = 5, repeats = 1, seed = NULL)
-```
-
-**戻り値:** 整数ベクトルの名前付きリスト。名前は`"Rep1_Fold1"`形式です。`k`が小さいクラスのサイズを超える場合、`k`は警告とともに縮小されます。
-
----
-
 ### `ncvroc()`
 
 1回の呼び出しで完全なNCVROC分析を行う主要エントリポイント。ベースRスタイルの選択を用いてアウトカム列と項目列を解決し、データを準備し、ネストCVを実行し、オプションで最終全探索を実行し、オプションでCSV出力を保存します。
@@ -316,7 +200,7 @@ ncvroc(
 
 ### `ncvroc_results()`
 
-最終全探索候補テーブルを臨床的または実用的な制約で絞り込み、ランク付けします。
+`ncvroc_analysis` または `roc_bruteforce_result` オブジェクトから、臨床的または実用的な制約で候補モデルを絞り込み、ランク付けします。
 
 ```r
 ncvroc_results(
@@ -337,7 +221,41 @@ ncvroc_results(
 
 各条件は`">= 0.90"`や`"<= 3"`のような文字列です。6つの演算子（`>=`, `>`, `<=`, `<`, `==`, `!=`）がサポートされています。複数の条件はAND論理で組み合わされます。結果は`rank_by`でランク付けされ、安定したタイブレーカーが適用されます。すべての一致行を返すには`top_n = NULL`を、空のテーブルを返すには`0`を設定します。
 
-**戻り値:** data.frame（`final_exhaustive_ranked`と同じ列）。`ncvroc_analysis`オブジェクトには`final_exhaustive_ranked`が含まれている必要があります（つまり`ncvroc()`を`final_search = TRUE`で呼び出すこと）。
+**戻り値:** 絞り込まれランク付けされた候補モデルを含む data.frame。
+
+`x` には次のいずれかを指定できます：
+
+- `final_search = TRUE` で作成された `ncvroc_analysis` オブジェクト
+- `roc_bruteforce()` または `roc_bf()` が返す `roc_bruteforce_result` オブジェクト
+
+---
+
+### `roc_bruteforce()`
+
+NSEによる列解決を用いた、全データでの項目組み合わせROC分析。
+
+```r
+roc_bruteforce(
+  data,
+  outcome,
+  items,
+  min_items      = 1,
+  max_items      = 4,
+  cutoff_method  = c("youden", "closest_topleft"),
+  positive_label = 1,
+  negative_label = 0,
+  engine         = c("Rcpp", "R"),
+  rank_by        = c("auc", "youden", "sensitivity", "specificity", "accuracy"),
+  top_n          = 20,
+  progress       = interactive(),
+  save_results   = FALSE,
+  output_dir     = "."
+)
+```
+
+**戻り値:** クラス `"roc_bruteforce_result"` のS3オブジェクト。`$results`（全テーブル）、`$candidates`（上位N件）、`$best_model`（先頭行）を含みます。`print()` はパフォーマンスが楽観的である可能性の警告付きで整形されたサマリーを表示します。臨床的制約での絞り込みには `ncvroc_results()` を使用してください。
+
+エイリアス `roc_bf()` は同じ引数を受け取り、同じ結果を返します。
 
 ---
 
@@ -400,6 +318,122 @@ run_ncvroc(
 
 ---
 
+### `nested_sum_roc()`
+
+外側ループでパフォーマンス推定、内側ループでモデル選択を行うネスト交差検証。
+
+```r
+nested_sum_roc(
+  data,
+  outcome,
+  items,
+  min_items          = 1,
+  max_items          = 4,
+  positive_label     = 1,
+  negative_label     = 0,
+  cutoff_method      = c("youden", "closest_topleft"),
+  preselect_top_n    = 20,
+  preselect_by       = "auc",
+  selection_criterion = "auc",
+  outer_k            = 5,
+  inner_k            = 4,
+  outer_repeats      = 1,
+  inner_repeats      = 1,
+  stratified         = TRUE,
+  seed               = NULL,
+  engine             = c("R", "Rcpp"),
+  progress           = TRUE,
+  verbose            = TRUE,
+  return             = c("full", "summary"),
+  output_dir         = NULL,
+  file_prefix        = "NCVROC"
+)
+```
+
+**戻り値:** クラス`"ncvroc_result"`のS3オブジェクト。以下の要素を含みます：
+
+| 要素 | 説明 |
+|---|---|
+| `summary` | data.frame: 外側foldごとに1行、AUC・感度・特異度などを含む |
+| `outer_results` | list: 予測を含むfoldごとの完全な詳細 |
+| `selected_models` | character: 各foldで選択された項目セット |
+| `selected_model_frequency` | data.frame: 各項目セットの選択頻度 |
+| `outer_predictions` | data.frame: スコア付きの全out-of-sample予測 |
+| `settings` | list: すべての引数値 |
+
+**S3メソッド:** `print()`, `summary()`, `plot(which = "selection"|"auc")`。
+
+---
+
+### `exhaustive_sum_roc()`
+
+すべての項目の組み合わせを列挙し、単純合計得点を計算し、ROCで評価します。
+
+```r
+exhaustive_sum_roc(
+  data,
+  outcome,
+  items,
+  min_items         = 1,
+  max_items         = 4,
+  positive_label    = 1,
+  negative_label    = 0,
+  cutoff_method     = c("youden", "closest_topleft"),
+  rank_by           = c("auc", "youden", "sensitivity", "specificity", "accuracy"),
+  top_n             = NULL,
+  prefer_fewer_items = TRUE,
+  engine            = c("R", "Rcpp"),
+  progress          = TRUE
+)
+```
+
+**戻り値:** `rank`, `items`, `n_items`, `auc`, `cutoff`, `sensitivity`, `specificity`, `youden`, `accuracy`, `ppv`, `npv`, `n_positive`, `n_negative`の列を持つdata.frame。`rank_by`の降順でソートされます。
+
+**パフォーマンスは見かけ上（インサンプル）のものであり、交差検証されていません。**
+
+デフォルトは`engine = "R"`です。約7倍の高速化のために`engine = "Rcpp"`を使用してください。
+
+---
+
+### `fit_final_sum_scale()`
+
+交差検証後に全データセットで最終尺度を適合させるための、`exhaustive_sum_roc()`の薄いラッパー。
+
+```r
+fit_final_sum_scale(
+  data,
+  outcome,
+  items,
+  min_items      = 1,
+  max_items      = 4,
+  positive_label = 1,
+  negative_label = 0,
+  cutoff_method  = c("youden", "closest_topleft"),
+  rank_by        = c("auc", "youden", "sensitivity", "specificity", "accuracy"),
+  top_n          = 20,
+  engine         = c("R", "Rcpp"),
+  progress       = TRUE
+)
+```
+
+**戻り値:** `attr(result, "performance_type") <- "apparent"`を持つdata.frame。これらはインサンプル推定値であり、交差検証されていません。検証済みのパフォーマンスには`nested_sum_roc()`を使用してください。
+
+デフォルトは`engine = "R"`です。約7倍の高速化のために`engine = "Rcpp"`を使用してください。
+
+---
+
+### `make_stratified_folds()`
+
+層化k分割交差検証のインデックスを作成します。
+
+```r
+make_stratified_folds(y, k = 5, repeats = 1, seed = NULL)
+```
+
+**戻り値:** 整数ベクトルの名前付きリスト。名前は`"Rep1_Fold1"`形式です。`k`が小さいクラスのサイズを超える場合、`k`は警告とともに縮小されます。
+
+---
+
 ### `count_item_combinations()`
 
 組み合わせを生成せずにk項目の組み合わせの総数をカウントします。
@@ -455,7 +489,7 @@ result <- ncvroc(d, y, Q1:Q5, max_items = 2, mode = "quick",
   outer_k = 3, inner_k = 2, outer_repeats = 1, engine = "R",
   seed = 42, final_search = FALSE)
 print(result)
-summary(result$nested_result)
+summary(result)
 plot(result)
 ```
 
@@ -484,6 +518,7 @@ summary(result)
 | 関数 | パフォーマンス | ユースケース |
 |---|---|---|
 | `ncvroc()` | ネスト交差検証済み | 単一呼び出しエントリポイント（推奨） |
+| `roc_bruteforce()` | 見かけ上（インサンプル） | 全データ高速探索（NSE対応） |
 | `exhaustive_sum_roc()` | 見かけ上（インサンプル） | 高速スクリーニング、探索 |
 | `nested_sum_roc()` | ネスト交差検証済み | 検証済みパフォーマンス推定 |
 | `run_ncvroc()` | ネスト交差検証済み | 便利なラッパー（設定駆動） |
@@ -491,12 +526,46 @@ summary(result)
 
 ---
 
-## Rcppエンジン
+## CVなしの全探索ROC検索
 
-`exhaustive_sum_roc()`, `nested_sum_roc()`, `fit_final_sum_scale()`で`engine = "Rcpp"`を指定すると、ネイティブC++バックエンドを使用します。結果はRエンジンと数値的に同一で、中程度のワークロードで通常約7倍の高速化が得られます。
+`roc_bruteforce()`（またはエイリアス `roc_bf()`）を使うと、ネスト交差検証なしで全データセット上で直接すべての項目組み合わせを評価できます。`ncvroc()` と同じNSEによる列解決を共有しています。
+
+> パフォーマンスは項目とカットオフの選択に使ったのと同じデータで計算されます。これらの推定値は楽観的である可能性があります。ネスト交差検証済みのパフォーマンス推定には `ncvroc()` を使用してください。
 
 ```r
-exhaustive_sum_roc(d, "y", paste0("q", 1:5), max_items = 2, engine = "Rcpp")
+result <- roc_bruteforce(
+  data    = d,
+  outcome = y,
+  items   = Q1:Q5,
+  max_items = 3,
+  rank_by = "youden",
+  engine  = "Rcpp",
+  top_n   = 20
+)
+
+result
+result$best_model
+result$candidates
+```
+
+`ncvroc_results()` で `ncvroc()` の出力と同じように絞り込めます：
+
+```r
+ncvroc_results(result, sensitivity = ">= 0.90", specificity = ">= 0.85")
+```
+
+エイリアス `roc_bf()` は同等です：
+
+```r
+result <- roc_bf(d, y, Q1:Q5, max_items = 3, engine = "Rcpp")
+```
+
+## Rcppエンジン
+
+`ncvroc()`, `roc_bruteforce()`, `exhaustive_sum_roc()`, `nested_sum_roc()`, `fit_final_sum_scale()` で `engine = "Rcpp"` を指定すると、ネイティブC++バックエンドを使用します。結果はRエンジンと数値的に同一で、中程度のワークロードで通常約7倍の高速化が得られます。
+
+```r
+exhaustive_sum_roc(d, "y", paste0("Q", 1:5), max_items = 2, engine = "Rcpp")
 ```
 
 ## ライセンス
