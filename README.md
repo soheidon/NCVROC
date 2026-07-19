@@ -1,6 +1,6 @@
 [English](README.md) | [日本語](docs/reference-ja.md)
 
-# NCVROC 0.10.0
+# NCVROC 0.9.0
 
 **N**ested **C**ross-**V**alidation for Combinatorial **ROC**-based Selection of Item-set Scores
 

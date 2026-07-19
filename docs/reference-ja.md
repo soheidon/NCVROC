@@ -1,4 +1,4 @@
-# NCVROC 0.10.0 リファレンス
+# NCVROC 0.9.0 リファレンス
 
 **N**ested **C**ross-**V**alidation for Combinatorial **ROC**-based Selection of Item-set Scores（項目セット得点の組み合わせROC選択のためのネスト交差検証）
 
