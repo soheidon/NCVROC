@@ -541,6 +541,22 @@ test_that("empty results_dir errors", {
   )
 })
 
+test_that("default RDS storage uses the working directory", {
+  d <- make_bf_data()
+  old_wd <- getwd()
+  tmp <- tempfile("ncvroc-wd-")
+  dir.create(tmp)
+  on.exit(setwd(old_wd), add = TRUE)
+  setwd(tmp)
+
+  res <- roc_bruteforce(d, "y", c("Q1", "Q2", "Q3"), max_items = 2,
+                         engine = "R", progress = FALSE)
+
+  expect_equal(normalizePath(dirname(res$results_file)),
+               normalizePath(tmp))
+  expect_true(file.exists(res$results_file))
+})
+
 # ---- item_count ----
 
 test_that("item_count '==3' limits combinations in roc_bruteforce()", {

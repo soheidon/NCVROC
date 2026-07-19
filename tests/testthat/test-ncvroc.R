@@ -591,6 +591,22 @@ test_that("print shows storage info for RDS mode", {
   expect_output(print(result), "stored in")
 })
 
+test_that("default RDS storage uses the working directory", {
+  dat <- make_ncvroc_test_data()
+  old_wd <- getwd()
+  tmp <- tempfile("ncvroc-wd-")
+  dir.create(tmp)
+  on.exit(setwd(old_wd), add = TRUE)
+  setwd(tmp)
+
+  result <- do.call(ncvroc, c(list(data = dat, outcome = "y", items = c("Q1", "Q2")),
+                              COMMON_CV_STORAGE))
+
+  expect_equal(normalizePath(dirname(result$final_exhaustive_file)),
+               normalizePath(tmp))
+  expect_true(file.exists(result$final_exhaustive_file))
+})
+
 test_that("print shows 'not stored' for none mode", {
   dat <- make_ncvroc_test_data()
   result <- do.call(ncvroc, c(list(data = dat, outcome = "y", items = c("Q1", "Q2"),

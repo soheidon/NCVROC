@@ -156,7 +156,7 @@ result <- ncvroc(
 
 | `results_storage` | 動作 |
 |---|---|
-| `"rds"`（デフォルト） | 完全な候補テーブルをRDSファイルに保存。デフォルトではカレントワーキングディレクトリ（通常はRmd/Qmdファイルのあるフォルダ）に出力。`results_dir = "path/"` で保存先を指定可能。`$final_exhaustive_ranked` は `NULL`。 |
+| `"rds"`（デフォルト） | 完全な候補テーブルをRDSファイルに保存。デフォルトでは `getwd()` が返す現在のワーキングディレクトリに出力。RStudio ProjectやQuarto Projectでは通常プロジェクトルートになるが、必ずしもRmd/Qmdファイル自体が置かれているフォルダとは限らない。`results_dir = "path/"` で保存先を指定可能。`$final_exhaustive_ranked` は `NULL`。 |
 | `"memory"` | 完全な候補テーブルをメモリに保持（v0.8.0以前の動作）。`$final_exhaustive_ranked` に data.frame が格納される。 |
 | `"none"` | 完全な候補テーブルを破棄。`ncvroc_results()` はエラーになる。 |
 
