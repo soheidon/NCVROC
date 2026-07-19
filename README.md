@@ -171,7 +171,7 @@ via `ncvroc_results()`.
 
 | `results_storage` | Behavior |
 |---|---|
-| `"rds"` (default) | Full table saved to an RDS file in the current working directory (`getwd()`) by default. In an RStudio or Quarto project this is commonly the project root, but it is not necessarily the directory containing the Rmd or Qmd file. Set `results_dir` to choose another location. `$results` / `$final_exhaustive_ranked` is `NULL`. |
+| `"rds"` (default) | Full table saved to an RDS file in the current working directory. In RStudio or Quarto projects this is typically the project root. The save location is always shown in the printed output. Use `getwd()` to check the current directory, or set `results_dir` to an explicit path if the default is not suitable. `$results` / `$final_exhaustive_ranked` is `NULL`. |
 | `"memory"` | Keep full table in RAM (pre-v0.9.0 behavior). |
 | `"none"` | Discard full table. `ncvroc_results()` will error. |
 
