@@ -28,6 +28,9 @@
 #' @param negative_label Value for negative class (default 0).
 #' @param stratified Logical, use stratified CV folds (default TRUE).
 #' @param engine Computation engine: `"R"` or `"Rcpp"` (default `"Rcpp"`).
+#' @param item_count Concise model-size specification: `"==4"` (exactly 4
+#'   items), `"<=4"` (up to 4 items), or `"2:4"` (2 through 4 items).
+#'   Cannot be combined with `min_items` or `max_items`. Default NULL.
 #'
 #' @return A list of class `"ncvroc_config"`.
 #' @export
@@ -51,10 +54,31 @@ ncvroc_config <- function(outcome,
                           positive_label = 1,
                           negative_label = 0,
                           stratified = TRUE,
-                          engine = c("Rcpp", "R")) {
+                          engine = c("Rcpp", "R"),
+                          item_count = NULL) {
   mode <- match.arg(mode)
   cutoff_method <- match.arg(cutoff_method)
   engine <- match.arg(engine)
+
+  # item_count validation and resolution
+  min_items_missing <- missing(min_items)
+  max_items_missing <- missing(max_items)
+
+  if (!is.null(item_count) &&
+      (!min_items_missing || !max_items_missing)) {
+    stop("Do not specify item_count together with min_items or max_items.",
+         call. = FALSE)
+  }
+
+  resolved_item_count <- NULL
+
+  if (!is.null(item_count)) {
+    n_available <- if (is.null(items)) NULL else length(items)
+    parsed <- .parse_item_count(item_count, n_available = n_available)
+    min_items <- parsed$min_items
+    max_items <- parsed$max_items
+    resolved_item_count <- parsed$specification
+  }
 
   if (!is.null(items)) {
     n_items <- length(items)
@@ -76,6 +100,7 @@ ncvroc_config <- function(outcome,
     items               = items,
     min_items           = min_items,
     max_items           = max_items,
+    item_count          = resolved_item_count,
     mode                = mode,
     n_items             = n_items,
     total_combinations  = total_combinations,
@@ -111,10 +136,18 @@ print.ncvroc_config <- function(x, ...) {
   if (!is.null(x$items)) {
     cat("Items:           ", x$n_items, "\n")
     cat("Item set size:   ", x$min_items, "-", x$max_items, "\n")
+    if (!is.null(x$item_count)) {
+      cat("Item count:      ", .describe_item_count(x$item_count),
+          " (", x$item_count, ")\n", sep = "")
+    }
     cat("Combinations:    ", format(x$total_combinations, big.mark = ",", scientific = FALSE), "\n")
   } else {
     cat("Items:            (not specified)\n")
     cat("Item set size:   ", x$min_items, "-", x$max_items, "\n")
+    if (!is.null(x$item_count)) {
+      cat("Item count:      ", .describe_item_count(x$item_count),
+          " (", x$item_count, ")\n", sep = "")
+    }
   }
 
   cat("Mode:            ", x$mode, "\n")

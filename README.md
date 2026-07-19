@@ -1,6 +1,6 @@
 [English](README.md) | [日本語](docs/reference-ja.md)
 
-# NCVROC 0.8.0
+# NCVROC 0.10.0
 
 **N**ested **C**ross-**V**alidation for Combinatorial **ROC**-based Selection of Item-set Scores
 
@@ -97,16 +97,84 @@ So `mode = "balanced"` suggests `preselect_top_n = 500`, but an explicit
 
 ---
 
-### Final candidate output
+### Item count syntax
 
-`ncvroc()` runs the final exhaustive search by default and stores the ranked
-full-data candidate table in `result$final_exhaustive_ranked`.
+The `item_count` argument provides a concise alternative to `min_items` and
+`max_items`. It must not be combined with explicit `min_items` or `max_items`.
 
-For convenience, it also stores:
+| `item_count` | Meaning |
+|---|---|
+| `"==4"` | Exactly 4 items |
+| `"<=4"` | Up to 4 items (1 through 4) |
+| `"2:4"` | 2 through 4 items |
 
 ```r
-result$final_candidates   # top N rows (controlled by final_top_n)
-result$final_model        # best single model (first row)
+# Exactly 4-item scales
+result <- ncvroc(
+  data    = analysis_dat,
+  outcome = y,
+  items   = Q1:Q5,
+  item_count = "==4",
+  mode    = "balanced",
+  seed    = 20260705
+)
+
+# Up to 4-item scales (1-4 items)
+result <- ncvroc(
+  data    = analysis_dat,
+  outcome = y,
+  items   = Q1:Q5,
+  item_count = "<=4",
+  mode    = "balanced",
+  seed    = 20260705
+)
+
+# 2-to-4-item scales
+result <- ncvroc(
+  data    = analysis_dat,
+  outcome = y,
+  items   = Q1:Q5,
+  item_count = "2:4",
+  mode    = "balanced",
+  seed    = 20260705
+)
+```
+
+`item_count` is available in `ncvroc()`, `roc_bruteforce()` (and `roc_bf()`),
+and `ncvroc_config()`.
+
+---
+
+### Result storage
+
+`ncvroc()` and `roc_bruteforce()` accept a `results_storage` parameter to
+control where full candidate tables are stored:
+
+| `results_storage` | Behavior |
+|---|---|
+| `"rds"` (default) | Full table saved to an RDS file. Temporary directory by default (`results_dir = NULL`) or a user-supplied path (`results_dir = "path/"`). `$results` / `$final_exhaustive_ranked` is `NULL`. |
+| `"memory"` | Keep full table in RAM (pre-v0.9.0 behavior). |
+| `"none"` | Discard full table. `ncvroc_results()` will error. |
+
+Always use `ncvroc_results()` to retrieve the full table (reads from RDS transparently):
+
+```r
+ncvroc_results(result, top_n = NULL)  # get all candidates
+```
+
+### Final candidate output
+
+`ncvroc()` runs the final exhaustive search by default and saves the ranked
+full-data candidate table to an RDS file (see `results_storage` above).
+
+For convenience, the following are kept in memory:
+
+```r
+result$final_candidates       # top N rows (controlled by final_top_n)
+result$final_model            # best single model (first row)
+result$final_n_combinations   # total combinations evaluated
+result$final_results_storage  # storage mode ("rds", "memory", or "none")
+result$final_exhaustive_file  # RDS file path (in "rds" mode)
 ```
 
 `selection_criterion` controls which candidate is selected during nested CV.
@@ -189,11 +257,15 @@ ncvroc(
   final_search      = TRUE,
   final_top_n       = 20,
   final_rank_by     = c("auc", "youden", "sensitivity", "specificity", "accuracy"),
+  results_storage   = c("rds", "memory", "none"),
+  results_name      = NULL,
+  results_dir       = NULL,
   save_results      = FALSE,
   output_dir        = ".",
   progress          = TRUE,
   verbose           = TRUE,
-  return            = "full"
+  return            = "full",
+  item_count        = NULL
 )
 ```
 
@@ -249,22 +321,27 @@ roc_bruteforce(
   data,
   outcome,
   items,
-  min_items      = 1,
-  max_items      = 4,
-  cutoff_method  = c("youden", "closest_topleft"),
-  positive_label = 1,
-  negative_label = 0,
-  engine         = c("Rcpp", "R"),
-  rank_by        = c("auc", "youden", "sensitivity", "specificity", "accuracy"),
-  top_n          = 20,
-  progress       = interactive(),
-  save_results   = FALSE,
-  output_dir     = "."
+  min_items        = 1,
+  max_items        = 4,
+  cutoff_method    = c("youden", "closest_topleft"),
+  positive_label   = 1,
+  negative_label   = 0,
+  engine           = c("Rcpp", "R"),
+  rank_by          = c("auc", "youden", "sensitivity", "specificity", "accuracy"),
+  top_n            = 20,
+  progress         = interactive(),
+  save_results     = FALSE,
+  output_dir       = ".",
+  results_storage  = c("rds", "memory", "none"),
+  results_name     = NULL,
+  results_dir      = NULL,
+  item_count       = NULL
 )
 ```
 
-**Returns:** S3 object of class `"roc_bruteforce_result"` with `$results`
-(full table), `$candidates` (top_n subset), and `$best_model` (first row).
+**Returns:** S3 object of class `"roc_bruteforce_result"` with `$candidates`
+(top_n subset), `$best_model` (first row), `$results_storage`, `$results_file`,
+and `$n_combinations`. By default `$results` is `NULL` (saved to RDS).
 `print()` displays a formatted summary with a warning that performance may be
 optimistic. Use `ncvroc_results()` to filter by clinical constraints.
 
@@ -294,7 +371,8 @@ ncvroc_config(
   positive_label    = 1,
   negative_label    = 0,
   stratified        = TRUE,
-  engine            = c("Rcpp", "R")
+  engine            = c("Rcpp", "R"),
+  item_count        = NULL
 )
 ```
 
@@ -563,6 +641,9 @@ result <- roc_bruteforce(
 result
 result$best_model
 result$candidates
+
+# To retrieve the full candidate table (saved to RDS by default):
+ncvroc_results(result, top_n = NULL)
 ```
 
 Filter with `ncvroc_results()`, just like `ncvroc()` output:

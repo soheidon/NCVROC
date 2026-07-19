@@ -19,7 +19,11 @@ roc_bruteforce(
   top_n = 20,
   progress = interactive(),
   save_results = FALSE,
-  output_dir = "."
+  output_dir = ".",
+  results_storage = c("rds", "memory", "none"),
+  results_name = NULL,
+  results_dir = NULL,
+  item_count = NULL
 )
 
 roc_bf(
@@ -36,7 +40,11 @@ roc_bf(
   top_n = 20,
   progress = interactive(),
   save_results = FALSE,
-  output_dir = "."
+  output_dir = ".",
+  results_storage = c("rds", "memory", "none"),
+  results_name = NULL,
+  results_dir = NULL,
+  item_count = NULL
 )
 }
 \arguments{
@@ -69,6 +77,20 @@ roc_bf(
 \item{save_results}{Logical, write CSV outputs (default FALSE).}
 
 \item{output_dir}{Directory for saved CSVs (default `"."`).}
+
+\item{results_storage}{Where to store the full results table:
+`"rds"` (save to RDS file, default), `"memory"` (keep in RAM), or
+`"none"` (discard).}
+
+\item{results_name}{Optional label prefix for the RDS filename. Analysis
+conditions (item count, k range, rank_by) are always appended.}
+
+\item{results_dir}{Directory for the full results RDS file, or NULL
+(default) to use a temporary directory.}
+
+\item{item_count}{Concise model-size specification: `"==4"` (exactly 4
+items), `"<=4"` (up to 4 items), or `"2:4"` (2 through 4 items).
+Cannot be combined with `min_items` or `max_items`. Default NULL.}
 }
 \value{
 An object of class `"roc_bruteforce_result"`. Use `$results`

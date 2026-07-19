@@ -21,7 +21,8 @@ ncvroc_config(
   positive_label = 1,
   negative_label = 0,
   stratified = TRUE,
-  engine = c("Rcpp", "R")
+  engine = c("Rcpp", "R"),
+  item_count = NULL
 )
 }
 \arguments{
@@ -60,6 +61,10 @@ to auto-set based on `mode`.}
 \item{stratified}{Logical, use stratified CV folds (default TRUE).}
 
 \item{engine}{Computation engine: `"R"` or `"Rcpp"` (default `"Rcpp"`).}
+
+\item{item_count}{Concise model-size specification: `"==4"` (exactly 4
+items), `"<=4"` (up to 4 items), or `"2:4"` (2 through 4 items).
+Cannot be combined with `min_items` or `max_items`. Default NULL.}
 }
 \value{
 A list of class `"ncvroc_config"`.

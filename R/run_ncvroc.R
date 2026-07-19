@@ -45,6 +45,12 @@ run_ncvroc <- function(data,
 
   return <- match.arg(return)
 
+  # Revalidate item_count when config was created with items=NULL
+  if (!is.null(config$item_count) && config$max_items > length(items)) {
+    stop("item_count requests up to ", config$max_items, " items, but only ",
+         length(items), " candidate items are available.", call. = FALSE)
+  }
+
   # If preselect_top_n is NULL in config (items were NULL at config time),
   # auto-compute from the items now provided
   preselect_top_n <- config$preselect_top_n

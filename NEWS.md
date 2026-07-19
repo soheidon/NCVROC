@@ -1,3 +1,53 @@
+# NCVROC 0.10.0
+
+## New features
+
+- Added `item_count` argument to `ncvroc()`, `roc_bruteforce()` (and its
+  alias `roc_bf()`), and `ncvroc_config()` for concise specification of
+  candidate scale size. Three syntaxes: `"==4"` (exactly 4 items), `"<=4"`
+  (up to 4 items), `"2:4"` (2 through 4 items). `min_items` and `max_items`
+  remain supported for backward compatibility.
+- Added `.parse_item_count()` internal parser for item_count string parsing
+  with syntax validation and range checking.
+- Added `.describe_item_count()` helper for human-readable descriptions in
+  print methods. All three print methods (`print.ncvroc_config()`,
+  `print.ncvroc_analysis()`, `print.roc_bruteforce_result()`) now display
+  item_count when set.
+- `run_ncvroc()` now revalidates `config$item_count` against actual items
+  when the config was created with `items = NULL`.
+
+## Breaking changes
+
+- The `item_count` argument is appended as the **last formal argument** in
+  each affected public function. Existing positional calls are unaffected.
+
+# NCVROC 0.9.0
+
+## New features
+
+- Added `results_storage` parameter to `ncvroc()` and `roc_bruteforce()`
+  for controlling where full candidate tables are stored. Three modes:
+  `"rds"` (default: save to RDS file on disk), `"memory"` (keep in RAM,
+  previous behavior), and `"none"` (discard). This prevents large result
+  tables from consuming hundreds of MB of memory indefinitely.
+- Added `results_name` parameter for custom filename prefixes on RDS files.
+- Added `results_dir` parameter for specifying the RDS file directory
+  (defaults to a temporary directory).
+- New internal helpers `.make_results_path()` for unique RDS filename
+  generation and `.read_results_from_storage()` for transparent RDS reading.
+
+## Breaking changes
+
+- `roc_bruteforce_result$results` is now `NULL` by default (was a
+  data.frame). Use `ncvroc_results(result, top_n = NULL)` to retrieve the
+  full table, or pass `results_storage = "memory"` for the old behavior.
+- `ncvroc_analysis$final_exhaustive_ranked` is now `NULL` by default (was a
+  data.frame). Same workarounds apply.
+- `roc_bruteforce_result` gains `results_file`, `results_storage`, and
+  `n_combinations` fields.
+- `ncvroc_analysis` gains `final_exhaustive_file`,
+  `final_results_storage`, and `final_n_combinations` fields.
+
 # NCVROC 0.8.0
 
 ## New features

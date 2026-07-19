@@ -1,4 +1,4 @@
-# NCVROC 0.8.0 リファレンス
+# NCVROC 0.10.0 リファレンス
 
 **N**ested **C**ross-**V**alidation for Combinatorial **ROC**-based Selection of Item-set Scores（項目セット得点の組み合わせROC選択のためのネスト交差検証）
 
@@ -92,15 +92,80 @@ result <- ncvroc(
 
 ---
 
+### 項目数指定
+
+`item_count`引数は`min_items`/`max_items`の代わりに使用できる簡潔な記法です。`min_items`や`max_items`との併用はできません。
+
+| `item_count` | 意味 |
+|---|---|
+| `"==4"` | ちょうど4項目 |
+| `"<=4"` | 最大4項目（1〜4項目） |
+| `"2:4"` | 2〜4項目 |
+
+```r
+# ちょうど4項目の尺度
+result <- ncvroc(
+  data    = analysis_dat,
+  outcome = y,
+  items   = Q1:Q5,
+  item_count = "==4",
+  mode    = "balanced",
+  seed    = 20260705
+)
+
+# 最大4項目の尺度（1〜4項目）
+result <- ncvroc(
+  data    = analysis_dat,
+  outcome = y,
+  items   = Q1:Q5,
+  item_count = "<=4",
+  mode    = "balanced",
+  seed    = 20260705
+)
+
+# 2〜4項目の尺度
+result <- ncvroc(
+  data    = analysis_dat,
+  outcome = y,
+  items   = Q1:Q5,
+  item_count = "2:4",
+  mode    = "balanced",
+  seed    = 20260705
+)
+```
+
+`item_count`は`ncvroc()`、`roc_bruteforce()`（および`roc_bf()`）、`ncvroc_config()`で使用できます。
+
+---
+
+### 結果の保存
+
+`ncvroc()` と `roc_bruteforce()` は `results_storage` パラメータで完全な候補テーブルの保存方法を制御します：
+
+| `results_storage` | 動作 |
+|---|---|
+| `"rds"`（デフォルト） | 完全な候補テーブルをRDSファイルに保存。一時ディレクトリ（`results_dir = NULL`）または指定パス（`results_dir = "path/"`）に出力。`$final_exhaustive_ranked` は `NULL`。 |
+| `"memory"` | 完全な候補テーブルをメモリに保持（v0.8.0以前の動作）。`$final_exhaustive_ranked` に data.frame が格納される。 |
+| `"none"` | 完全な候補テーブルを破棄。`ncvroc_results()` はエラーになる。 |
+
+全データの取得には常に `ncvroc_results()` を使用してください（RDSから透過的に読み込みます）：
+
+```r
+ncvroc_results(result, top_n = NULL)  # 全候補を取得
+```
+
 ### 最終候補の出力
 
-`ncvroc()`はデフォルトで最終全探索を実行し、ランク付けされた全データ候補テーブルを`result$final_exhaustive_ranked`に格納します。
+`ncvroc()`はデフォルトで最終全探索を実行し、ランク付けされた全データ候補テーブルをRDSファイルに保存します。
 
-便宜上、以下も格納されます：
+便宜上、以下がメモリに格納されます：
 
 ```r
 result$final_candidates   # 上位N行（final_top_nで制御）
 result$final_model        # 最良の単一モデル（先頭行）
+result$final_n_combinations  # 評価された組み合わせの総数
+result$final_results_storage # 保存モード（"rds"、"memory"、"none"）
+result$final_exhaustive_file # RDSファイルのパス（"rds"モード時）
 ```
 
 `selection_criterion`はネストCV中にどの候補が選択されるかを制御します。
@@ -180,11 +245,15 @@ ncvroc(
   final_search      = TRUE,
   final_top_n       = 20,
   final_rank_by     = c("auc", "youden", "sensitivity", "specificity", "accuracy"),
+  results_storage   = c("rds", "memory", "none"),
+  results_name      = NULL,
+  results_dir       = NULL,
   save_results      = FALSE,
   output_dir        = ".",
   progress          = TRUE,
   verbose           = TRUE,
-  return            = "full"
+  return            = "full",
+  item_count        = NULL
 )
 ```
 
@@ -239,21 +308,25 @@ roc_bruteforce(
   data,
   outcome,
   items,
-  min_items      = 1,
-  max_items      = 4,
-  cutoff_method  = c("youden", "closest_topleft"),
-  positive_label = 1,
-  negative_label = 0,
-  engine         = c("Rcpp", "R"),
-  rank_by        = c("auc", "youden", "sensitivity", "specificity", "accuracy"),
-  top_n          = 20,
-  progress       = interactive(),
-  save_results   = FALSE,
-  output_dir     = "."
+  min_items        = 1,
+  max_items        = 4,
+  cutoff_method    = c("youden", "closest_topleft"),
+  positive_label   = 1,
+  negative_label   = 0,
+  engine           = c("Rcpp", "R"),
+  rank_by          = c("auc", "youden", "sensitivity", "specificity", "accuracy"),
+  top_n            = 20,
+  progress         = interactive(),
+  save_results     = FALSE,
+  output_dir       = ".",
+  results_storage  = c("rds", "memory", "none"),
+  results_name     = NULL,
+  results_dir      = NULL,
+  item_count       = NULL
 )
 ```
 
-**戻り値:** クラス `"roc_bruteforce_result"` のS3オブジェクト。`$results`（全テーブル）、`$candidates`（上位N件）、`$best_model`（先頭行）を含みます。`print()` はパフォーマンスが楽観的である可能性の警告付きで整形されたサマリーを表示します。臨床的制約での絞り込みには `ncvroc_results()` を使用してください。
+**戻り値:** クラス `"roc_bruteforce_result"` のS3オブジェクト。`$candidates`（上位N件）、`$best_model`（先頭行）、`$results_storage`、`$results_file`、`$n_combinations` を含みます。デフォルトでは `$results` は `NULL` です（RDSに保存されます）。`print()` はパフォーマンスが楽観的である可能性の警告付きで整形されたサマリーを表示します。臨床的制約での絞り込みには `ncvroc_results()` を使用してください。
 
 エイリアス `roc_bf()` は同じ引数を受け取り、同じ結果を返します。
 
@@ -281,7 +354,8 @@ ncvroc_config(
   positive_label    = 1,
   negative_label    = 0,
   stratified        = TRUE,
-  engine            = c("Rcpp", "R")
+  engine            = c("Rcpp", "R"),
+  item_count        = NULL
 )
 ```
 
@@ -546,6 +620,9 @@ result <- roc_bruteforce(
 result
 result$best_model
 result$candidates
+
+# 完全な候補テーブルを取得（デフォルトではRDSに保存）
+ncvroc_results(result, top_n = NULL)
 ```
 
 `ncvroc_results()` で `ncvroc()` の出力と同じように絞り込めます：

@@ -18,6 +18,12 @@ COMMON_CV <- list(
   seed = 42
 )
 
+# Same as COMMON_CV but without max_items — for item_count tests
+COMMON_CV_IC <- list(
+  outer_k = 2, inner_k = 2, outer_repeats = 1, inner_repeats = 1,
+  engine = "R", progress = FALSE, verbose = FALSE, seed = 42
+)
+
 # ---- Item resolution ----
 
 test_that("ncvroc() resolves bare column range", {
@@ -104,10 +110,10 @@ test_that("ncvroc() with final_search = FALSE returns NULL ranked", {
   expect_null(result$final_exhaustive_ranked)
 })
 
-test_that("ncvroc() with final_search = TRUE returns data.frame", {
+test_that("ncvroc() with final_search = TRUE returns data.frame (memory mode)", {
   dat <- make_ncvroc_test_data()
   result <- do.call(ncvroc, c(list(data = dat, outcome = "y", items = c("Q1", "Q2"),
-                                   final_search = TRUE), COMMON_CV))
+                                   final_search = TRUE, results_storage = "memory"), COMMON_CV))
   expect_s3_class(result$final_exhaustive_ranked, "data.frame")
   expect_gt(nrow(result$final_exhaustive_ranked), 0)
 })
@@ -214,7 +220,8 @@ test_that("final_top_n = 1 stores exactly 1 row", {
 test_that("final_top_n = NULL stores all rows", {
   dat <- make_ncvroc_test_data()
   result <- do.call(ncvroc, c(list(data = dat, outcome = "y", items = c("Q1", "Q2"),
-                                   final_top_n = NULL), COMMON_CV_FINAL))
+                                   final_top_n = NULL, results_storage = "memory"),
+                              COMMON_CV_FINAL))
   expect_equal(nrow(result$final_candidates), nrow(result$final_exhaustive_ranked))
 })
 
@@ -236,7 +243,8 @@ test_that("final_search = FALSE gives NULL for all final fields", {
 
 test_that("final_model equals first row of final_exhaustive_ranked", {
   dat <- make_ncvroc_test_data()
-  result <- do.call(ncvroc, c(list(data = dat, outcome = "y", items = c("Q1", "Q2")),
+  result <- do.call(ncvroc, c(list(data = dat, outcome = "y", items = c("Q1", "Q2"),
+                                   results_storage = "memory"),
                               COMMON_CV_FINAL))
   expect_equal(result$final_model$items, result$final_exhaustive_ranked$items[1])
   expect_equal(result$final_model$auc, result$final_exhaustive_ranked$auc[1])
@@ -245,7 +253,8 @@ test_that("final_model equals first row of final_exhaustive_ranked", {
 test_that("final_rank_by = 'auc' works", {
   dat <- make_ncvroc_test_data()
   result <- do.call(ncvroc, c(list(data = dat, outcome = "y", items = c("Q1", "Q2"),
-                                   final_rank_by = "auc"), COMMON_CV_FINAL))
+                                   final_rank_by = "auc", results_storage = "memory"),
+                              COMMON_CV_FINAL))
   expect_equal(result$final_rank_by, "auc")
   expect_s3_class(result$final_exhaustive_ranked, "data.frame")
 })
@@ -253,7 +262,8 @@ test_that("final_rank_by = 'auc' works", {
 test_that("final_rank_by = 'youden' works", {
   dat <- make_ncvroc_test_data()
   result <- do.call(ncvroc, c(list(data = dat, outcome = "y", items = c("Q1", "Q2"),
-                                   final_rank_by = "youden"), COMMON_CV_FINAL))
+                                   final_rank_by = "youden", results_storage = "memory"),
+                              COMMON_CV_FINAL))
   expect_equal(result$final_rank_by, "youden")
   expect_s3_class(result$final_exhaustive_ranked, "data.frame")
 })
@@ -261,7 +271,8 @@ test_that("final_rank_by = 'youden' works", {
 test_that("final_rank_by = 'sensitivity' works", {
   dat <- make_ncvroc_test_data()
   result <- do.call(ncvroc, c(list(data = dat, outcome = "y", items = c("Q1", "Q2"),
-                                   final_rank_by = "sensitivity"), COMMON_CV_FINAL))
+                                   final_rank_by = "sensitivity", results_storage = "memory"),
+                              COMMON_CV_FINAL))
   expect_equal(result$final_rank_by, "sensitivity")
   expect_s3_class(result$final_exhaustive_ranked, "data.frame")
 })
@@ -464,7 +475,7 @@ test_that("missing condition column errors", {
 test_that("missing final_exhaustive_ranked errors clearly", {
   x <- list()
   class(x) <- "ncvroc_analysis"
-  expect_error(ncvroc_results(x), "final_exhaustive_ranked is NULL")
+  expect_error(ncvroc_results(x), "not available")
 })
 
 test_that("invalid rank_by errors via match.arg", {
@@ -490,4 +501,327 @@ test_that("factor item column is handled safely by .prepare_ncvroc_data", {
     outer_k = 2, inner_k = 2, outer_repeats = 1, engine = "R",
     seed = 42, final_search = FALSE)
   expect_s3_class(result, "ncvroc_analysis")
+})
+
+# ---- results_storage ----
+
+COMMON_CV_STORAGE <- c(
+  COMMON_CV,
+  list(final_search = TRUE)
+)
+
+test_that("default results_storage = 'rds' makes final_exhaustive_ranked NULL", {
+  dat <- make_ncvroc_test_data()
+  result <- do.call(ncvroc, c(list(data = dat, outcome = "y", items = c("Q1", "Q2")),
+                              COMMON_CV_STORAGE))
+  expect_null(result$final_exhaustive_ranked)
+  expect_true(!is.null(result$final_exhaustive_file))
+  expect_equal(result$final_results_storage, "rds")
+})
+
+test_that("results_storage = 'memory' keeps final_exhaustive_ranked", {
+  dat <- make_ncvroc_test_data()
+  result <- do.call(ncvroc, c(list(data = dat, outcome = "y", items = c("Q1", "Q2"),
+                                   results_storage = "memory"),
+                              COMMON_CV_STORAGE))
+  expect_s3_class(result$final_exhaustive_ranked, "data.frame")
+  expect_null(result$final_exhaustive_file)
+})
+
+test_that("results_storage = 'none' discards final results", {
+  dat <- make_ncvroc_test_data()
+  result <- do.call(ncvroc, c(list(data = dat, outcome = "y", items = c("Q1", "Q2"),
+                                   results_storage = "none"),
+                              COMMON_CV_STORAGE))
+  expect_null(result$final_exhaustive_ranked)
+  expect_null(result$final_exhaustive_file)
+  expect_equal(result$final_results_storage, "none")
+})
+
+test_that("ncvroc_results() reads from RDS transparently", {
+  dat <- make_ncvroc_test_data()
+  result <- do.call(ncvroc, c(list(data = dat, outcome = "y", items = c("Q1", "Q2")),
+                              COMMON_CV_STORAGE))
+  filtered <- ncvroc_results(result, top_n = 3)
+  expect_s3_class(filtered, "data.frame")
+  expect_lte(nrow(filtered), 3)
+})
+
+test_that("final_n_combinations is correct", {
+  dat <- make_ncvroc_test_data()
+  result <- do.call(ncvroc, c(list(data = dat, outcome = "y", items = c("Q1", "Q2")),
+                              COMMON_CV_STORAGE))
+  expect_gt(result$final_n_combinations, 0)
+})
+
+test_that("final_search = FALSE creates no RDS file", {
+  dat <- make_ncvroc_test_data()
+  result <- do.call(ncvroc, c(list(data = dat, outcome = "y", items = c("Q1", "Q2"),
+                                   final_search = FALSE), COMMON_CV))
+  expect_null(result$final_exhaustive_file)
+  expect_null(result$final_exhaustive_ranked)
+  expect_equal(result$final_n_combinations, 0L)
+})
+
+test_that("ncvroc_results() errors clearly when final_search = FALSE", {
+  dat <- make_ncvroc_test_data()
+  result <- do.call(ncvroc, c(list(data = dat, outcome = "y", items = c("Q1", "Q2"),
+                                   final_search = FALSE), COMMON_CV))
+  expect_error(
+    ncvroc_results(result),
+    "Final exhaustive search was not performed"
+  )
+})
+
+test_that("ncvroc_results() errors when storage = 'none'", {
+  dat <- make_ncvroc_test_data()
+  result <- do.call(ncvroc, c(list(data = dat, outcome = "y", items = c("Q1", "Q2"),
+                                   results_storage = "none"),
+                              COMMON_CV_STORAGE))
+  expect_error(
+    ncvroc_results(result),
+    "not available"
+  )
+})
+
+test_that("print shows storage info for RDS mode", {
+  dat <- make_ncvroc_test_data()
+  result <- do.call(ncvroc, c(list(data = dat, outcome = "y", items = c("Q1", "Q2")),
+                              COMMON_CV_STORAGE))
+  expect_output(print(result), "temporary RDS file")
+})
+
+test_that("print shows 'not stored' for none mode", {
+  dat <- make_ncvroc_test_data()
+  result <- do.call(ncvroc, c(list(data = dat, outcome = "y", items = c("Q1", "Q2"),
+                                   results_storage = "none"),
+                              COMMON_CV_STORAGE))
+  expect_output(print(result), "not stored")
+})
+
+test_that("save_results CSV works with rds storage mode", {
+  dat <- make_ncvroc_test_data()
+  tmp <- file.path(tempdir(), paste0("ncvroc_csv_", sample.int(1e6, 1)))
+  on.exit(unlink(tmp, recursive = TRUE), add = TRUE)
+  result <- do.call(ncvroc, c(list(data = dat, outcome = "y", items = c("Q1", "Q2"),
+                                   save_results = TRUE, output_dir = tmp),
+                              COMMON_CV_STORAGE))
+  expect_true(file.exists(file.path(tmp, "nested_cv_summary.csv")))
+  expect_true(file.exists(file.path(tmp, "final_candidates.csv")))
+})
+
+test_that("save_results CSV works with none storage mode", {
+  dat <- make_ncvroc_test_data()
+  tmp <- file.path(tempdir(), paste0("ncvroc_csv_", sample.int(1e6, 1)))
+  on.exit(unlink(tmp, recursive = TRUE), add = TRUE)
+  result <- do.call(ncvroc, c(list(data = dat, outcome = "y", items = c("Q1", "Q2"),
+                                   results_storage = "none",
+                                   save_results = TRUE, output_dir = tmp),
+                              COMMON_CV_STORAGE))
+  expect_true(file.exists(file.path(tmp, "final_exhaustive_results_ranked.csv")))
+})
+
+# ---- Argument validation ----
+
+test_that("invalid results_storage errors via match.arg", {
+  dat <- make_ncvroc_test_data()
+  expect_error(
+    do.call(ncvroc, c(list(data = dat, outcome = "y", items = c("Q1", "Q2"),
+                           results_storage = "invalid"), COMMON_CV)),
+    "should be one of"
+  )
+})
+
+test_that("empty results_name errors", {
+  dat <- make_ncvroc_test_data()
+  expect_error(
+    do.call(ncvroc, c(list(data = dat, outcome = "y", items = c("Q1", "Q2"),
+                           results_name = ""), COMMON_CV)),
+    "non-empty character string"
+  )
+})
+
+test_that("length-2 results_name errors", {
+  dat <- make_ncvroc_test_data()
+  expect_error(
+    do.call(ncvroc, c(list(data = dat, outcome = "y", items = c("Q1", "Q2"),
+                           results_name = c("a", "b")), COMMON_CV)),
+    "non-empty character string"
+  )
+})
+
+test_that("empty results_dir errors", {
+  dat <- make_ncvroc_test_data()
+  expect_error(
+    do.call(ncvroc, c(list(data = dat, outcome = "y", items = c("Q1", "Q2"),
+                           results_dir = ""), COMMON_CV)),
+    "non-empty path"
+  )
+})
+
+# ---- item_count ----
+
+test_that("item_count '==4' sets min_items = max_items = 4", {
+  dat <- make_ncvroc_test_data()
+  result <- do.call(ncvroc, c(list(data = dat, outcome = "y", items = c("Q1", "Q2", "Q3", "Q4"),
+                                   item_count = "==3", final_search = FALSE), COMMON_CV_IC))
+  expect_equal(result$item_count, "==3")
+  expect_equal(result$config$min_items, 3)
+  expect_equal(result$config$max_items, 3)
+})
+
+test_that("item_count '<=4' sets min_items = 1, max_items = 4", {
+  dat <- make_ncvroc_test_data()
+  result <- do.call(ncvroc, c(list(data = dat, outcome = "y", items = c("Q1", "Q2", "Q3", "Q4"),
+                                   item_count = "<=3", final_search = FALSE), COMMON_CV_IC))
+  expect_equal(result$item_count, "<=3")
+  expect_equal(result$config$min_items, 1)
+  expect_equal(result$config$max_items, 3)
+})
+
+test_that("item_count '2:4' sets min_items = 2, max_items = 4", {
+  dat <- make_ncvroc_test_data()
+  result <- do.call(ncvroc, c(list(data = dat, outcome = "y", items = c("Q1", "Q2", "Q3", "Q4"),
+                                   item_count = "2:3", final_search = FALSE), COMMON_CV_IC))
+  expect_equal(result$item_count, "2:3")
+  expect_equal(result$config$min_items, 2)
+  expect_equal(result$config$max_items, 3)
+})
+
+test_that("item_count with spaces stored as normalized value", {
+  dat <- make_ncvroc_test_data()
+  result <- do.call(ncvroc, c(list(data = dat, outcome = "y", items = c("Q1", "Q2", "Q3", "Q4"),
+                                   item_count = " <= 4 ", final_search = FALSE), COMMON_CV_IC))
+  expect_equal(result$item_count, "<=4")
+})
+
+test_that("item_count '==4' analysis: all n_items are exactly that", {
+  dat <- make_ncvroc_test_data()
+  result <- do.call(ncvroc, c(list(data = dat, outcome = "y", items = c("Q1", "Q2"),
+                                   item_count = "==2", final_search = TRUE,
+                                   results_storage = "memory"), COMMON_CV_IC))
+  ranked <- ncvroc_results(result, top_n = NULL)
+  expect_true(all(ranked$n_items == 2))
+})
+
+test_that("item_count '<=4' analysis: all n_items between 1 and 4", {
+  dat <- make_ncvroc_test_data()
+  result <- do.call(ncvroc, c(list(data = dat, outcome = "y", items = c("Q1", "Q2"),
+                                   item_count = "<=2", final_search = TRUE,
+                                   results_storage = "memory"), COMMON_CV_IC))
+  ranked <- ncvroc_results(result, top_n = NULL)
+  expect_true(all(ranked$n_items >= 1 & ranked$n_items <= 2))
+})
+
+test_that("item_count '2:4' analysis: all n_items between 2 and 4", {
+  dat <- make_ncvroc_test_data()
+  result <- do.call(ncvroc, c(list(data = dat, outcome = "y", items = c("Q1", "Q2"),
+                                   item_count = "1:2", final_search = TRUE,
+                                   results_storage = "memory"), COMMON_CV_IC))
+  ranked <- ncvroc_results(result, top_n = NULL)
+  expect_true(all(ranked$n_items >= 1 & ranked$n_items <= 2))
+})
+
+test_that("item_count + explicit min_items errors", {
+  dat <- make_ncvroc_test_data()
+  expect_error(
+    do.call(ncvroc, c(list(data = dat, outcome = "y", items = c("Q1", "Q2"),
+                           item_count = "==2", min_items = 2), COMMON_CV_IC)),
+    "Do not specify item_count together"
+  )
+})
+
+test_that("item_count + explicit max_items errors", {
+  dat <- make_ncvroc_test_data()
+  expect_error(
+    do.call(ncvroc, c(list(data = dat, outcome = "y", items = c("Q1", "Q2"),
+                           item_count = "==2", max_items = 2), COMMON_CV_IC)),
+    "Do not specify item_count together"
+  )
+})
+
+test_that("item_count '==0' errors", {
+  dat <- make_ncvroc_test_data()
+  expect_error(
+    do.call(ncvroc, c(list(data = dat, outcome = "y", items = c("Q1", "Q2"),
+                           item_count = "==0"), COMMON_CV_IC)),
+    "must select at least one item"
+  )
+})
+
+test_that("item_count reversed range errors", {
+  dat <- make_ncvroc_test_data()
+  expect_error(
+    do.call(ncvroc, c(list(data = dat, outcome = "y", items = c("Q1", "Q2"),
+                           item_count = "4:2"), COMMON_CV_IC)),
+    "lower item count cannot exceed"
+  )
+})
+
+test_that("item_count invalid syntax errors", {
+  dat <- make_ncvroc_test_data()
+  expect_error(
+    do.call(ncvroc, c(list(data = dat, outcome = "y", items = c("Q1", "Q2"),
+                           item_count = "abc"), COMMON_CV_IC)),
+    "Unsupported item_count specification"
+  )
+})
+
+test_that("item_count > candidate items errors", {
+  dat <- make_ncvroc_test_data()  # only 4 items
+  expect_error(
+    do.call(ncvroc, c(list(data = dat, outcome = "y", items = c("Q1", "Q2", "Q3", "Q4"),
+                           item_count = "<=10"), COMMON_CV_IC)),
+    "only.*candidate items are available"
+  )
+})
+
+test_that("item_count with numeric non-string errors", {
+  dat <- make_ncvroc_test_data()
+  expect_error(
+    do.call(ncvroc, c(list(data = dat, outcome = "y", items = c("Q1", "Q2"),
+                           item_count = 4), COMMON_CV_IC)),
+    "must be NULL or a single condition"
+  )
+})
+
+test_that("print.ncvroc_analysis shows item_count", {
+  dat <- make_ncvroc_test_data()
+  result <- do.call(ncvroc, c(list(data = dat, outcome = "y", items = c("Q1", "Q2", "Q3", "Q4"),
+                                   item_count = "==3", final_search = FALSE), COMMON_CV_IC))
+  expect_output(print(result), "exactly 3.*\\(==3\\)")
+})
+
+test_that("print.ncvroc_analysis does not show item_count when NULL", {
+  dat <- make_ncvroc_test_data()
+  result <- do.call(ncvroc, c(list(data = dat, outcome = "y", items = c("Q1", "Q2"),
+                                   final_search = FALSE), COMMON_CV))
+  expect_null(result$item_count)
+  out <- capture.output(print(result))
+  expect_false(any(grepl("Item count:", out)))
+})
+
+# ---- Positional safety ----
+
+test_that("existing positional calls remain compatible", {
+  dat <- make_ncvroc_test_data()
+  expect_no_error(
+    ncvroc(dat, y, Q1:Q3, 1, 3, "quick",
+      outer_k = 2, inner_k = 2, outer_repeats = 1, inner_repeats = 1,
+      engine = "R", progress = FALSE, seed = 42, final_search = FALSE)
+  )
+})
+
+test_that("item_count is the last formal argument in ncvroc()", {
+  old_names <- c("data", "outcome", "items", "min_items", "max_items",
+                 "mode", "outer_k", "inner_k", "outer_repeats",
+                 "inner_repeats", "preselect_top_n", "preselect_by",
+                 "selection_criterion", "cutoff_method",
+                 "positive_label", "negative_label", "stratified",
+                 "engine", "seed", "final_search", "final_top_n",
+                 "final_rank_by", "save_results", "output_dir",
+                 "results_storage", "results_name", "results_dir",
+                 "progress", "verbose", "return")
+  expect_identical(head(names(formals(ncvroc)), length(old_names)), old_names)
+  expect_identical(tail(names(formals(ncvroc)), 1L), "item_count")
 })

@@ -256,3 +256,75 @@ test_that("run_ncvroc() auto-suggests preselect_top_n with items=NULL, mode=bala
 
   expect_s3_class(result, "ncvroc_result")
 })
+
+# ---- item_count ----
+
+test_that("ncvroc_config() with item_count '==4' stores resolved range", {
+  cfg <- ncvroc_config("y", items = letters[1:5], item_count = "==3", mode = "quick")
+  expect_equal(cfg$item_count, "==3")
+  expect_equal(cfg$min_items, 3)
+  expect_equal(cfg$max_items, 3)
+})
+
+test_that("ncvroc_config() with item_count '<=4' stores resolved range", {
+  cfg <- ncvroc_config("y", items = letters[1:5], item_count = "<=3", mode = "quick")
+  expect_equal(cfg$item_count, "<=3")
+  expect_equal(cfg$min_items, 1)
+  expect_equal(cfg$max_items, 3)
+})
+
+test_that("ncvroc_config() item_count + explicit min_items errors", {
+  expect_error(
+    ncvroc_config("y", items = letters[1:5], item_count = "==2", min_items = 2),
+    "Do not specify item_count together"
+  )
+})
+
+test_that("ncvroc_config(items=NULL, item_count='==4') stores deferred values", {
+  cfg <- ncvroc_config("y", items = NULL, item_count = "==4")
+  expect_equal(cfg$item_count, "==4")
+  expect_equal(cfg$min_items, 4)
+  expect_equal(cfg$max_items, 4)
+  expect_true(is.na(cfg$n_items))
+})
+
+test_that("ncvroc_config(items=NULL) + item_count > items at run time errors", {
+  cfg <- ncvroc_config("y", items = NULL, item_count = "==10",
+                        outer_k = 3, inner_k = 2, engine = "R")
+  d <- make_test_data()  # only q1-q3
+  expect_error(
+    run_ncvroc(d, c("q1", "q2", "q3"), cfg, seed = 42, progress = FALSE,
+               verbose = FALSE),
+    "only.*candidate items are available"
+  )
+})
+
+test_that("ncvroc_config(items=NULL) + item_count <= items at run time works", {
+  cfg <- ncvroc_config("y", items = NULL, item_count = "<=2",
+                        outer_k = 3, inner_k = 2, engine = "R")
+  d <- make_test_data()  # q1-q3, choose 3 items is enough for <=2
+  result <- run_ncvroc(d, c("q1", "q2", "q3"), cfg, seed = 42,
+                       progress = FALSE, verbose = FALSE)
+  expect_s3_class(result, "ncvroc_result")
+})
+
+test_that("print.ncvroc_config shows item_count", {
+  cfg <- ncvroc_config("y", items = letters[1:5], item_count = "<=3", mode = "quick")
+  expect_output(print(cfg), "up to 3.*\\(<=3\\)")
+})
+
+test_that("print.ncvroc_config shows item_count with items=NULL", {
+  cfg <- ncvroc_config("y", items = NULL, item_count = "==4")
+  expect_output(print(cfg), "exactly 4.*\\(==4\\)")
+})
+
+test_that("item_count is the last formal argument in ncvroc_config()", {
+  old_names <- c("outcome", "items", "min_items", "max_items", "mode",
+                 "outer_k", "inner_k", "outer_repeats", "inner_repeats",
+                 "preselect_top_n", "preselect_by",
+                 "selection_criterion", "cutoff_method",
+                 "positive_label", "negative_label",
+                 "stratified", "engine")
+  expect_identical(head(names(formals(ncvroc_config)), length(old_names)), old_names)
+  expect_identical(tail(names(formals(ncvroc_config)), 1L), "item_count")
+})

@@ -28,9 +28,9 @@ test_that("roc_bf() returns same class", {
 test_that("roc_bf() and roc_bruteforce() produce identical results", {
   d <- make_bf_data()
   res1 <- roc_bruteforce(d, "y", c("Q1", "Q2", "Q3"), max_items = 2,
-                          engine = "R", progress = FALSE)
+                          engine = "R", progress = FALSE, results_storage = "memory")
   res2 <- roc_bf(d, "y", c("Q1", "Q2", "Q3"), max_items = 2,
-                  engine = "R", progress = FALSE)
+                  engine = "R", progress = FALSE, results_storage = "memory")
   expect_equal(res1$results, res2$results)
   expect_equal(res1$best_model, res2$best_model)
   expect_equal(res1$candidates, res2$candidates)
@@ -106,9 +106,9 @@ test_that("roc_bruteforce() works with engine = 'Rcpp'", {
 test_that("R and Rcpp engines produce equivalent results", {
   d <- make_bf_data()
   res_r   <- roc_bruteforce(d, "y", c("Q1", "Q2", "Q3"), max_items = 2,
-                             engine = "R", progress = FALSE)
+                             engine = "R", progress = FALSE, results_storage = "memory")
   res_rcpp <- roc_bruteforce(d, "y", c("Q1", "Q2", "Q3"), max_items = 2,
-                              engine = "Rcpp", progress = FALSE)
+                              engine = "Rcpp", progress = FALSE, results_storage = "memory")
   expect_equal(res_r$results$auc, res_rcpp$results$auc, tolerance = 1e-10)
   expect_equal(res_r$results$sensitivity, res_rcpp$results$sensitivity, tolerance = 1e-10)
   expect_equal(res_r$results$specificity, res_rcpp$results$specificity, tolerance = 1e-10)
@@ -119,14 +119,16 @@ test_that("R and Rcpp engines produce equivalent results", {
 test_that("roc_bruteforce() sorts by auc correctly", {
   d <- make_bf_data()
   res <- roc_bruteforce(d, "y", c("Q1", "Q2", "Q3"), max_items = 2,
-                         rank_by = "auc", engine = "R", progress = FALSE)
+                         rank_by = "auc", engine = "R", progress = FALSE,
+                         results_storage = "memory")
   expect_equal(res$results$auc, sort(res$results$auc, decreasing = TRUE))
 })
 
 test_that("roc_bruteforce() sorts by youden correctly", {
   d <- make_bf_data()
   res <- roc_bruteforce(d, "y", c("Q1", "Q2", "Q3"), max_items = 2,
-                         rank_by = "youden", engine = "R", progress = FALSE)
+                         rank_by = "youden", engine = "R", progress = FALSE,
+                         results_storage = "memory")
   expect_equal(res$results$youden, sort(res$results$youden, decreasing = TRUE))
 })
 
@@ -142,7 +144,8 @@ test_that("top_n = 1 returns one candidate", {
 test_that("top_n = NULL retains all rows", {
   d <- make_bf_data()
   res <- roc_bruteforce(d, "y", c("Q1", "Q2", "Q3"), max_items = 2,
-                         top_n = NULL, engine = "R", progress = FALSE)
+                         top_n = NULL, engine = "R", progress = FALSE,
+                         results_storage = "memory")
   expect_equal(nrow(res$candidates), nrow(res$results))
 })
 
@@ -222,16 +225,25 @@ test_that("Missing item rows are removed", {
 test_that("best_model is first row of results", {
   d <- make_bf_data()
   res <- roc_bruteforce(d, "y", c("Q1", "Q2", "Q3"), max_items = 2,
-                         engine = "R", progress = FALSE)
+                         engine = "R", progress = FALSE, results_storage = "memory")
   expect_equal(res$best_model$items, res$results$items[1])
   expect_equal(res$best_model$auc, res$results$auc[1])
 })
 
-test_that("n_combinations matches nrow(results)", {
+test_that("n_combinations matches nrow(results) with memory storage", {
+  d <- make_bf_data()
+  res <- roc_bruteforce(d, "y", c("Q1", "Q2", "Q3"), max_items = 2,
+                         engine = "R", progress = FALSE, results_storage = "memory")
+  expect_equal(res$n_combinations, nrow(res$results))
+})
+
+test_that("n_combinations is correct with RDS storage (results is NULL)", {
   d <- make_bf_data()
   res <- roc_bruteforce(d, "y", c("Q1", "Q2", "Q3"), max_items = 2,
                          engine = "R", progress = FALSE)
-  expect_equal(res$n_combinations, nrow(res$results))
+  expect_null(res$results)
+  expect_gt(res$n_combinations, 0)
+  expect_true(!is.null(res$results_file))
 })
 
 # ---- Print method ----
@@ -314,4 +326,336 @@ test_that("non-numeric character values throw error", {
                     engine = "R", progress = FALSE),
     "non-numeric"
   )
+})
+
+# ---- results_storage ----
+
+test_that("default results_storage = 'rds' sets results to NULL", {
+  d <- make_bf_data()
+  res <- roc_bruteforce(d, "y", c("Q1", "Q2", "Q3"), max_items = 2,
+                         engine = "R", progress = FALSE)
+  expect_null(res$results)
+  expect_true(!is.null(res$results_file))
+  expect_equal(res$results_storage, "rds")
+})
+
+test_that("results_storage = 'memory' keeps results in-memory", {
+  d <- make_bf_data()
+  res <- roc_bruteforce(d, "y", c("Q1", "Q2", "Q3"), max_items = 2,
+                         engine = "R", progress = FALSE, results_storage = "memory")
+  expect_s3_class(res$results, "data.frame")
+  expect_null(res$results_file)
+  expect_gt(nrow(res$results), 0)
+})
+
+test_that("results_storage = 'none' discards results", {
+  d <- make_bf_data()
+  res <- roc_bruteforce(d, "y", c("Q1", "Q2", "Q3"), max_items = 2,
+                         engine = "R", progress = FALSE, results_storage = "none")
+  expect_null(res$results)
+  expect_null(res$results_file)
+  expect_equal(res$results_storage, "none")
+})
+
+test_that("results_storage = 'none' causes ncvroc_results() to error", {
+  d <- make_bf_data()
+  res <- roc_bruteforce(d, "y", c("Q1", "Q2", "Q3"), max_items = 2,
+                         engine = "R", progress = FALSE, results_storage = "none")
+  expect_error(
+    ncvroc_results(res),
+    "not available"
+  )
+})
+
+test_that("ncvroc_results() reads from RDS transparently", {
+  d <- make_bf_data()
+  res <- roc_bruteforce(d, "y", c("Q1", "Q2", "Q3"), max_items = 2,
+                         engine = "R", progress = FALSE,
+                         results_storage = "rds")
+  filtered <- ncvroc_results(res, sensitivity = ">= 0.50",
+                              rank_by = "auc", top_n = 3)
+  expect_s3_class(filtered, "data.frame")
+  expect_true(all(filtered$sensitivity >= 0.50))
+})
+
+test_that("results_dir saves RDS to specified path", {
+  d <- make_bf_data()
+  tmp <- file.path(tempdir(), paste0("ncvroc_bf_storage_", sample.int(1e6, 1)))
+  on.exit(unlink(tmp, recursive = TRUE), add = TRUE)
+  res <- roc_bruteforce(d, "y", c("Q1", "Q2", "Q3"), max_items = 2,
+                         engine = "R", progress = FALSE,
+                         results_dir = tmp)
+  expect_true(dir.exists(tmp))
+  expect_true(file.exists(res$results_file))
+  expect_equal(normalizePath(dirname(res$results_file), winslash = "/", mustWork = FALSE),
+               normalizePath(tmp, winslash = "/", mustWork = FALSE))
+})
+
+test_that("results_name appears as prefix in RDS filename", {
+  d <- make_bf_data()
+  res <- roc_bruteforce(d, "y", c("Q1", "Q2", "Q3"), max_items = 2,
+                         engine = "R", progress = FALSE,
+                         results_name = "my_study")
+  fname <- basename(res$results_file)
+  expect_match(fname, "^my_study_")
+  expect_match(fname, "_p3_k1-2_auc_")
+})
+
+test_that("RDS file contains ncvroc_metadata attribute", {
+  d <- make_bf_data()
+  res <- roc_bruteforce(d, "y", c("Q1", "Q2", "Q3"), max_items = 2,
+                         engine = "R", progress = FALSE)
+  full <- readRDS(res$results_file)
+  meta <- attr(full, "ncvroc_metadata")
+  expect_type(meta, "list")
+  expect_equal(meta$function_name, "roc_bruteforce")
+  expect_equal(meta$outcome, "y")
+  expect_equal(meta$items, c("Q1", "Q2", "Q3"))
+  expect_equal(meta$rank_by, "auc")
+})
+
+test_that("RDS roundtrip is identical to memory mode", {
+  d <- make_bf_data()
+  res_mem <- roc_bruteforce(d, "y", c("Q1", "Q2", "Q3"), max_items = 2,
+                             engine = "R", progress = FALSE,
+                             results_storage = "memory")
+  res_rds <- roc_bruteforce(d, "y", c("Q1", "Q2", "Q3"), max_items = 2,
+                             engine = "R", progress = FALSE,
+                             results_storage = "rds")
+  rds_data <- readRDS(res_rds$results_file)
+  expect_equal(rds_data, res_mem$results)
+})
+
+test_that("deleted RDS file causes ncvroc_results() to error", {
+  d <- make_bf_data()
+  res <- roc_bruteforce(d, "y", c("Q1", "Q2", "Q3"), max_items = 2,
+                         engine = "R", progress = FALSE)
+  unlink(res$results_file)
+  expect_error(
+    ncvroc_results(res),
+    "no longer exists"
+  )
+})
+
+test_that("print survives missing RDS file", {
+  d <- make_bf_data()
+  res <- roc_bruteforce(d, "y", c("Q1", "Q2", "Q3"), max_items = 2,
+                         engine = "R", progress = FALSE)
+  unlink(res$results_file)
+  expect_output(
+    print(res),
+    "stored RDS file is missing"
+  )
+})
+
+test_that("seed is not consumed by filename generation", {
+  d <- make_bf_data()
+  set.seed(42)
+  state_before <- .Random.seed
+  roc_bruteforce(d, "y", c("Q1", "Q2", "Q3"), max_items = 2,
+                  engine = "R", progress = FALSE)
+  state_after <- .Random.seed
+  expect_equal(state_after, state_before)
+})
+
+test_that("tempdir RDS announces temporary status in print", {
+  d <- make_bf_data()
+  res <- roc_bruteforce(d, "y", c("Q1", "Q2", "Q3"), max_items = 2,
+                         engine = "R", progress = FALSE)
+  expect_output(
+    print(res),
+    "temporary RDS file"
+  )
+})
+
+test_that("'none' storage shows 'not stored' in print", {
+  d <- make_bf_data()
+  res <- roc_bruteforce(d, "y", c("Q1", "Q2", "Q3"), max_items = 2,
+                         engine = "R", progress = FALSE,
+                         results_storage = "none")
+  expect_output(
+    print(res),
+    "not stored"
+  )
+})
+
+test_that("save_results CSV still works with rds storage", {
+  d <- make_bf_data()
+  tmp <- file.path(tempdir(), paste0("ncvroc_bf_csv_", sample.int(1e6, 1)))
+  on.exit(unlink(tmp, recursive = TRUE), add = TRUE)
+  res <- roc_bruteforce(d, "y", c("Q1", "Q2", "Q3"), max_items = 2,
+                         engine = "R", progress = FALSE,
+                         results_storage = "rds",
+                         save_results = TRUE, output_dir = tmp)
+  expect_true(file.exists(file.path(tmp, "roc_bruteforce_results.csv")))
+  expect_true(file.exists(file.path(tmp, "roc_bruteforce_candidates.csv")))
+  expect_true(file.exists(file.path(tmp, "roc_bruteforce_best_model.csv")))
+})
+
+test_that("save_results CSV still works with none storage", {
+  d <- make_bf_data()
+  tmp <- file.path(tempdir(), paste0("ncvroc_bf_csv_", sample.int(1e6, 1)))
+  on.exit(unlink(tmp, recursive = TRUE), add = TRUE)
+  res <- roc_bruteforce(d, "y", c("Q1", "Q2", "Q3"), max_items = 2,
+                         engine = "R", progress = FALSE,
+                         results_storage = "none",
+                         save_results = TRUE, output_dir = tmp)
+  expect_true(file.exists(file.path(tmp, "roc_bruteforce_results.csv")))
+})
+
+# ---- Argument validation ----
+
+test_that("invalid results_storage errors", {
+  d <- make_bf_data()
+  expect_error(
+    roc_bruteforce(d, "y", c("Q1", "Q2", "Q3"), max_items = 2,
+                    engine = "R", progress = FALSE, results_storage = "invalid"),
+    "should be one of"
+  )
+})
+
+test_that("empty results_name errors", {
+  d <- make_bf_data()
+  expect_error(
+    roc_bruteforce(d, "y", c("Q1", "Q2", "Q3"), max_items = 2,
+                    engine = "R", progress = FALSE, results_name = ""),
+    "non-empty character string"
+  )
+})
+
+test_that("length-2 results_name errors", {
+  d <- make_bf_data()
+  expect_error(
+    roc_bruteforce(d, "y", c("Q1", "Q2", "Q3"), max_items = 2,
+                    engine = "R", progress = FALSE, results_name = c("a", "b")),
+    "non-empty character string"
+  )
+})
+
+test_that("empty results_dir errors", {
+  d <- make_bf_data()
+  expect_error(
+    roc_bruteforce(d, "y", c("Q1", "Q2", "Q3"), max_items = 2,
+                    engine = "R", progress = FALSE, results_dir = ""),
+    "non-empty path"
+  )
+})
+
+# ---- item_count ----
+
+test_that("item_count '==3' limits combinations in roc_bruteforce()", {
+  d <- make_bf_data()
+  res <- roc_bruteforce(d, "y", c("Q1", "Q2", "Q3"), item_count = "==2",
+                         engine = "R", progress = FALSE, results_storage = "memory")
+  expect_equal(res$item_count, "==2")
+  expect_equal(res$min_items, 2)
+  expect_equal(res$max_items, 2)
+  ranked <- ncvroc_results(res, top_n = NULL)
+  expect_true(all(ranked$n_items == 2))
+})
+
+test_that("item_count '<=3' in roc_bruteforce()", {
+  d <- make_bf_data()
+  res <- roc_bruteforce(d, "y", c("Q1", "Q2", "Q3"), item_count = "<=2",
+                         engine = "R", progress = FALSE, results_storage = "memory")
+  expect_equal(res$item_count, "<=2")
+  expect_equal(res$min_items, 1)
+  expect_equal(res$max_items, 2)
+})
+
+test_that("item_count '2:3' in roc_bruteforce()", {
+  d <- make_bf_data()
+  res <- roc_bruteforce(d, "y", c("Q1", "Q2", "Q3"), item_count = "1:2",
+                         engine = "R", progress = FALSE, results_storage = "memory")
+  expect_equal(res$item_count, "1:2")
+  expect_equal(res$min_items, 1)
+  expect_equal(res$max_items, 2)
+})
+
+test_that("item_count works with roc_bf() NSE", {
+  d <- make_bf_data()
+  res <- roc_bf(d, y, Q1:Q3, item_count = "==2",
+                engine = "R", progress = FALSE)
+  expect_equal(res$item_count, "==2")
+  expect_equal(res$min_items, 2)
+  expect_equal(res$max_items, 2)
+})
+
+test_that("item_count + explicit min_items via roc_bf() errors", {
+  d <- make_bf_data()
+  expect_error(
+    roc_bf(d, "y", c("Q1", "Q2", "Q3"), item_count = "==2", min_items = 2,
+           engine = "R", progress = FALSE),
+    "Do not specify item_count together"
+  )
+})
+
+test_that("item_count + explicit max_items via roc_bruteforce() errors", {
+  d <- make_bf_data()
+  expect_error(
+    roc_bruteforce(d, "y", c("Q1", "Q2", "Q3"), item_count = "<=2", max_items = 3,
+                    engine = "R", progress = FALSE),
+    "Do not specify item_count together"
+  )
+})
+
+test_that("R and Rcpp engines equivalent with item_count", {
+  d <- make_bf_data()
+  res_r <- roc_bruteforce(d, "y", c("Q1", "Q2", "Q3"), item_count = "==2",
+                           engine = "R", progress = FALSE, results_storage = "memory")
+  res_rcpp <- roc_bruteforce(d, "y", c("Q1", "Q2", "Q3"), item_count = "==2",
+                              engine = "Rcpp", progress = FALSE, results_storage = "memory")
+  expect_equal(res_r$results$auc, res_rcpp$results$auc)
+  expect_equal(res_r$n_combinations, res_rcpp$n_combinations)
+})
+
+test_that("item_count reflects in RDS filename range", {
+  d <- make_bf_data()
+  res <- roc_bruteforce(d, "y", c("Q1", "Q2", "Q3"), item_count = "==2",
+                         engine = "R", progress = FALSE)
+  expect_match(res$results_file, "_k2-2_")
+  expect_equal(res$item_count, "==2")
+})
+
+test_that("item_count > candidate items errors in roc_bruteforce()", {
+  d <- make_bf_data()
+  expect_error(
+    roc_bruteforce(d, "y", c("Q1", "Q2", "Q3"), item_count = "<=10",
+                    engine = "R", progress = FALSE),
+    "only.*candidate items are available"
+  )
+})
+
+test_that("print.roc_bruteforce_result shows item_count", {
+  d <- make_bf_data()
+  res <- roc_bruteforce(d, "y", c("Q1", "Q2", "Q3"), item_count = "<=2",
+                         engine = "R", progress = FALSE)
+  expect_output(print(res), "up to 2.*\\(<=2\\)")
+})
+
+test_that("item_count is the last formal argument in roc_bruteforce()", {
+  old_names <- c("data", "outcome", "items", "min_items", "max_items",
+                 "cutoff_method", "positive_label", "negative_label",
+                 "engine", "rank_by", "top_n", "progress",
+                 "save_results", "output_dir",
+                 "results_storage", "results_name", "results_dir")
+  expect_identical(head(names(formals(roc_bruteforce)), length(old_names)), old_names)
+  expect_identical(tail(names(formals(roc_bruteforce)), 1L), "item_count")
+})
+
+test_that("item_count is the last formal argument in roc_bf()", {
+  old_names <- c("data", "outcome", "items", "min_items", "max_items",
+                 "cutoff_method", "positive_label", "negative_label",
+                 "engine", "rank_by", "top_n", "progress",
+                 "save_results", "output_dir",
+                 "results_storage", "results_name", "results_dir")
+  expect_identical(head(names(formals(roc_bf)), length(old_names)), old_names)
+  expect_identical(tail(names(formals(roc_bf)), 1L), "item_count")
+})
+
+test_that("roc_bf() with item_count and bare column NSE no missing() error", {
+  d <- make_bf_data()
+  res <- roc_bf(d, y, Q1:Q3, item_count = "<=2",
+                engine = "R", progress = FALSE)
+  expect_equal(res$max_items, 2)
 })

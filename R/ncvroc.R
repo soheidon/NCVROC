@@ -95,6 +95,141 @@
   names(selected)
 }
 
+# ---- item_count parser ----
+
+#' Parse an item_count specification string
+#'
+#' Parses a concise string like `"==4"`, `"<=4"`, or `"2:4"` into resolved
+#' `min_items` and `max_items` values.
+#'
+#' @param item_count A single character string, or NULL.
+#' @param n_available Integer count of available candidate items, or NULL to
+#'   defer validation (used by `ncvroc_config()` when `items = NULL`).
+#' @return A list with `min_items`, `max_items`, and `specification` (the
+#'   normalized value), or NULL if `item_count` is NULL.
+#' @keywords internal
+.parse_item_count <- function(item_count, n_available = NULL) {
+  if (is.null(item_count)) return(NULL)
+
+  if (length(item_count) != 1L || !is.character(item_count) ||
+      is.na(item_count) || !nzchar(trimws(item_count))) {
+    stop("item_count must be NULL or a single condition such as ",
+         "'==4', '<=4', or '2:4'.", call. = FALSE)
+  }
+
+  value <- gsub("\\s+", "", item_count)
+
+  if (grepl("^==[0-9]+$", value)) {
+    n <- as.integer(sub("^==", "", value))
+    min_items <- n; max_items <- n
+  } else if (grepl("^<=[0-9]+$", value)) {
+    n <- as.integer(sub("^<=", "", value))
+    min_items <- 1L; max_items <- n
+  } else if (grepl("^[0-9]+:[0-9]+$", value)) {
+    parts <- as.integer(strsplit(value, ":", fixed = TRUE)[[1L]])
+    min_items <- parts[[1L]]; max_items <- parts[[2L]]
+  } else {
+    stop("Unsupported item_count specification: '", item_count,
+         "'. Use formats such as '==4', '<=4', or '2:4'.", call. = FALSE)
+  }
+
+  if (min_items < 1L)
+    stop("item_count must select at least one item.", call. = FALSE)
+  if (min_items > max_items)
+    stop("The lower item count cannot exceed the upper item count.", call. = FALSE)
+  if (!is.null(n_available) && max_items > n_available)
+    stop("item_count requests up to ", max_items, " items, but only ",
+         n_available, " candidate items are available.", call. = FALSE)
+
+  list(min_items = min_items, max_items = max_items, specification = value)
+}
+
+#' Describe an item_count specification in plain language
+#'
+#' Converts a normalized specification string (e.g. `"==4"`) into a
+#' human-readable description for print methods.
+#'
+#' @param specification A normalized item_count specification string, or NULL.
+#' @return A character string like `"exactly 4"`, `"up to 4"`, or `"2 to 4"`,
+#'   or NULL if specification is NULL.
+#' @keywords internal
+.describe_item_count <- function(specification) {
+  if (is.null(specification)) return(NULL)
+  if (grepl("^==", specification))
+    return(paste0("exactly ", sub("^==", "", specification)))
+  if (grepl("^<=", specification))
+    return(paste0("up to ", sub("^<=", "", specification)))
+  if (grepl("^[0-9]+:[0-9]+$", specification))
+    return(gsub(":", " to ", specification, fixed = TRUE))
+  specification
+}
+
+# ---- Results storage helpers ----
+
+#' Generate a unique RDS file path for storing full candidate results
+#'
+#' Creates a timestamped, uniquely-named RDS file path. Uses `tempfile()` for
+#' uniqueness to avoid consuming `.Random.seed`.
+#'
+#' @param results_dir Directory for the RDS file, or NULL for tempdir/NCVROC.
+#' @param prefix Function name prefix (e.g. "roc_bruteforce").
+#' @param outcome Outcome column name.
+#' @param n_items Number of candidate items.
+#' @param min_items Minimum items per combination.
+#' @param max_items Maximum items per combination.
+#' @param rank_by Ranking metric.
+#' @param results_name Optional label prefix for the filename.
+#' @return A unique file path (character string).
+#' @keywords internal
+.make_results_path <- function(results_dir, prefix, outcome, n_items,
+                                min_items, max_items, rank_by,
+                                results_name = NULL) {
+  if (is.null(results_dir)) {
+    results_dir <- file.path(tempdir(), "NCVROC")
+  }
+  dir.create(results_dir, recursive = TRUE, showWarnings = FALSE)
+  if (!dir.exists(results_dir)) {
+    stop("Could not create results_dir: ", results_dir, call. = FALSE)
+  }
+
+  if (is.null(results_name)) {
+    base <- paste0(prefix, "_", outcome)
+  } else {
+    base <- results_name
+  }
+  base <- paste0(base, "_p", n_items, "_k", min_items, "-", max_items, "_", rank_by)
+  base <- gsub("[^A-Za-z0-9_-]+", "_", base)
+
+  timestamp <- format(Sys.time(), "%Y%m%d_%H%M%S")
+  unique_stub <- basename(tempfile(pattern = ""))
+  unique_stub <- gsub("[^A-Za-z0-9]+", "", unique_stub)
+
+  file.path(results_dir, paste0(base, "_", timestamp, "_", unique_stub, ".rds"))
+}
+
+#' Read full candidate results from memory or an RDS file
+#'
+#' Returns the full candidate table, reading from an RDS file if necessary.
+#' Errors clearly if results are not available (e.g. `results_storage =
+#' "none"`).
+#'
+#' @param dat In-memory data.frame or NULL.
+#' @param file Path to RDS file or NULL.
+#' @param context Label for error messages (e.g. "results").
+#' @return A data.frame of candidate results.
+#' @keywords internal
+.read_results_from_storage <- function(dat, file, context = "results") {
+  if (!is.null(dat)) return(dat)
+  if (!is.null(file)) {
+    if (!file.exists(file)) {
+      stop("The stored ", context, " file no longer exists: ", file, call. = FALSE)
+    }
+    return(readRDS(file))
+  }
+  stop("Full ", context, " are not available. Re-run the analysis with ",
+       'results_storage = "memory" or "rds".', call. = FALSE)
+}
+
 # ---- Main function ----
 
 #' Run a complete NCVROC analysis
@@ -134,9 +269,19 @@
 #'   `"auc"`, `"youden"`, `"sensitivity"`, `"specificity"`, or `"accuracy"`.
 #' @param save_results Logical, write CSV outputs (default FALSE).
 #' @param output_dir Directory for saved CSVs (default `"."`).
+#' @param results_storage Where to store the full final exhaustive results:
+#'   `"rds"` (save to RDS file, default), `"memory"` (keep in RAM), or
+#'   `"none"` (discard). Only applies when `final_search = TRUE`.
+#' @param results_name Optional label prefix for the RDS filename. Analysis
+#'   conditions (item count, k range, rank_by) are always appended.
+#' @param results_dir Directory for the full results RDS file, or NULL
+#'   (default) to use a temporary directory.
 #' @param progress Logical, show progress bars (default TRUE).
 #' @param verbose Logical, print diagnostic messages (default TRUE).
 #' @param return Return mode: `"full"` or `"summary"` (default `"full"`).
+#' @param item_count Concise model-size specification: `"==4"` (exactly 4
+#'   items), `"<=4"` (up to 4 items), or `"2:4"` (2 through 4 items).
+#'   Cannot be combined with `min_items` or `max_items`. Default NULL.
 #'
 #' @return An object of class `"ncvroc_analysis"`.
 #' @export
@@ -179,9 +324,13 @@ ncvroc <- function(data,
                    final_rank_by = c("auc", "youden", "sensitivity", "specificity", "accuracy"),
                    save_results = FALSE,
                    output_dir = ".",
+                   results_storage = c("rds", "memory", "none"),
+                   results_name    = NULL,
+                   results_dir     = NULL,
                    progress = TRUE,
                    verbose = TRUE,
-                   return = "full") {
+                   return = "full",
+                   item_count = NULL) {
 
   # ---- 1. Capture & resolve ----
   caller_env   <- parent.frame()
@@ -190,6 +339,40 @@ ncvroc <- function(data,
   outcome_name <- .resolve_outcome(outcome_expr, caller_env)
   item_names   <- .resolve_items(data, items_expr, caller_env)
   final_rank_by <- match.arg(final_rank_by)
+  results_storage <- match.arg(results_storage)
+
+  if (!is.null(results_name) &&
+      (length(results_name) != 1L || !is.character(results_name) ||
+       is.na(results_name) || !nzchar(trimws(results_name)))) {
+    stop("results_name must be NULL or a single non-empty character string.",
+         call. = FALSE)
+  }
+
+  if (!is.null(results_dir) &&
+      (length(results_dir) != 1L || !is.character(results_dir) ||
+       is.na(results_dir) || !nzchar(trimws(results_dir)))) {
+    stop("results_dir must be NULL or a single non-empty path.",
+         call. = FALSE)
+  }
+
+  # ---- 1b. item_count validation and resolution ----
+  min_items_missing <- missing(min_items)
+  max_items_missing <- missing(max_items)
+
+  if (!is.null(item_count) &&
+      (!min_items_missing || !max_items_missing)) {
+    stop("Do not specify item_count together with min_items or max_items.",
+         call. = FALSE)
+  }
+
+  resolved_item_count <- NULL
+
+  if (!is.null(item_count)) {
+    parsed <- .parse_item_count(item_count, n_available = length(item_names))
+    min_items <- parsed$min_items
+    max_items <- parsed$max_items
+    resolved_item_count <- parsed$specification
+  }
 
   # ---- 2. Prepare analysis data ----
   n_original <- nrow(data)
@@ -264,7 +447,7 @@ ncvroc <- function(data,
     final_candidates <- NULL
   }
 
-  # ---- 6. Optional save ----
+  # ---- 6. Optional save (CSV export, unchanged from v0.8.0) ----
   if (save_results) {
     dir.create(output_dir, recursive = TRUE, showWarnings = FALSE)
 
@@ -311,7 +494,60 @@ ncvroc <- function(data,
     }
   }
 
-  # ---- 7. Return ----
+  # ---- 7. Final results storage (RDS / memory / none) ----
+  stored_final_results <- NULL
+  final_exhaustive_file <- NULL
+  final_n_combinations <- 0L
+
+  if (isTRUE(final_search)) {
+    final_n_combinations <- nrow(final_exhaustive_ranked)
+
+    metadata <- list(
+      function_name   = "ncvroc",
+      outcome         = outcome_name,
+      items           = item_names,
+      n_items         = length(item_names),
+      min_items       = min_items,
+      max_items       = max_items,
+      item_count      = resolved_item_count,
+      rank_by         = final_rank_by,
+      cutoff_method   = cutoff_method,
+      positive_label  = positive_label,
+      negative_label  = negative_label,
+      engine          = engine,
+      created_at      = Sys.time(),
+      package_version = as.character(utils::packageVersion("NCVROC"))
+    )
+
+    if (results_storage == "rds") {
+      attr(final_exhaustive_ranked, "ncvroc_metadata") <- metadata
+      final_exhaustive_file <- .make_results_path(
+        results_dir  = results_dir,
+        prefix       = "ncvroc_final",
+        outcome      = outcome_name,
+        n_items      = length(item_names),
+        min_items    = min_items,
+        max_items    = max_items,
+        rank_by      = final_rank_by,
+        results_name = results_name
+      )
+      saveRDS(final_exhaustive_ranked, final_exhaustive_file)
+      stored_final_results <- NULL
+    } else if (results_storage == "memory") {
+      attr(final_exhaustive_ranked, "ncvroc_metadata") <- metadata
+      stored_final_results <- final_exhaustive_ranked
+      final_exhaustive_file <- NULL
+    } else {
+      stored_final_results <- NULL
+      final_exhaustive_file <- NULL
+    }
+
+    if (results_storage != "memory") {
+      rm(final_exhaustive_ranked)
+    }
+  }
+
+  # ---- 8. Return ----
   result <- list(
     config                    = cfg,
     data                      = analysis_dat,
@@ -323,11 +559,16 @@ ncvroc <- function(data,
     nested_cv_summary         = nested_result$summary,
     selected_model_frequency  = nested_result$selected_model_frequency,
     outer_predictions         = nested_result$outer_predictions,
-    final_exhaustive_ranked   = final_exhaustive_ranked,
+    final_search              = final_search,
+    final_exhaustive_ranked   = stored_final_results,
+    final_exhaustive_file     = final_exhaustive_file,
+    final_results_storage     = results_storage,
+    final_n_combinations      = final_n_combinations,
     final_candidates          = final_candidates,
     final_model               = final_model,
     final_top_n               = final_top_n,
-    final_rank_by             = final_rank_by
+    final_rank_by             = final_rank_by,
+    item_count                = resolved_item_count
   )
   class(result) <- "ncvroc_analysis"
   result
@@ -355,6 +596,10 @@ print.ncvroc_analysis <- function(x, ...) {
   cat("Outcome:              ", cfg$outcome, "\n", sep = "")
   cat("Items:                ", cfg$n_items, "\n", sep = "")
   cat("Candidate item sizes:  ", cfg$min_items, " to ", cfg$max_items, "\n", sep = "")
+  if (!is.null(x$item_count)) {
+    cat("Item count:            ", .describe_item_count(x$item_count),
+        " (", x$item_count, ")\n", sep = "")
+  }
   cat("Total combinations:   ", format(cfg$total_combinations, big.mark = ",", scientific = FALSE), "\n", sep = "")
   cat("Mode:                 ", cfg$mode, "\n", sep = "")
 
@@ -384,12 +629,31 @@ print.ncvroc_analysis <- function(x, ...) {
     cat("\n")
   }
 
-  cat("\nFinal exhaustive search: ", if (is.null(x$final_exhaustive_ranked)) "no" else "yes", "\n", sep = "")
+  cat("\nFinal exhaustive search: ", if (!is.null(x$final_n_combinations) && x$final_n_combinations > 0) "yes" else "no", "\n", sep = "")
 
-  if (!is.null(x$final_exhaustive_ranked)) {
-    cat("Final candidate ranking: ", x$final_rank_by, "\n", sep = "")
+  if (!is.null(x$final_n_combinations) && x$final_n_combinations > 0) {
+    cat("Final candidate ranking:  ", x$final_rank_by, "\n", sep = "")
+    cat("Final combinations:       ",
+        format(x$final_n_combinations, big.mark = ",", scientific = FALSE), "\n", sep = "")
     n_shown <- if (is.null(x$final_candidates)) 0 else nrow(x$final_candidates)
-    cat("Final candidates shown:  ", n_shown, "\n", sep = "")
+    cat("Final candidates shown:   ", n_shown, "\n", sep = "")
+
+    if (!is.null(x$final_results_storage)) {
+      if (x$final_results_storage == "rds") {
+        if (!is.null(x$final_exhaustive_file)) {
+          if (!file.exists(x$final_exhaustive_file)) {
+            cat("Full results: stored RDS file is missing\n")
+          } else if (grepl(tempdir(), x$final_exhaustive_file, fixed = TRUE)) {
+            cat("Full results: stored in a temporary RDS file",
+                "(may not survive this R session)\n")
+          } else {
+            cat("Full results: stored in ", x$final_exhaustive_file, "\n", sep = "")
+          }
+        }
+      } else if (x$final_results_storage == "none") {
+        cat("Full results: not stored\n")
+      }
+    }
   }
 
   if (!is.null(x$final_model)) {
@@ -526,12 +790,18 @@ ncvroc_results <- function(x,
                            top_n = 20) {
 
   if (inherits(x, "roc_bruteforce_result")) {
-    dat <- x$results
+    dat <- .read_results_from_storage(x$results, x$results_file, "results")
   } else if (inherits(x, "ncvroc_analysis")) {
-    if (is.null(x$final_exhaustive_ranked)) {
-      stop("x$final_exhaustive_ranked is NULL. Re-run ncvroc() with final_search = TRUE.", call. = FALSE)
+    if (isFALSE(x$final_search)) {
+      stop(
+        "Final exhaustive search was not performed. ",
+        "Re-run ncvroc() with final_search = TRUE.",
+        call. = FALSE
+      )
     }
-    dat <- x$final_exhaustive_ranked
+    dat <- .read_results_from_storage(
+      x$final_exhaustive_ranked, x$final_exhaustive_file, "results"
+    )
   } else {
     stop("x must be an ncvroc_analysis or roc_bruteforce_result object.", call. = FALSE)
   }
