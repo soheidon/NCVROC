@@ -101,7 +101,7 @@ all, `0` for none). Default 20.}
 conditions (item count, k range, rank_by) are always appended.}
 
 \item{results_dir}{Directory for the full results RDS file, or NULL
-(default) to use a temporary directory.}
+(default) to use the current working directory.}
 
 \item{progress}{Logical, show progress bars (default TRUE).}
 

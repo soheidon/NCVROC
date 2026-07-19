@@ -86,7 +86,7 @@ roc_bf(
 conditions (item count, k range, rank_by) are always appended.}
 
 \item{results_dir}{Directory for the full results RDS file, or NULL
-(default) to use a temporary directory.}
+(default) to use the current working directory.}
 
 \item{item_count}{Concise model-size specification: `"==4"` (exactly 4
 items), `"<=4"` (up to 4 items), or `"2:4"` (2 through 4 items).

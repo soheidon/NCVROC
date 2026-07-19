@@ -163,11 +163,15 @@ Low-level functions (`exhaustive_sum_roc()`, `nested_sum_roc()`,
 ### Result storage
 
 `ncvroc()` and `roc_bruteforce()` accept a `results_storage` parameter to
-control where full candidate tables are stored:
+control where full candidate tables are stored. The default is `"rds"` because
+exhaustive searches with many items can produce tables with hundreds of
+thousands of rows, consuming hundreds of MB of memory indefinitely if kept in
+RAM. Writing to an RDS file avoids this while keeping the full table accessible
+via `ncvroc_results()`.
 
 | `results_storage` | Behavior |
 |---|---|
-| `"rds"` (default) | Full table saved to an RDS file. Temporary directory by default (`results_dir = NULL`) or a user-supplied path (`results_dir = "path/"`). `$results` / `$final_exhaustive_ranked` is `NULL`. |
+| `"rds"` (default) | Full table saved to an RDS file in the current working directory (typically the folder containing your Rmd/Qmd file) by default, or a user-supplied path (`results_dir = "path/"`). `$results` / `$final_exhaustive_ranked` is `NULL`. |
 | `"memory"` | Keep full table in RAM (pre-v0.9.0 behavior). |
 | `"none"` | Discard full table. `ncvroc_results()` will error. |
 

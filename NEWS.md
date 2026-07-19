@@ -14,7 +14,8 @@
   tables from consuming hundreds of MB of memory indefinitely.
 - Added `results_name` parameter for custom filename prefixes on RDS files.
 - Added `results_dir` parameter for specifying the RDS file directory
-  (defaults to a temporary directory).
+  (defaults to the current working directory, typically the folder
+  containing the user's Rmd/Qmd file).
 - New internal helpers: `.parse_item_count()` for item_count parsing with
   syntax validation, `.describe_item_count()` for human-readable print
   descriptions, `.make_results_path()` for unique RDS filename generation,

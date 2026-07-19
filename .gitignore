@@ -26,7 +26,5 @@ vignettes/*.R
 # macOS
 .DS_Store
 
-# Windows
-Thumbs.db
-Rplots.pdf
-tests/testthat/Rplots.pdf
+# RDS artifacts (test outputs)
+tests/testthat/*.rds

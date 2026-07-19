@@ -213,7 +213,7 @@
 #' @param results_name Optional label prefix for the RDS filename. Analysis
 #'   conditions (item count, k range, rank_by) are always appended.
 #' @param results_dir Directory for the full results RDS file, or NULL
-#'   (default) to use a temporary directory.
+#'   (default) to use the current working directory.
 #' @param item_count Concise model-size specification: `"==4"` (exactly 4
 #'   items), `"<=4"` (up to 4 items), or `"2:4"` (2 through 4 items).
 #'   Cannot be combined with `min_items` or `max_items`. Default NULL.
@@ -408,9 +408,6 @@ print.roc_bruteforce_result <- function(x, ...) {
       if (!is.null(x$results_file)) {
         if (!file.exists(x$results_file)) {
           cat("Full results: stored RDS file is missing\n")
-        } else if (grepl(tempdir(), x$results_file, fixed = TRUE)) {
-          cat("Full results: stored in a temporary RDS file",
-              "(may not survive this R session)\n")
         } else {
           cat("Full results: stored in ", x$results_file, "\n", sep = "")
         }

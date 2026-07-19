@@ -588,7 +588,7 @@ test_that("print shows storage info for RDS mode", {
   dat <- make_ncvroc_test_data()
   result <- do.call(ncvroc, c(list(data = dat, outcome = "y", items = c("Q1", "Q2")),
                               COMMON_CV_STORAGE))
-  expect_output(print(result), "temporary RDS file")
+  expect_output(print(result), "stored in")
 })
 
 test_that("print shows 'not stored' for none mode", {

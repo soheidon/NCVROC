@@ -458,13 +458,13 @@ test_that("seed is not consumed by filename generation", {
   expect_equal(state_after, state_before)
 })
 
-test_that("tempdir RDS announces temporary status in print", {
+test_that("print shows storage info for RDS mode", {
   d <- make_bf_data()
   res <- roc_bruteforce(d, "y", c("Q1", "Q2", "Q3"), max_items = 2,
                          engine = "R", progress = FALSE)
   expect_output(
     print(res),
-    "temporary RDS file"
+    "stored in"
   )
 })
 

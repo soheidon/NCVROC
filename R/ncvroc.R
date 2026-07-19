@@ -171,7 +171,8 @@
 #' Creates a timestamped, uniquely-named RDS file path. Uses `tempfile()` for
 #' uniqueness to avoid consuming `.Random.seed`.
 #'
-#' @param results_dir Directory for the RDS file, or NULL for tempdir/NCVROC.
+#' @param results_dir Directory for the RDS file, or NULL for the current
+#'   working directory (typically the folder containing your Rmd/Qmd file).
 #' @param prefix Function name prefix (e.g. "roc_bruteforce").
 #' @param outcome Outcome column name.
 #' @param n_items Number of candidate items.
@@ -185,7 +186,7 @@
                                 min_items, max_items, rank_by,
                                 results_name = NULL) {
   if (is.null(results_dir)) {
-    results_dir <- file.path(tempdir(), "NCVROC")
+    results_dir <- getwd()
   }
   dir.create(results_dir, recursive = TRUE, showWarnings = FALSE)
   if (!dir.exists(results_dir)) {
@@ -275,7 +276,7 @@
 #' @param results_name Optional label prefix for the RDS filename. Analysis
 #'   conditions (item count, k range, rank_by) are always appended.
 #' @param results_dir Directory for the full results RDS file, or NULL
-#'   (default) to use a temporary directory.
+#'   (default) to use the current working directory.
 #' @param progress Logical, show progress bars (default TRUE).
 #' @param verbose Logical, print diagnostic messages (default TRUE).
 #' @param return Return mode: `"full"` or `"summary"` (default `"full"`).
@@ -643,9 +644,6 @@ print.ncvroc_analysis <- function(x, ...) {
         if (!is.null(x$final_exhaustive_file)) {
           if (!file.exists(x$final_exhaustive_file)) {
             cat("Full results: stored RDS file is missing\n")
-          } else if (grepl(tempdir(), x$final_exhaustive_file, fixed = TRUE)) {
-            cat("Full results: stored in a temporary RDS file",
-                "(may not survive this R session)\n")
           } else {
             cat("Full results: stored in ", x$final_exhaustive_file, "\n", sep = "")
           }

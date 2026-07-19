@@ -152,11 +152,11 @@ result <- ncvroc(
 
 ### 結果の保存
 
-`ncvroc()` と `roc_bruteforce()` は `results_storage` パラメータで完全な候補テーブルの保存方法を制御します：
+`ncvroc()` と `roc_bruteforce()` は `results_storage` パラメータで完全な候補テーブルの保存方法を制御します。デフォルトの `"rds"` は、多数の項目に対する全探索で数十万行に及ぶ候補テーブルが生成され、メモリに保持すると数百MBを消費し続ける問題を回避するためのものです。RDSファイルに書き出すことでメモリを節約しつつ、`ncvroc_results()` で必要なときに全テーブルにアクセスできます。
 
 | `results_storage` | 動作 |
 |---|---|
-| `"rds"`（デフォルト） | 完全な候補テーブルをRDSファイルに保存。一時ディレクトリ（`results_dir = NULL`）または指定パス（`results_dir = "path/"`）に出力。`$final_exhaustive_ranked` は `NULL`。 |
+| `"rds"`（デフォルト） | 完全な候補テーブルをRDSファイルに保存。デフォルトではカレントワーキングディレクトリ（通常はRmd/Qmdファイルのあるフォルダ）に出力。`results_dir = "path/"` で保存先を指定可能。`$final_exhaustive_ranked` は `NULL`。 |
 | `"memory"` | 完全な候補テーブルをメモリに保持（v0.8.0以前の動作）。`$final_exhaustive_ranked` に data.frame が格納される。 |
 | `"none"` | 完全な候補テーブルを破棄。`ncvroc_results()` はエラーになる。 |
 
