@@ -34,10 +34,10 @@ remotes::install_github("soheidon/NCVROC")
 result <- ncvroc(
   data    = analysis_dat,
   outcome = y,
-  items   = Q1:Q5,
-  max_items = 4,
-  mode    = "balanced",
-  seed    = 20260705
+  items      = Q1:Q5,
+  item_count = "<=4",
+  mode       = "balanced",
+  seed       = 20260705
 )
 ```
 
@@ -57,11 +57,11 @@ result <- ncvroc(
 result <- ncvroc(
   data    = analysis_dat,
   outcome = y,
-  items   = Q1:Q5,
-  max_items = 4,
-  mode    = "balanced",
-  engine  = "R",
-  seed    = 20260705
+  items      = Q1:Q5,
+  item_count = "<=4",
+  mode       = "balanced",
+  engine     = "R",
+  seed       = 20260705
 )
 ```
 
@@ -72,13 +72,13 @@ result <- ncvroc(
 result <- ncvroc(
   data    = analysis_dat,
   outcome = y,
-  items   = Q1:Q5,
-  max_items = 4,
-  mode    = "balanced",
+  items      = Q1:Q5,
+  item_count = "<=4",
+  mode       = "balanced",
   inner_repeats = 5,
   preselect_top_n = 1000,
-  engine  = "Rcpp",
-  seed    = 20260705
+  engine     = "Rcpp",
+  seed       = 20260705
 )
 ```
 
@@ -136,6 +136,18 @@ result <- ncvroc(
 
 `item_count`は`ncvroc()`、`roc_bruteforce()`（および`roc_bf()`）、`ncvroc_config()`で使用できます。
 
+### 後方互換性
+
+`min_items`と`max_items`は引き続きサポートされています。以下の表は、同等の旧記法と新記法を示しています：
+
+| 旧（`min_items` / `max_items`） | 新（`item_count`） |
+|---|---|
+| `min_items = 4, max_items = 4` | `item_count = "==4"` |
+| `min_items = 1, max_items = 4` | `item_count = "<=4"` |
+| `min_items = 2, max_items = 4` | `item_count = "2:4"` |
+
+低水準関数（`exhaustive_sum_roc()`、`nested_sum_roc()`、`fit_final_sum_scale()`、`count_item_combinations()`、`suggest_preselect_top_n()`）では、引き続き`min_items`と`max_items`を使用します。
+
 ---
 
 ### 結果の保存
@@ -148,7 +160,7 @@ result <- ncvroc(
 | `"memory"` | 完全な候補テーブルをメモリに保持（v0.8.0以前の動作）。`$final_exhaustive_ranked` に data.frame が格納される。 |
 | `"none"` | 完全な候補テーブルを破棄。`ncvroc_results()` はエラーになる。 |
 
-全データの取得には常に `ncvroc_results()` を使用してください（RDSから透過的に読み込みます）：
+`results_storage` が `"rds"` または `"memory"` の場合、全データの取得には `ncvroc_results()` を使用してください（RDSから透過的に読み込みます）：
 
 ```r
 ncvroc_results(result, top_n = NULL)  # 全候補を取得
@@ -176,9 +188,9 @@ result$final_exhaustive_file # RDSファイルのパス（"rds"モード時）
 result <- ncvroc(
   data    = analysis_dat,
   outcome = y,
-  items   = Q1:Q5,
-  max_items = 4,
-  mode    = "balanced",
+  items      = Q1:Q5,
+  item_count = "<=4",
+  mode       = "balanced",
   final_rank_by = "auc",
   final_top_n = 20,
   seed    = 20260705,
@@ -559,7 +571,7 @@ d <- data.frame(
 )
 
 # ベースRスタイルの列選択による単一呼び出し分析
-result <- ncvroc(d, y, Q1:Q5, max_items = 2, mode = "quick",
+result <- ncvroc(d, y, Q1:Q5, item_count = "<=2", mode = "quick",
   outer_k = 3, inner_k = 2, outer_repeats = 1, engine = "R",
   seed = 42, final_search = FALSE)
 print(result)
@@ -572,11 +584,11 @@ plot(result)
 ```r
 # 分析の意図を一度だけ定義
 cfg <- ncvroc_config(
-  outcome   = "y",
-  items     = paste0("Q", 1:5),
-  max_items = 2,
-  mode      = "quick",
-  engine    = "Rcpp"
+  outcome    = "y",
+  items      = paste0("Q", 1:5),
+  item_count = "<=2",
+  mode       = "quick",
+  engine     = "Rcpp"
 )
 
 print(cfg)
@@ -608,13 +620,13 @@ summary(result)
 
 ```r
 result <- roc_bruteforce(
-  data    = d,
-  outcome = y,
-  items   = Q1:Q5,
-  max_items = 3,
-  rank_by = "youden",
-  engine  = "Rcpp",
-  top_n   = 20
+  data       = d,
+  outcome    = y,
+  items      = Q1:Q5,
+  item_count = "<=3",
+  rank_by    = "youden",
+  engine     = "Rcpp",
+  top_n      = 20
 )
 
 result
@@ -634,7 +646,7 @@ ncvroc_results(result, sensitivity = ">= 0.90", specificity = ">= 0.85")
 エイリアス `roc_bf()` は同等です：
 
 ```r
-result <- roc_bf(d, y, Q1:Q5, max_items = 3, engine = "Rcpp")
+result <- roc_bf(d, y, Q1:Q5, item_count = "<=3", engine = "Rcpp")
 ```
 
 ## Rcppエンジン

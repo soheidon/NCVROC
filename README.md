@@ -38,10 +38,10 @@ remotes::install_github("soheidon/NCVROC")
 result <- ncvroc(
   data    = analysis_dat,
   outcome = y,
-  items   = Q1:Q5,
-  max_items = 4,
-  mode    = "balanced",
-  seed    = 20260705
+  items      = Q1:Q5,
+  item_count = "<=4",
+  mode       = "balanced",
+  seed       = 20260705
 )
 ```
 
@@ -61,11 +61,11 @@ For example, this changes only the computation engine:
 result <- ncvroc(
   data    = analysis_dat,
   outcome = y,
-  items   = Q1:Q5,
-  max_items = 4,
-  mode    = "balanced",
-  engine  = "R",
-  seed    = 20260705
+  items      = Q1:Q5,
+  item_count = "<=4",
+  mode       = "balanced",
+  engine     = "R",
+  seed       = 20260705
 )
 ```
 
@@ -76,13 +76,13 @@ Users can override any individual setting:
 result <- ncvroc(
   data    = analysis_dat,
   outcome = y,
-  items   = Q1:Q5,
-  max_items = 4,
-  mode    = "balanced",
+  items      = Q1:Q5,
+  item_count = "<=4",
+  mode       = "balanced",
   inner_repeats = 5,
   preselect_top_n = 1000,
-  engine  = "Rcpp",
-  seed    = 20260705
+  engine     = "Rcpp",
+  seed       = 20260705
 )
 ```
 
@@ -143,6 +143,21 @@ result <- ncvroc(
 `item_count` is available in `ncvroc()`, `roc_bruteforce()` (and `roc_bf()`),
 and `ncvroc_config()`.
 
+### Backward compatibility
+
+`min_items` and `max_items` remain supported. The table below shows equivalent
+old and new syntax:
+
+| Old (`min_items` / `max_items`) | New (`item_count`) |
+|---|---|
+| `min_items = 4, max_items = 4` | `item_count = "==4"` |
+| `min_items = 1, max_items = 4` | `item_count = "<=4"` |
+| `min_items = 2, max_items = 4` | `item_count = "2:4"` |
+
+Low-level functions (`exhaustive_sum_roc()`, `nested_sum_roc()`,
+`fit_final_sum_scale()`, `count_item_combinations()`,
+`suggest_preselect_top_n()`) continue to use `min_items` and `max_items`.
+
 ---
 
 ### Result storage
@@ -156,7 +171,7 @@ control where full candidate tables are stored:
 | `"memory"` | Keep full table in RAM (pre-v0.9.0 behavior). |
 | `"none"` | Discard full table. `ncvroc_results()` will error. |
 
-Always use `ncvroc_results()` to retrieve the full table (reads from RDS transparently):
+Use `ncvroc_results()` to retrieve the full table when `results_storage` is `"rds"` or `"memory"` (reads from RDS transparently):
 
 ```r
 ncvroc_results(result, top_n = NULL)  # get all candidates
@@ -185,9 +200,9 @@ result$final_exhaustive_file  # RDS file path (in "rds" mode)
 result <- ncvroc(
   data    = analysis_dat,
   outcome = y,
-  items   = Q1:Q5,
-  max_items = 4,
-  mode    = "balanced",
+  items      = Q1:Q5,
+  item_count = "<=4",
+  mode       = "balanced",
   final_rank_by = "auc",
   final_top_n = 20,
   seed    = 20260705,
@@ -576,7 +591,7 @@ d <- data.frame(
 )
 
 # Single-call analysis with base-R style column selection
-result <- ncvroc(d, y, Q1:Q5, max_items = 2, mode = "quick",
+result <- ncvroc(d, y, Q1:Q5, item_count = "<=2", mode = "quick",
   outer_k = 3, inner_k = 2, outer_repeats = 1, engine = "R",
   seed = 42, final_search = FALSE)
 print(result)
@@ -589,11 +604,11 @@ plot(result)
 ```r
 # Define the analysis intent once
 cfg <- ncvroc_config(
-  outcome   = "y",
-  items     = paste0("Q", 1:5),
-  max_items = 2,
-  mode      = "quick",
-  engine    = "Rcpp"
+  outcome    = "y",
+  items      = paste0("Q", 1:5),
+  item_count = "<=2",
+  mode       = "quick",
+  engine     = "Rcpp"
 )
 
 print(cfg)
@@ -629,13 +644,13 @@ resolution as `ncvroc()`.
 
 ```r
 result <- roc_bruteforce(
-  data    = d,
-  outcome = y,
-  items   = Q1:Q5,
-  max_items = 3,
-  rank_by = "youden",
-  engine  = "Rcpp",
-  top_n   = 20
+  data       = d,
+  outcome    = y,
+  items      = Q1:Q5,
+  item_count = "<=3",
+  rank_by    = "youden",
+  engine     = "Rcpp",
+  top_n      = 20
 )
 
 result
@@ -655,7 +670,7 @@ ncvroc_results(result, sensitivity = ">= 0.90", specificity = ">= 0.85")
 The alias `roc_bf()` is equivalent:
 
 ```r
-result <- roc_bf(d, y, Q1:Q5, max_items = 3, engine = "Rcpp")
+result <- roc_bf(d, y, Q1:Q5, item_count = "<=3", engine = "Rcpp")
 ```
 
 ## Rcpp engine
