@@ -493,8 +493,10 @@
   if (effective_storage == "chunked_rds") {
     if (!is.null(building_dir)) {
       chunk_dir <- file.path(building_dir, "chunks")
+      dir.create(chunk_dir, recursive = TRUE, showWarnings = FALSE)
     } else {
-      chunk_dir <- .make_chunk_dir(tempdir())
+      chunk_base_dir <- if (is.null(results_dir)) tempdir() else results_dir
+      chunk_dir <- .make_chunk_dir(chunk_base_dir)
     }
 
     chunk_start <- 0.0

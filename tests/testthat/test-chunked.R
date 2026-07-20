@@ -312,7 +312,7 @@ test_that(".resolve_global_combination_rank resolves correctly", {
 test_that("ncvroc_results() can stream from chunked storage", {
   skip("Manual test: requires a large enough search to trigger chunked mode")
   # This test would need AUTO_MEMORY_LIMIT combinations to trigger chunking.
-  # With AUTO_MEMORY_LIMIT = 5,000,000 this requires too many items for a fast test.
+  # With AUTO_MEMORY_LIMIT = 100,000 this requires too many items for a fast test.
   # Tested manually in development.
 })
 
@@ -389,4 +389,104 @@ test_that("chunk_size must be positive integer", {
       engine = "R", progress = FALSE, chunk_start = 0, chunk_size = 0),
     "positive integer"
   )
+})
+
+# ---- results_dir with chunked_rds ----
+
+test_that("chunked_rds: results_dir is respected when cache is off", {
+  # A: chunked + explicit results_dir -> chunks in results_dir
+  old_limit <- NCVROC:::AUTO_MEMORY_LIMIT
+  assignInNamespace("AUTO_MEMORY_LIMIT", 1L, "NCVROC")
+  on.exit(assignInNamespace("AUTO_MEMORY_LIMIT", old_limit, "NCVROC"), add = TRUE)
+
+  # Use a directory outside tempdir() so the tempdir() exclusion check is meaningful
+  results_dir <- normalizePath(file.path(getwd(), paste0("test_chunked_dir_", Sys.getpid())),
+                                winslash = "/", mustWork = FALSE)
+  dir.create(results_dir, recursive = TRUE, showWarnings = FALSE)
+  on.exit(unlink(results_dir, recursive = TRUE), add = TRUE)
+
+  out <- ncvroc(make_chunk_test_data(), y, Q1:Q4, max_items = 2,
+                results_storage = "rds", results_dir = results_dir,
+                cache = "off", outer_k = 2, inner_k = 2, outer_repeats = 1,
+                engine = "R", seed = 42, final_search = TRUE,
+                progress = FALSE, verbose = FALSE)
+
+  expect_equal(out$storage_backend, "chunked_rds")
+  expect_true(grepl(results_dir,
+                    normalizePath(out$chunk_dir, winslash = "/", mustWork = FALSE),
+                    fixed = TRUE))
+  # chunks must NOT be under tempdir()
+  expect_false(grepl(normalizePath(tempdir(), winslash = "/", mustWork = FALSE),
+                     normalizePath(out$chunk_dir, winslash = "/", mustWork = FALSE),
+                     fixed = TRUE))
+})
+
+test_that("chunked_rds: results_dir = NULL falls back to tempdir()", {
+  # B: chunked + results_dir = NULL -> chunks in tempdir()
+  old_limit <- NCVROC:::AUTO_MEMORY_LIMIT
+  assignInNamespace("AUTO_MEMORY_LIMIT", 1L, "NCVROC")
+  on.exit(assignInNamespace("AUTO_MEMORY_LIMIT", old_limit, "NCVROC"), add = TRUE)
+
+  out <- ncvroc(make_chunk_test_data(), y, Q1:Q4, max_items = 2,
+                results_storage = "rds", results_dir = NULL,
+                cache = "off", outer_k = 2, inner_k = 2, outer_repeats = 1,
+                engine = "R", seed = 42, final_search = TRUE,
+                progress = FALSE, verbose = FALSE)
+
+  expect_equal(out$storage_backend, "chunked_rds")
+  expect_true(grepl(normalizePath(tempdir(), winslash = "/", mustWork = FALSE),
+                    normalizePath(out$chunk_dir, winslash = "/", mustWork = FALSE),
+                    fixed = TRUE))
+})
+
+test_that("single_rds: results_dir is respected (regression guard)", {
+  # C: single_rds + results_dir -> file in results_dir
+  results_dir <- normalizePath(file.path(getwd(), paste0("test_single_dir_", Sys.getpid())),
+                                winslash = "/", mustWork = FALSE)
+  dir.create(results_dir, recursive = TRUE, showWarnings = FALSE)
+  on.exit(unlink(results_dir, recursive = TRUE), add = TRUE)
+
+  out <- ncvroc(make_chunk_test_data(), y, Q1:Q4, max_items = 2,
+                results_storage = "rds", results_dir = results_dir,
+                cache = "off", outer_k = 2, inner_k = 2, outer_repeats = 1,
+                engine = "R", seed = 42, final_search = TRUE,
+                progress = FALSE, verbose = FALSE)
+
+  # With 10 combos and default AUTO_MEMORY_LIMIT = 100000, this is single_rds
+  expect_equal(out$storage_backend, "single_rds")
+  expect_true(grepl(results_dir,
+                    normalizePath(out$final_exhaustive_file, winslash = "/", mustWork = FALSE),
+                    fixed = TRUE))
+})
+
+test_that("chunked_rds: cache enabled -> building_dir/chunks, not results_dir", {
+  # D: cache enabled -> building_dir takes precedence over results_dir
+  old_limit <- NCVROC:::AUTO_MEMORY_LIMIT
+  assignInNamespace("AUTO_MEMORY_LIMIT", 1L, "NCVROC")
+  on.exit(assignInNamespace("AUTO_MEMORY_LIMIT", old_limit, "NCVROC"), add = TRUE)
+
+  cache_dir <- normalizePath(file.path(getwd(), paste0("test_cache_", Sys.getpid())),
+                              winslash = "/", mustWork = FALSE)
+  results_dir <- normalizePath(file.path(getwd(), paste0("test_results_", Sys.getpid())),
+                                winslash = "/", mustWork = FALSE)
+  dir.create(cache_dir, recursive = TRUE, showWarnings = FALSE)
+  dir.create(results_dir, recursive = TRUE, showWarnings = FALSE)
+  on.exit(unlink(cache_dir, recursive = TRUE), add = TRUE)
+  on.exit(unlink(results_dir, recursive = TRUE), add = TRUE)
+
+  out <- ncvroc(make_chunk_test_data(), y, Q1:Q4, max_items = 2,
+                results_storage = "rds", results_dir = results_dir,
+                cache = "reuse", cache_dir = cache_dir,
+                outer_k = 2, inner_k = 2, outer_repeats = 1,
+                engine = "R", seed = 42, final_search = TRUE,
+                progress = FALSE, verbose = FALSE)
+
+  expect_equal(out$storage_backend, "chunked_rds")
+  # chunks go to cache_dir, NOT results_dir
+  expect_true(grepl(cache_dir,
+                    normalizePath(out$chunk_dir, winslash = "/", mustWork = FALSE),
+                    fixed = TRUE))
+  expect_false(grepl(results_dir,
+                     normalizePath(out$chunk_dir, winslash = "/", mustWork = FALSE),
+                     fixed = TRUE))
 })

@@ -1,3 +1,24 @@
+# NCVROC 0.10.1
+
+## Bug fixes
+
+- Fixed `results_dir` being silently ignored in the chunked RDS code path of
+  `.evaluate_final_exhaustive()`. When `results_storage = "rds"` and
+  `results_dir` was explicitly set, chunk files were always written to
+  `tempdir()` instead of the user-specified directory. Now respects
+  `results_dir` for both single RDS and chunked RDS paths.
+- Fixed incorrect `AUTO_MEMORY_LIMIT` reference in test comment
+  (`5,000,000` → `100,000`).
+
+## New tests
+
+- Added 6 tests verifying `results_dir` handling across storage backends:
+  chunked_rds + explicit results_dir, chunked_rds + NULL results_dir,
+  single_rds + explicit results_dir, and cache-enabled chunked mode.
+- Tests cover both `ncvroc()` and `roc_bruteforce()`.
+
+---
+
 # NCVROC 0.10.0
 
 ## New features
@@ -6,7 +27,7 @@
   small searches and chunked disk storage for large searches, preventing
   out-of-memory errors. Explicit `"memory"`, `"rds"`, and `"none"` modes
   remain available.
-- Chunked evaluation: for search spaces exceeding 5,000,000 combinations,
+- Chunked evaluation: for search spaces exceeding 100,000 combinations,
   candidates are evaluated in chunks of `chunk_size` (default 200,000) and
   written to individual RDS files, with peak memory independent of total
   combinations.

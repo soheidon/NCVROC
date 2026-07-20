@@ -1,6 +1,6 @@
 [English](README.md) | [日本語](docs/reference-ja.md)
 
-# NCVROC 0.10.0
+# NCVROC 0.10.1
 
 **N**ested **C**ross-**V**alidation for Combinatorial **ROC**-based Selection of Item-set Scores
 
@@ -168,7 +168,7 @@ control where full candidate tables are stored. Since v0.10.0 the default is
 
 | `results_storage` | Behavior |
 |---|---|
-| `"auto"` (default) | Small searches use in-memory storage; large searches (> 5 million combinations) use chunked RDS files on disk. |
+| `"auto"` (default) | Small searches use in-memory storage; large searches (> 100,000 combinations) use chunked RDS files on disk. |
 | `"memory"` | Keep full table in RAM (pre-v0.9.0 behavior). |
 | `"rds"` | Save the full table to a single RDS file. In RStudio or Quarto projects this is typically the project root. The save location is always shown in the printed output. Use `getwd()` to check the current directory, or set `results_dir` to an explicit path if the default is not suitable. `$results` / `$final_exhaustive_ranked` is `NULL`. |
 | `"none"` | Discard full table. `ncvroc_results()` will error. |

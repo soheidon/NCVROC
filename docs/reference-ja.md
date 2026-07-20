@@ -1,4 +1,4 @@
-# NCVROC 0.10.0 リファレンス
+# NCVROC 0.10.1 リファレンス
 
 **N**ested **C**ross-**V**alidation for Combinatorial **ROC**-based Selection of Item-set Scores（項目セット得点の組み合わせROC選択のためのネスト交差検証）
 
@@ -156,7 +156,7 @@ result <- ncvroc(
 
 | `results_storage` | 動作 |
 |---|---|
-| `"auto"`（デフォルト） | 小規模な探索はメモリ内に保存。大規模な探索（500万以上の組み合わせ）はチャンク分割RDSファイルとしてディスクに保存。 |
+| `"auto"`（デフォルト） | 小規模な探索はメモリ内に保存。大規模な探索（100,000以上の組み合わせ）はチャンク分割RDSファイルとしてディスクに保存。 |
 | `"memory"` | 完全な候補テーブルをメモリに保持（v0.8.0以前の動作）。 |
 | `"rds"` | 完全な候補テーブルを単一RDSファイルに保存。デフォルトでは現在のワーキングディレクトリに出力。RStudio ProjectやQuarto Projectでは通常プロジェクトルートになる。保存先は常に実行時の出力に表示される。`getwd()` で現在の保存先を確認できる。意図と異なる場合は `results_dir = "path/"` で明示的に指定する。`$final_exhaustive_ranked` は `NULL`。 |
 | `"none"` | 完全な候補テーブルを破棄。`ncvroc_results()` はエラーになる。 |

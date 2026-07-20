@@ -674,3 +674,40 @@ test_that("roc_bf() with item_count and bare column NSE no missing() error", {
                 engine = "R", progress = FALSE)
   expect_equal(res$max_items, 2)
 })
+
+# ---- chunked_rds results_dir ----
+
+test_that("roc_bruteforce chunked_rds: results_dir is respected", {
+  old_limit <- NCVROC:::AUTO_MEMORY_LIMIT
+  assignInNamespace("AUTO_MEMORY_LIMIT", 1L, "NCVROC")
+  on.exit(assignInNamespace("AUTO_MEMORY_LIMIT", old_limit, "NCVROC"), add = TRUE)
+
+  results_dir <- normalizePath(file.path(getwd(), paste0("test_bf_chunked_", Sys.getpid())),
+                                winslash = "/", mustWork = FALSE)
+  dir.create(results_dir, recursive = TRUE, showWarnings = FALSE)
+  on.exit(unlink(results_dir, recursive = TRUE), add = TRUE)
+
+  res <- roc_bruteforce(make_bf_data(), "y", c("Q1", "Q2", "Q3"), max_items = 2,
+                        engine = "R", progress = FALSE,
+                        results_storage = "rds", results_dir = results_dir)
+
+  expect_equal(res$storage_backend, "chunked_rds")
+  expect_true(grepl(results_dir,
+                    normalizePath(res$chunk_dir, winslash = "/", mustWork = FALSE),
+                    fixed = TRUE))
+})
+
+test_that("roc_bruteforce chunked_rds: results_dir = NULL falls back to tempdir()", {
+  old_limit <- NCVROC:::AUTO_MEMORY_LIMIT
+  assignInNamespace("AUTO_MEMORY_LIMIT", 1L, "NCVROC")
+  on.exit(assignInNamespace("AUTO_MEMORY_LIMIT", old_limit, "NCVROC"), add = TRUE)
+
+  res <- roc_bruteforce(make_bf_data(), "y", c("Q1", "Q2", "Q3"), max_items = 2,
+                        engine = "R", progress = FALSE,
+                        results_storage = "rds", results_dir = NULL)
+
+  expect_equal(res$storage_backend, "chunked_rds")
+  expect_true(grepl(normalizePath(tempdir(), winslash = "/", mustWork = FALSE),
+                    normalizePath(res$chunk_dir, winslash = "/", mustWork = FALSE),
+                    fixed = TRUE))
+})
