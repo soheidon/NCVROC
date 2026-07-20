@@ -5,3 +5,7 @@ evaluate_combos_cpp <- function(x, y, combo_indices, cutoff_method) {
     .Call(`_NCVROC_evaluate_combos_cpp`, x, y, combo_indices, cutoff_method)
 }
 
+evaluate_combos_cpp_chunk <- function(x, y, min_items, max_items, cutoff_method, chunk_start, chunk_size) {
+    .Call(`_NCVROC_evaluate_combos_cpp_chunk`, x, y, min_items, max_items, cutoff_method, chunk_start, chunk_size)
+}
+

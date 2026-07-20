@@ -28,6 +28,9 @@
 #' @param negative_label Value for negative class (default 0).
 #' @param stratified Logical, use stratified CV folds (default TRUE).
 #' @param engine Computation engine: `"R"` or `"Rcpp"` (default `"Rcpp"`).
+#' @param chunk_size Integer, combinations per chunk (default 200000).
+#' @param cache One of `"off"`, `"reuse"`, or `"refresh"` (default `"off"`).
+#' @param cache_dir Directory for caching, or NULL.
 #' @param item_count Concise model-size specification: `"==4"` (exactly 4
 #'   items), `"<=4"` (up to 4 items), or `"2:4"` (2 through 4 items).
 #'   Cannot be combined with `min_items` or `max_items`. Default NULL.
@@ -55,10 +58,20 @@ ncvroc_config <- function(outcome,
                           negative_label = 0,
                           stratified = TRUE,
                           engine = c("Rcpp", "R"),
+                          chunk_size = 200000L,
+                          cache = c("off", "reuse", "refresh"),
+                          cache_dir = NULL,
                           item_count = NULL) {
   mode <- match.arg(mode)
   cutoff_method <- match.arg(cutoff_method)
   engine <- match.arg(engine)
+  cache <- match.arg(cache)
+
+  if (!is.numeric(chunk_size) || length(chunk_size) != 1L || chunk_size <= 0L ||
+      chunk_size != floor(chunk_size)) {
+    stop("chunk_size must be a positive integer.", call. = FALSE)
+  }
+  chunk_size <- as.integer(chunk_size)
 
   # item_count validation and resolution
   min_items_missing <- missing(min_items)
@@ -115,7 +128,10 @@ ncvroc_config <- function(outcome,
     positive_label      = positive_label,
     negative_label      = negative_label,
     stratified          = stratified,
-    engine              = engine
+    engine              = engine,
+    chunk_size          = chunk_size,
+    cache               = cache,
+    cache_dir           = cache_dir
   )
 
   class(config) <- "ncvroc_config"
@@ -171,6 +187,11 @@ print.ncvroc_config <- function(x, ...) {
       "| negative =", x$negative_label, "\n")
   cat("Stratified:      ", x$stratified, "\n")
   cat("Engine:          ", x$engine, "\n")
+  cat("Chunk size:      ", format(x$chunk_size, big.mark = ",", scientific = FALSE), "\n")
+  cat("Cache:           ", x$cache, "\n")
+  if (!is.null(x$cache_dir)) {
+    cat("Cache dir:       ", x$cache_dir, "\n")
+  }
   cat(paste(rep("-", 50), collapse = ""), "\n", sep = "")
 
   invisible(x)

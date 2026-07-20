@@ -24,9 +24,27 @@ BEGIN_RCPP
     return rcpp_result_gen;
 END_RCPP
 }
+// evaluate_combos_cpp_chunk
+DataFrame evaluate_combos_cpp_chunk(NumericMatrix x, IntegerVector y, int min_items, int max_items, std::string cutoff_method, double chunk_start, int chunk_size);
+RcppExport SEXP _NCVROC_evaluate_combos_cpp_chunk(SEXP xSEXP, SEXP ySEXP, SEXP min_itemsSEXP, SEXP max_itemsSEXP, SEXP cutoff_methodSEXP, SEXP chunk_startSEXP, SEXP chunk_sizeSEXP) {
+BEGIN_RCPP
+    Rcpp::RObject rcpp_result_gen;
+    Rcpp::RNGScope rcpp_rngScope_gen;
+    Rcpp::traits::input_parameter< NumericMatrix >::type x(xSEXP);
+    Rcpp::traits::input_parameter< IntegerVector >::type y(ySEXP);
+    Rcpp::traits::input_parameter< int >::type min_items(min_itemsSEXP);
+    Rcpp::traits::input_parameter< int >::type max_items(max_itemsSEXP);
+    Rcpp::traits::input_parameter< std::string >::type cutoff_method(cutoff_methodSEXP);
+    Rcpp::traits::input_parameter< double >::type chunk_start(chunk_startSEXP);
+    Rcpp::traits::input_parameter< int >::type chunk_size(chunk_sizeSEXP);
+    rcpp_result_gen = Rcpp::wrap(evaluate_combos_cpp_chunk(x, y, min_items, max_items, cutoff_method, chunk_start, chunk_size));
+    return rcpp_result_gen;
+END_RCPP
+}
 
 static const R_CallMethodDef CallEntries[] = {
     {"_NCVROC_evaluate_combos_cpp", (DL_FUNC) &_NCVROC_evaluate_combos_cpp, 4},
+    {"_NCVROC_evaluate_combos_cpp_chunk", (DL_FUNC) &_NCVROC_evaluate_combos_cpp_chunk, 7},
     {NULL, NULL, 0}
 };
 

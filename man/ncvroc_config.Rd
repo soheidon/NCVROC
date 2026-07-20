@@ -22,6 +22,9 @@ ncvroc_config(
   negative_label = 0,
   stratified = TRUE,
   engine = c("Rcpp", "R"),
+  chunk_size = 200000L,
+  cache = c("off", "reuse", "refresh"),
+  cache_dir = NULL,
   item_count = NULL
 )
 }
@@ -61,6 +64,12 @@ to auto-set based on `mode`.}
 \item{stratified}{Logical, use stratified CV folds (default TRUE).}
 
 \item{engine}{Computation engine: `"R"` or `"Rcpp"` (default `"Rcpp"`).}
+
+\item{chunk_size}{Integer, combinations per chunk (default 200000).}
+
+\item{cache}{One of `"off"`, `"reuse"`, or `"refresh"` (default `"off"`).}
+
+\item{cache_dir}{Directory for caching, or NULL.}
 
 \item{item_count}{Concise model-size specification: `"==4"` (exactly 4
 items), `"<=4"` (up to 4 items), or `"2:4"` (2 through 4 items).

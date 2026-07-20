@@ -12,10 +12,5 @@ item-set selection, ROC-based evaluation, and nested cross-validation.
 \author{
 \strong{Maintainer}: Sohei Ide \email{soheidon@users.noreply.github.com}
 
-Authors:
-\itemize{
-  \item Sohei Ide \email{soheidon@users.noreply.github.com}
-}
-
 }
 \keyword{internal}

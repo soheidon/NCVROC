@@ -29,9 +29,12 @@ ncvroc(
   final_rank_by = c("auc", "youden", "sensitivity", "specificity", "accuracy"),
   save_results = FALSE,
   output_dir = ".",
-  results_storage = c("rds", "memory", "none"),
+  results_storage = c("auto", "memory", "rds", "none"),
   results_name = NULL,
   results_dir = NULL,
+  chunk_size = 200000L,
+  cache = c("off", "reuse", "refresh"),
+  cache_dir = NULL,
   progress = TRUE,
   verbose = TRUE,
   return = "full",
@@ -94,14 +97,21 @@ all, `0` for none). Default 20.}
 \item{output_dir}{Directory for saved CSVs (default `"."`).}
 
 \item{results_storage}{Where to store the full final exhaustive results:
-`"rds"` (save to RDS file, default), `"memory"` (keep in RAM), or
-`"none"` (discard). Only applies when `final_search = TRUE`.}
+`"auto"` (default, small→RAM, large→disk), `"memory"` (keep in RAM),
+`"rds"` (save to disk), or `"none"` (discard).}
 
-\item{results_name}{Optional label prefix for the RDS filename. Analysis
-conditions (item count, k range, rank_by) are always appended.}
+\item{results_name}{Optional label prefix for the RDS filename (only used
+when results_storage saves a single RDS).}
 
 \item{results_dir}{Directory for the full results RDS file, or NULL
-(default) to use the current working directory.}
+(default) to use `tempdir()`. Only used for single-RDS storage.}
+
+\item{chunk_size}{Integer, combinations per chunk (default 200000).}
+
+\item{cache}{One of `"off"` (default), `"reuse"`, or `"refresh"`.}
+
+\item{cache_dir}{Directory for result caching, or NULL (must be set
+when `cache != "off"`).}
 
 \item{progress}{Logical, show progress bars (default TRUE).}
 

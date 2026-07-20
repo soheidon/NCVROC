@@ -1,4 +1,4 @@
-# NCVROC 0.9.0 リファレンス
+# NCVROC 0.10.0 リファレンス
 
 **N**ested **C**ross-**V**alidation for Combinatorial **ROC**-based Selection of Item-set Scores（項目セット得点の組み合わせROC選択のためのネスト交差検証）
 
@@ -152,19 +152,54 @@ result <- ncvroc(
 
 ### 結果の保存
 
-`ncvroc()` と `roc_bruteforce()` は `results_storage` パラメータで完全な候補テーブルの保存方法を制御します。デフォルトの `"rds"` は、多数の項目に対する全探索で数十万行に及ぶ候補テーブルが生成され、メモリに保持すると数百MBを消費し続ける問題を回避するためのものです。RDSファイルに書き出すことでメモリを節約しつつ、`ncvroc_results()` で必要なときに全テーブルにアクセスできます。
+`ncvroc()` と `roc_bruteforce()` は `results_storage` パラメータで完全な候補テーブルの保存方法を制御します。v0.10.0からデフォルトは `"auto"` で、探索サイズに応じて自動的に保存モードを選択します。
 
 | `results_storage` | 動作 |
 |---|---|
-| `"rds"`（デフォルト） | 完全な候補テーブルをRDSファイルに保存。デフォルトでは現在のワーキングディレクトリに出力。RStudio ProjectやQuarto Projectでは通常プロジェクトルートになる。保存先は常に実行時の出力に表示される。`getwd()` で現在の保存先を確認できる。意図と異なる場合は `results_dir = "path/"` で明示的に指定する。`$final_exhaustive_ranked` は `NULL`。 |
-| `"memory"` | 完全な候補テーブルをメモリに保持（v0.8.0以前の動作）。`$final_exhaustive_ranked` に data.frame が格納される。 |
+| `"auto"`（デフォルト） | 小規模な探索はメモリ内に保存。大規模な探索（500万以上の組み合わせ）はチャンク分割RDSファイルとしてディスクに保存。 |
+| `"memory"` | 完全な候補テーブルをメモリに保持（v0.8.0以前の動作）。 |
+| `"rds"` | 完全な候補テーブルを単一RDSファイルに保存。デフォルトでは現在のワーキングディレクトリに出力。RStudio ProjectやQuarto Projectでは通常プロジェクトルートになる。保存先は常に実行時の出力に表示される。`getwd()` で現在の保存先を確認できる。意図と異なる場合は `results_dir = "path/"` で明示的に指定する。`$final_exhaustive_ranked` は `NULL`。 |
 | `"none"` | 完全な候補テーブルを破棄。`ncvroc_results()` はエラーになる。 |
 
-`results_storage` が `"rds"` または `"memory"` の場合、全データの取得には `ncvroc_results()` を使用してください（RDSから透過的に読み込みます）：
+`results_storage` が `"none"` でない場合、`ncvroc_results()` で候補テーブルを取得できます：
 
 ```r
-ncvroc_results(result, top_n = NULL)  # 全候補を取得
+ncvroc_results(result, top_n = 20)  # 上位20候補を取得
 ```
+
+チャンク分割RDS結果（`"auto"`で大規模探索または`"rds"`のチャンク分割時）で `top_n = NULL` を使用するには、`allow_full_load = TRUE` が必要です：
+
+```r
+ncvroc_results(result, top_n = NULL, allow_full_load = TRUE)
+```
+
+### キャッシュ（v0.10.0の新機能）
+
+大規模な全探索は時間がかかる場合があります。`ncvroc()` と `roc_bruteforce()` は結果のキャッシュをサポートし、再計算を回避します：
+
+```r
+result <- ncvroc(
+  data    = analysis_dat,
+  outcome = y,
+  items   = Q1:Q5,
+  item_count = "<=4",
+  mode    = "balanced",
+  cache   = "reuse",     # "off"（デフォルト）、"reuse"、または "refresh"
+  seed    = 20260705
+)
+```
+
+| `cache` | 動作 |
+|---|---|
+| `"off"`（デフォルト） | キャッシュなし。 |
+| `"reuse"` | 利用可能な場合はキャッシュされた結果を使用（同じデータ+同じパラメータ）。それ以外は計算してキャッシュ。 |
+| `"refresh"` | 常に再計算し、キャッシュを上書き。 |
+
+`cache_dir` でキャッシュされた結果の保存先を制御します（デフォルト：`tempdir()`）。
+
+### チャンクサイズ
+
+`chunk_size` パラメータ（デフォルト `200000`）は、大規模な全探索で1チャンクに評価される組み合わせ数を制御します。通常は変更する必要はありません。
 
 ### 最終候補の出力
 
@@ -176,7 +211,7 @@ ncvroc_results(result, top_n = NULL)  # 全候補を取得
 result$final_candidates   # 上位N行（final_top_nで制御）
 result$final_model        # 最良の単一モデル（先頭行）
 result$final_n_combinations  # 評価された組み合わせの総数
-result$final_results_storage # 保存モード（"rds"、"memory"、"none"）
+result$final_results_storage # 保存モード（"auto"、"rds"、"memory"、"none"）
 result$final_exhaustive_file # RDSファイルのパス（"rds"モード時）
 ```
 
@@ -257,7 +292,7 @@ ncvroc(
   final_search      = TRUE,
   final_top_n       = 20,
   final_rank_by     = c("auc", "youden", "sensitivity", "specificity", "accuracy"),
-  results_storage   = c("rds", "memory", "none"),
+  results_storage   = c("auto", "memory", "rds", "none"),
   results_name      = NULL,
   results_dir       = NULL,
   save_results      = FALSE,
@@ -265,7 +300,10 @@ ncvroc(
   progress          = TRUE,
   verbose           = TRUE,
   return            = "full",
-  item_count        = NULL
+  item_count        = NULL,
+  chunk_size        = 200000L,
+  cache             = c("off", "reuse", "refresh"),
+  cache_dir         = NULL
 )
 ```
 
@@ -296,11 +334,14 @@ ncvroc_results(
   n_items      = NULL,
   cutoff       = NULL,
   rank_by = c("youden", "auc", "sensitivity", "specificity", "accuracy", "ppv", "npv"),
-  top_n  = 20
+  top_n  = 20,
+  allow_full_load = FALSE
 )
 ```
 
 各条件は`">= 0.90"`や`"<= 3"`のような文字列です。6つの演算子（`>=`, `>`, `<=`, `<`, `==`, `!=`）がサポートされています。複数の条件はAND論理で組み合わされます。結果は`rank_by`でランク付けされ、安定したタイブレーカーが適用されます。すべての一致行を返すには`top_n = NULL`を、空のテーブルを返すには`0`を設定します。
+
+チャンク分割RDS保存の場合、`top_n = NULL` には `allow_full_load = TRUE` が必要です。
 
 **戻り値:** 絞り込まれランク付けされた候補モデルを含む data.frame。
 
@@ -331,10 +372,13 @@ roc_bruteforce(
   progress         = interactive(),
   save_results     = FALSE,
   output_dir       = ".",
-  results_storage  = c("rds", "memory", "none"),
+  results_storage  = c("auto", "memory", "rds", "none"),
   results_name     = NULL,
   results_dir      = NULL,
-  item_count       = NULL
+  item_count       = NULL,
+  chunk_size       = 200000L,
+  cache            = c("off", "reuse", "refresh"),
+  cache_dir        = NULL
 )
 ```
 
@@ -367,7 +411,10 @@ ncvroc_config(
   negative_label    = 0,
   stratified        = TRUE,
   engine            = c("Rcpp", "R"),
-  item_count        = NULL
+  item_count        = NULL,
+  chunk_size        = 200000L,
+  cache             = c("off", "reuse", "refresh"),
+  cache_dir         = NULL
 )
 ```
 

@@ -4,6 +4,11 @@
 #   .resolve_outcome()
 #   .resolve_items()
 #   .parse_condition()
+#   .parse_item_count()
+#   .describe_item_count()
+#   .make_results_path()
+#   .read_results_from_storage()
+#   .evaluate_final_exhaustive()
 #
 # Exported:
 #   ncvroc()
@@ -171,8 +176,7 @@
 #' Creates a timestamped, uniquely-named RDS file path. Uses `tempfile()` for
 #' uniqueness to avoid consuming `.Random.seed`.
 #'
-#' @param results_dir Directory for the RDS file, or NULL for the current
-#'   working directory (typically the folder containing your Rmd/Qmd file).
+#' @param results_dir Directory for the RDS file, or NULL for tempdir().
 #' @param prefix Function name prefix (e.g. "roc_bruteforce").
 #' @param outcome Outcome column name.
 #' @param n_items Number of candidate items.
@@ -186,7 +190,7 @@
                                 min_items, max_items, rank_by,
                                 results_name = NULL) {
   if (is.null(results_dir)) {
-    results_dir <- getwd()
+    results_dir <- tempdir()
   }
   dir.create(results_dir, recursive = TRUE, showWarnings = FALSE)
   if (!dir.exists(results_dir)) {
@@ -208,19 +212,27 @@
   file.path(results_dir, paste0(base, "_", timestamp, "_", unique_stub, ".rds"))
 }
 
-#' Read full candidate results from memory or an RDS file
+#' Read full candidate results from memory or storage
 #'
-#' Returns the full candidate table, reading from an RDS file if necessary.
-#' Errors clearly if results are not available (e.g. `results_storage =
-#' "none"`).
+#' Returns the full candidate table, reading from disk if necessary.
+#' Errors if results are not available.
 #'
 #' @param dat In-memory data.frame or NULL.
 #' @param file Path to RDS file or NULL.
-#' @param context Label for error messages (e.g. "results").
+#' @param chunk_dir Path to chunk directory or NULL.
+#' @param storage_backend Character, "memory", "single_rds", "chunked_rds", or "none".
+#' @param context Label for error messages.
 #' @return A data.frame of candidate results.
 #' @keywords internal
-.read_results_from_storage <- function(dat, file, context = "results") {
+.read_results_from_storage <- function(dat, file, chunk_dir = NULL,
+                                        storage_backend = NULL, context = "results") {
   if (!is.null(dat)) return(dat)
+
+  # chunked_rds: need allow_full_load=TRUE to get here, use .full_load_chunked
+  if (!is.null(chunk_dir) && dir.exists(chunk_dir)) {
+    return(.full_load_chunked(chunk_dir))
+  }
+
   if (!is.null(file)) {
     if (!file.exists(file)) {
       stop("The stored ", context, " file no longer exists: ", file, call. = FALSE)
@@ -229,6 +241,304 @@
   }
   stop("Full ", context, " are not available. Re-run the analysis with ",
        'results_storage = "memory" or "rds".', call. = FALSE)
+}
+
+# ---- Final exhaustive search (chunked or full) ----
+
+#' Evaluate the final exhaustive search, optionally chunked
+#'
+#' If n_combos > AUTO_MEMORY_LIMIT, evaluates in chunks and writes each to a
+#' chunk directory. If caching is enabled, chunks go directly into the
+#' .building-<pid>/chunks/ directory. Otherwise they go to tempdir().
+#'
+#' @param analysis_dat data.frame, prepared analysis data.
+#' @param outcome_name Character, outcome column name.
+#' @param item_names Character vector, item column names.
+#' @param min_items Integer.
+#' @param max_items Integer.
+#' @param positive_label Scalar.
+#' @param negative_label Scalar.
+#' @param cutoff_method Character.
+#' @param final_rank_by Character.
+#' @param engine Character.
+#' @param progress Logical.
+#' @param storage_mode Character: "memory", "rds", or "none".
+#' @param results_dir Character or NULL.
+#' @param results_name Character or NULL.
+#' @param chunk_size Integer.
+#' @param cache Character: "off", "reuse", or "refresh".
+#' @param cache_dir Character or NULL.
+#' @param building_dir Character or NULL — if caching, the .building-<pid>/ dir.
+#' @param resolved_item_count Character or NULL.
+#'
+#' @return A list with elements: final_exhaustive_ranked (data.frame or NULL),
+#'   final_exhaustive_file (path or NULL), final_n_combinations (integer),
+#'   storage_backend (character), chunk_dir (path or NULL),
+#'   chunk_prefix (character), results_name (character or NULL).
+#' @keywords internal
+.evaluate_final_exhaustive <- function(analysis_dat, outcome_name, item_names,
+                                        min_items, max_items,
+                                        positive_label, negative_label,
+                                        cutoff_method, final_rank_by, engine,
+                                        progress,
+                                        storage_mode, results_dir, results_name,
+                                        chunk_size,
+                                        cache, cache_dir, building_dir,
+                                        resolved_item_count,
+                                        function_name = "ncvroc") {
+  total_combos <- .count_total_combos(length(item_names), min_items, max_items)
+  is_large <- total_combos > AUTO_MEMORY_LIMIT
+
+  # Resolve effective storage mode
+  if (storage_mode == "auto") {
+    effective_storage <- if (is_large) "chunked_rds" else "memory"
+  } else if (storage_mode == "rds") {
+    effective_storage <- if (is_large) "chunked_rds" else "single_rds"
+  } else if (storage_mode == "memory") {
+    effective_storage <- "memory"
+  } else {
+    effective_storage <- "none"
+  }
+
+  metadata <- list(
+    function_name   = function_name,
+    outcome         = outcome_name,
+    items           = item_names,
+    n_items         = length(item_names),
+    min_items       = min_items,
+    max_items       = max_items,
+    item_count      = resolved_item_count,
+    rank_by         = final_rank_by,
+    cutoff_method   = cutoff_method,
+    positive_label  = positive_label,
+    negative_label  = negative_label,
+    engine          = engine,
+    created_at      = Sys.time(),
+    package_version = as.character(utils::packageVersion("NCVROC"))
+  )
+
+  # --- None storage: still evaluate (for final_candidates/final_model) but discard ---
+  if (effective_storage == "none") {
+    if (!is_large) {
+      final_exhaustive_ranked <- exhaustive_sum_roc(
+        data              = analysis_dat,
+        outcome           = outcome_name,
+        items             = item_names,
+        min_items         = min_items,
+        max_items         = max_items,
+        positive_label    = positive_label,
+        negative_label    = negative_label,
+        cutoff_method     = cutoff_method,
+        rank_by           = final_rank_by,
+        top_n             = NULL,
+        prefer_fewer_items = TRUE,
+        engine            = engine,
+        progress          = progress
+      )
+      return(list(
+        final_exhaustive_ranked = NULL,
+        final_exhaustive_file   = NULL,
+        final_n_combinations    = nrow(final_exhaustive_ranked),
+        storage_backend         = "none",
+        chunk_dir               = NULL,
+        chunk_prefix            = NULL,
+        results_name            = NULL,
+        full_table_for_slicing  = final_exhaustive_ranked
+      ))
+    }
+
+    # Large + none: stream chunks, keep only top-ranked in a buffer
+    # for slicing final_model/final_candidates. Use streaming_top_n logic.
+    chunk_start <- 0.0
+    best_so_far <- NULL
+    while (chunk_start < total_combos) {
+      chunk <- exhaustive_sum_roc(
+        data              = analysis_dat,
+        outcome           = outcome_name,
+        items             = item_names,
+        min_items         = min_items,
+        max_items         = max_items,
+        positive_label    = positive_label,
+        negative_label    = negative_label,
+        cutoff_method     = cutoff_method,
+        rank_by           = final_rank_by,
+        top_n             = NULL,
+        prefer_fewer_items = TRUE,
+        engine            = engine,
+        progress          = FALSE,
+        chunk_start       = chunk_start,
+        chunk_size        = chunk_size
+      )
+      combined <- if (is.null(best_so_far)) chunk else rbind(best_so_far, chunk)
+      ord <- do.call(order, c(
+        lapply(c(final_rank_by, "youden", "auc", "sensitivity", "specificity"),
+               function(nm) if (nm %in% names(combined)) -combined[[nm]] else NULL),
+        list(combined$n_items)
+      ))
+      best_so_far <- utils::head(combined[ord, , drop = FALSE], 100L)
+      chunk_start <- chunk_start + chunk_size
+    }
+    final_exhaustive_ranked <- best_so_far
+
+    return(list(
+      final_exhaustive_ranked = NULL,
+      final_exhaustive_file   = NULL,
+      final_n_combinations    = total_combos,
+      storage_backend         = "none",
+      chunk_dir               = NULL,
+      chunk_prefix            = NULL,
+      results_name            = NULL,
+      full_table_for_slicing  = final_exhaustive_ranked
+    ))
+  }
+
+  # --- Memory storage: keep in RAM ---
+  if (effective_storage == "memory") {
+    if (is_large) {
+      warning(
+        total_combos, " total combinations exceeds the memory limit (",
+        AUTO_MEMORY_LIMIT, ") but results_storage = \"memory\" was requested. ",
+        "Consider using results_storage = \"auto\" or \"rds\" to avoid high memory usage.",
+        call. = FALSE
+      )
+    }
+    final_exhaustive_ranked <- exhaustive_sum_roc(
+      data              = analysis_dat,
+      outcome           = outcome_name,
+      items             = item_names,
+      min_items         = min_items,
+      max_items         = max_items,
+      positive_label    = positive_label,
+      negative_label    = negative_label,
+      cutoff_method     = cutoff_method,
+      rank_by           = final_rank_by,
+      top_n             = NULL,
+      prefer_fewer_items = TRUE,
+      engine            = engine,
+      progress          = progress
+    )
+    attr(final_exhaustive_ranked, "ncvroc_metadata") <- metadata
+    return(list(
+      final_exhaustive_ranked = final_exhaustive_ranked,
+      final_exhaustive_file   = NULL,
+      final_n_combinations    = nrow(final_exhaustive_ranked),
+      storage_backend         = "memory",
+      chunk_dir               = NULL,
+      chunk_prefix            = NULL,
+      results_name            = NULL,
+      full_table_for_slicing  = NULL
+    ))
+  }
+
+  # --- Single RDS storage ---
+  if (effective_storage == "single_rds") {
+    final_exhaustive_ranked <- exhaustive_sum_roc(
+      data              = analysis_dat,
+      outcome           = outcome_name,
+      items             = item_names,
+      min_items         = min_items,
+      max_items         = max_items,
+      positive_label    = positive_label,
+      negative_label    = negative_label,
+      cutoff_method     = cutoff_method,
+      rank_by           = final_rank_by,
+      top_n             = NULL,
+      prefer_fewer_items = TRUE,
+      engine            = engine,
+      progress          = progress
+    )
+    attr(final_exhaustive_ranked, "ncvroc_metadata") <- metadata
+
+    if (!is.null(building_dir)) {
+      # Cache: write to building directory
+      rds_file <- file.path(building_dir, "full_results.rds")
+      saveRDS(final_exhaustive_ranked, rds_file)
+      return(list(
+        final_exhaustive_ranked = NULL,
+        final_exhaustive_file   = rds_file,
+        final_n_combinations    = nrow(final_exhaustive_ranked),
+        storage_backend         = "single_rds",
+        chunk_dir               = NULL,
+        chunk_prefix            = NULL,
+        results_name            = "full_results.rds",
+        full_table_for_slicing  = final_exhaustive_ranked
+      ))
+    } else {
+      results_dir_use <- if (is.null(results_dir)) tempdir() else results_dir
+      final_exhaustive_file <- .make_results_path(
+        results_dir  = results_dir_use,
+        prefix       = "ncvroc_final",
+        outcome      = outcome_name,
+        n_items      = length(item_names),
+        min_items    = min_items,
+        max_items    = max_items,
+        rank_by      = final_rank_by,
+        results_name = results_name
+      )
+      saveRDS(final_exhaustive_ranked, final_exhaustive_file)
+      return(list(
+        final_exhaustive_ranked = NULL,
+        final_exhaustive_file   = final_exhaustive_file,
+        final_n_combinations    = nrow(final_exhaustive_ranked),
+        storage_backend         = "single_rds",
+        chunk_dir               = NULL,
+        chunk_prefix            = NULL,
+        results_name            = NULL,
+        full_table_for_slicing  = final_exhaustive_ranked
+      ))
+    }
+  }
+
+  # --- Chunked RDS storage ---
+  if (effective_storage == "chunked_rds") {
+    if (!is.null(building_dir)) {
+      chunk_dir <- file.path(building_dir, "chunks")
+    } else {
+      chunk_dir <- .make_chunk_dir(tempdir())
+    }
+
+    chunk_start <- 0.0
+    chunk_index <- 0L
+    first_chunk <- NULL
+
+    while (chunk_start < total_combos) {
+      chunk <- exhaustive_sum_roc(
+        data              = analysis_dat,
+        outcome           = outcome_name,
+        items             = item_names,
+        min_items         = min_items,
+        max_items         = max_items,
+        positive_label    = positive_label,
+        negative_label    = negative_label,
+        cutoff_method     = cutoff_method,
+        rank_by           = final_rank_by,
+        top_n             = NULL,
+        prefer_fewer_items = TRUE,
+        engine            = engine,
+        progress          = FALSE,
+        chunk_start       = chunk_start,
+        chunk_size        = chunk_size
+      )
+      .write_chunk_rds(chunk, chunk_dir, chunk_index)
+      if (is.null(first_chunk)) first_chunk <- chunk
+
+      chunk_start <- chunk_start + chunk_size
+      chunk_index <- chunk_index + 1L
+    }
+
+    return(list(
+      final_exhaustive_ranked = first_chunk,
+      final_exhaustive_file   = NULL,
+      final_n_combinations    = total_combos,
+      storage_backend         = "chunked_rds",
+      chunk_dir               = chunk_dir,
+      chunk_prefix            = "chunk",
+      results_name            = NULL,
+      full_table_for_slicing  = NULL
+    ))
+  }
+
+  stop("Unexpected storage mode: ", effective_storage, call. = FALSE)
 }
 
 # ---- Main function ----
@@ -271,12 +581,16 @@
 #' @param save_results Logical, write CSV outputs (default FALSE).
 #' @param output_dir Directory for saved CSVs (default `"."`).
 #' @param results_storage Where to store the full final exhaustive results:
-#'   `"rds"` (save to RDS file, default), `"memory"` (keep in RAM), or
-#'   `"none"` (discard). Only applies when `final_search = TRUE`.
-#' @param results_name Optional label prefix for the RDS filename. Analysis
-#'   conditions (item count, k range, rank_by) are always appended.
+#'   `"auto"` (default, small→RAM, large→disk), `"memory"` (keep in RAM),
+#'   `"rds"` (save to disk), or `"none"` (discard).
+#' @param results_name Optional label prefix for the RDS filename (only used
+#'   when results_storage saves a single RDS).
 #' @param results_dir Directory for the full results RDS file, or NULL
-#'   (default) to use the current working directory.
+#'   (default) to use `tempdir()`. Only used for single-RDS storage.
+#' @param chunk_size Integer, combinations per chunk (default 200000).
+#' @param cache One of `"off"` (default), `"reuse"`, or `"refresh"`.
+#' @param cache_dir Directory for result caching, or NULL (must be set
+#'   when `cache != "off"`).
 #' @param progress Logical, show progress bars (default TRUE).
 #' @param verbose Logical, print diagnostic messages (default TRUE).
 #' @param return Return mode: `"full"` or `"summary"` (default `"full"`).
@@ -325,9 +639,12 @@ ncvroc <- function(data,
                    final_rank_by = c("auc", "youden", "sensitivity", "specificity", "accuracy"),
                    save_results = FALSE,
                    output_dir = ".",
-                   results_storage = c("rds", "memory", "none"),
+                   results_storage = c("auto", "memory", "rds", "none"),
                    results_name    = NULL,
                    results_dir     = NULL,
+                   chunk_size      = 200000L,
+                   cache           = c("off", "reuse", "refresh"),
+                   cache_dir       = NULL,
                    progress = TRUE,
                    verbose = TRUE,
                    return = "full",
@@ -341,6 +658,7 @@ ncvroc <- function(data,
   item_names   <- .resolve_items(data, items_expr, caller_env)
   final_rank_by <- match.arg(final_rank_by)
   results_storage <- match.arg(results_storage)
+  cache <- match.arg(cache)
 
   if (!is.null(results_name) &&
       (length(results_name) != 1L || !is.character(results_name) ||
@@ -356,7 +674,25 @@ ncvroc <- function(data,
          call. = FALSE)
   }
 
-  # ---- 1b. item_count validation and resolution ----
+  if (!is.numeric(chunk_size) || length(chunk_size) != 1L || chunk_size <= 0L ||
+      chunk_size != floor(chunk_size)) {
+    stop("chunk_size must be a positive integer.", call. = FALSE)
+  }
+  chunk_size <- as.integer(chunk_size)
+
+  # ---- 1b. Cache validation ----
+  if (cache != "off" && is.null(cache_dir)) {
+    stop("cache_dir must be set when cache = \"", cache, "\".", call. = FALSE)
+  }
+
+  if (!is.null(cache_dir)) {
+    if (length(cache_dir) != 1L || !is.character(cache_dir) ||
+        is.na(cache_dir) || !nzchar(trimws(cache_dir))) {
+      stop("cache_dir must be a single non-empty path.", call. = FALSE)
+    }
+  }
+
+  # ---- 1c. item_count validation and resolution ----
   min_items_missing <- missing(min_items)
   max_items_missing <- missing(max_items)
 
@@ -398,8 +734,50 @@ ncvroc <- function(data,
     positive_label      = positive_label,
     negative_label      = negative_label,
     stratified          = stratified,
-    engine              = engine
+    engine              = engine,
+    chunk_size          = chunk_size,
+    cache               = cache,
+    cache_dir           = cache_dir
   )
+
+  # ---- 3b. Compute cache key and check for existing cache ----
+  cache_key <- NULL
+  cache_load_result <- NULL
+
+  if (cache != "off") {
+    cache_key <- .compute_cache_key(
+      cache_data          = analysis_dat,
+      cache_outcome       = outcome_name,
+      cache_items         = item_names,
+      min_items           = min_items,
+      max_items           = max_items,
+      mode                = mode,
+      outer_k             = outer_k,
+      inner_k             = inner_k,
+      outer_repeats       = outer_repeats,
+      inner_repeats       = inner_repeats,
+      cutoff_method       = cutoff_method,
+      selection_criterion = selection_criterion,
+      preselect_top_n     = cfg$preselect_top_n,
+      preselect_by        = preselect_by,
+      final_search        = final_search,
+      final_rank_by       = final_rank_by,
+      engine              = engine,
+      seed                = seed,
+      positive_label      = positive_label,
+      negative_label      = negative_label,
+      stratified          = stratified,
+      chunk_size          = chunk_size
+    )
+
+    if (cache == "reuse") {
+      cache_load_result <- .load_cache(cache_dir, cache_key)
+      if (!is.null(cache_load_result)) {
+        cache_load_result$loaded_from_cache <- TRUE
+        return(cache_load_result)
+      }
+    }
+  }
 
   # ---- 4. Nested CV ----
   nested_result <- run_ncvroc(
@@ -413,34 +791,86 @@ ncvroc <- function(data,
   )
 
   # ---- 5. Optional final exhaustive search ----
+  final_exhaustive_ranked  <- NULL
+  final_exhaustive_file    <- NULL
+  final_n_combinations     <- 0L
+  final_storage_backend    <- NULL
+  final_chunk_dir          <- NULL
+  final_chunk_prefix       <- NULL
+  full_table_for_slicing   <- NULL
+
+  building_dir <- NULL
+
   if (final_search) {
-    final_exhaustive_ranked <- exhaustive_sum_roc(
-      data                = analysis_dat,
-      outcome             = outcome_name,
-      items               = item_names,
-      min_items           = min_items,
-      max_items           = max_items,
-      positive_label      = positive_label,
-      negative_label      = negative_label,
-      cutoff_method       = cutoff_method,
-      rank_by             = final_rank_by,
-      top_n               = NULL,
-      prefer_fewer_items  = TRUE,
-      engine              = engine,
-      progress            = progress
+    if (cache != "off") {
+      pid <- Sys.getpid()
+      building_dir <- file.path(cache_dir, paste0(cache_key, ".building-", pid))
+      dir.create(building_dir, recursive = TRUE, showWarnings = FALSE)
+    }
+
+    eval_result <- .evaluate_final_exhaustive(
+      analysis_dat       = analysis_dat,
+      outcome_name       = outcome_name,
+      item_names         = item_names,
+      min_items          = min_items,
+      max_items          = max_items,
+      positive_label     = positive_label,
+      negative_label     = negative_label,
+      cutoff_method      = cutoff_method,
+      final_rank_by      = final_rank_by,
+      engine             = engine,
+      progress           = progress,
+      storage_mode       = results_storage,
+      results_dir        = results_dir,
+      results_name       = results_name,
+      chunk_size         = chunk_size,
+      cache              = cache,
+      cache_dir          = cache_dir,
+      building_dir       = building_dir,
+      resolved_item_count = resolved_item_count
     )
-  } else {
-    final_exhaustive_ranked <- NULL
+
+    final_exhaustive_ranked <- eval_result$final_exhaustive_ranked
+    final_exhaustive_file   <- eval_result$final_exhaustive_file
+    final_n_combinations    <- eval_result$final_n_combinations
+    final_storage_backend   <- eval_result$storage_backend
+    final_chunk_dir         <- eval_result$chunk_dir
+    final_chunk_prefix      <- eval_result$chunk_prefix
+    full_table_for_slicing  <- eval_result$full_table_for_slicing
   }
 
   # ---- 5b. Slice final candidates ----
-  if (final_search && !is.null(final_exhaustive_ranked)) {
-    final_model <- final_exhaustive_ranked[1, , drop = FALSE]
+  table_for_slicing <- if (!is.null(full_table_for_slicing)) {
+    full_table_for_slicing
+  } else {
+    final_exhaustive_ranked
+  }
+
+  if (final_search && !is.null(table_for_slicing)) {
+    final_model <- table_for_slicing[1, , drop = FALSE]
     if (is.null(final_top_n)) {
-      final_candidates <- final_exhaustive_ranked
+      final_candidates <- table_for_slicing
     } else if (final_top_n > 0) {
-      final_candidates <- utils::head(final_exhaustive_ranked, final_top_n)
+      final_candidates <- utils::head(table_for_slicing, final_top_n)
     } else {
+      final_candidates <- NULL
+    }
+  } else if (final_search) {
+    # Chunked or single_rds: first chunk was stored; load it for final_model
+    if (final_storage_backend == "chunked_rds" && !is.null(final_chunk_dir)) {
+      chunk <- .read_chunk_rds(final_chunk_dir, 0L)
+      final_model <- chunk[1, , drop = FALSE]
+      is_final_top_n_null <- is.null(final_top_n)
+      has_final_top_n_pos <- isTRUE(final_top_n > 0)
+      if (is.null(final_top_n)) {
+        final_candidates <- chunk
+      } else if (final_top_n > 0) {
+        final_candidates <- utils::head(chunk, final_top_n)
+      } else {
+        final_candidates <- NULL
+      }
+    } else {
+      final_model <- NULL
       final_candidates <- NULL
     }
   } else {
@@ -481,8 +911,13 @@ ncvroc <- function(data,
       file.path(output_dir, "nested_cv_summary.csv"), row.names = FALSE)
     utils::write.csv(nested_result$selected_model_frequency,
       file.path(output_dir, "nested_cv_selected_model_frequency.csv"), row.names = FALSE)
-    if (!is.null(final_exhaustive_ranked)) {
-      utils::write.csv(final_exhaustive_ranked,
+    full_for_csv <- if (!is.null(full_table_for_slicing)) {
+      full_table_for_slicing
+    } else {
+      final_exhaustive_ranked
+    }
+    if (!is.null(full_for_csv)) {
+      utils::write.csv(full_for_csv,
         file.path(output_dir, "final_exhaustive_results_ranked.csv"), row.names = FALSE)
     }
     if (!is.null(final_candidates)) {
@@ -495,60 +930,7 @@ ncvroc <- function(data,
     }
   }
 
-  # ---- 7. Final results storage (RDS / memory / none) ----
-  stored_final_results <- NULL
-  final_exhaustive_file <- NULL
-  final_n_combinations <- 0L
-
-  if (isTRUE(final_search)) {
-    final_n_combinations <- nrow(final_exhaustive_ranked)
-
-    metadata <- list(
-      function_name   = "ncvroc",
-      outcome         = outcome_name,
-      items           = item_names,
-      n_items         = length(item_names),
-      min_items       = min_items,
-      max_items       = max_items,
-      item_count      = resolved_item_count,
-      rank_by         = final_rank_by,
-      cutoff_method   = cutoff_method,
-      positive_label  = positive_label,
-      negative_label  = negative_label,
-      engine          = engine,
-      created_at      = Sys.time(),
-      package_version = as.character(utils::packageVersion("NCVROC"))
-    )
-
-    if (results_storage == "rds") {
-      attr(final_exhaustive_ranked, "ncvroc_metadata") <- metadata
-      final_exhaustive_file <- .make_results_path(
-        results_dir  = results_dir,
-        prefix       = "ncvroc_final",
-        outcome      = outcome_name,
-        n_items      = length(item_names),
-        min_items    = min_items,
-        max_items    = max_items,
-        rank_by      = final_rank_by,
-        results_name = results_name
-      )
-      saveRDS(final_exhaustive_ranked, final_exhaustive_file)
-      stored_final_results <- NULL
-    } else if (results_storage == "memory") {
-      attr(final_exhaustive_ranked, "ncvroc_metadata") <- metadata
-      stored_final_results <- final_exhaustive_ranked
-      final_exhaustive_file <- NULL
-    } else {
-      stored_final_results <- NULL
-      final_exhaustive_file <- NULL
-    }
-
-    if (results_storage != "memory") {
-      rm(final_exhaustive_ranked)
-    }
-  }
-
-  # ---- 8. Return ----
+  # ---- 7. Build return object ----
   result <- list(
     config                    = cfg,
     data                      = analysis_dat,
@@ -561,16 +943,53 @@ ncvroc <- function(data,
     selected_model_frequency  = nested_result$selected_model_frequency,
     outer_predictions         = nested_result$outer_predictions,
     final_search              = final_search,
-    final_exhaustive_ranked   = stored_final_results,
+    final_exhaustive_ranked   = final_exhaustive_ranked,
     final_exhaustive_file     = final_exhaustive_file,
     final_results_storage     = results_storage,
+    storage_backend           = final_storage_backend,
     final_n_combinations      = final_n_combinations,
     final_candidates          = final_candidates,
     final_model               = final_model,
     final_top_n               = final_top_n,
     final_rank_by             = final_rank_by,
-    item_count                = resolved_item_count
+    item_count                = resolved_item_count,
+    chunk_dir                 = final_chunk_dir,
+    chunk_prefix              = final_chunk_prefix,
+    chunk_size                = chunk_size,
+    cache_key                 = cache_key,
+    cache_dir                 = if (!is.null(cache_dir)) normalizePath(cache_dir, winslash = "/", mustWork = FALSE) else NULL,
+    cache_entry_dir           = NULL,
+    loaded_from_cache         = FALSE
   )
+
+  # ---- 8. Save to cache if enabled ----
+  if (cache != "off" && !is.null(building_dir)) {
+    metadata_list <- list(
+      function_name   = "ncvroc",
+      outcome         = outcome_name,
+      items           = item_names,
+      min_items       = min_items,
+      max_items       = max_items,
+      item_count      = resolved_item_count,
+      rank_by         = final_rank_by,
+      cutoff_method   = cutoff_method,
+      positive_label  = positive_label,
+      negative_label  = negative_label,
+      engine          = engine,
+      created_at      = Sys.time(),
+      package_version = as.character(utils::packageVersion("NCVROC"))
+    )
+
+    result <- .save_cache(
+      result          = result,
+      full_results    = full_table_for_slicing,
+      cache_dir       = cache_dir,
+      cache_key       = cache_key,
+      metadata_list   = metadata_list,
+      storage_backend = final_storage_backend
+    )
+  }
+
   class(result) <- "ncvroc_analysis"
   result
 }
@@ -588,6 +1007,10 @@ print.ncvroc_analysis <- function(x, ...) {
   cfg <- x$config
 
   cat("NCVROC analysis\n\n")
+
+  if (!is.null(x$loaded_from_cache) && x$loaded_from_cache) {
+    cat("Loaded from cache: ", x$cache_entry_dir, "\n\n", sep = "")
+  }
 
   cat("Analyzed observations:", x$n_analyzed, "\n")
   if (!is.null(x$n_original) && x$n_original != x$n_analyzed) {
@@ -639,8 +1062,14 @@ print.ncvroc_analysis <- function(x, ...) {
     n_shown <- if (is.null(x$final_candidates)) 0 else nrow(x$final_candidates)
     cat("Final candidates shown:   ", n_shown, "\n", sep = "")
 
-    if (!is.null(x$final_results_storage)) {
-      if (x$final_results_storage == "rds") {
+    if (!is.null(x$storage_backend)) {
+      if (x$storage_backend == "chunked_rds") {
+        cat("Full results: ", format(x$final_n_combinations, big.mark = ",", scientific = FALSE),
+            " candidates in chunk files\n", sep = "")
+        if (!is.null(x$chunk_dir)) {
+          cat("  Chunk directory: ", x$chunk_dir, "\n", sep = "")
+        }
+      } else if (x$storage_backend == "single_rds") {
         if (!is.null(x$final_exhaustive_file)) {
           if (!file.exists(x$final_exhaustive_file)) {
             cat("Full results: stored RDS file is missing\n")
@@ -648,8 +1077,23 @@ print.ncvroc_analysis <- function(x, ...) {
             cat("Full results: stored in ", x$final_exhaustive_file, "\n", sep = "")
           }
         }
-      } else if (x$final_results_storage == "none") {
+      } else if (x$storage_backend == "none") {
         cat("Full results: not stored\n")
+      }
+    } else {
+      # Backward compat: old results_storage field
+      if (!is.null(x$final_results_storage)) {
+        if (x$final_results_storage == "rds") {
+          if (!is.null(x$final_exhaustive_file)) {
+            if (!file.exists(x$final_exhaustive_file)) {
+              cat("Full results: stored RDS file is missing\n")
+            } else {
+              cat("Full results: stored in ", x$final_exhaustive_file, "\n", sep = "")
+            }
+          }
+        } else if (x$final_results_storage == "none") {
+          cat("Full results: not stored\n")
+        }
       }
     }
   }
@@ -753,6 +1197,9 @@ plot.ncvroc_analysis <- function(x,
 #' @param rank_by Metric for ranking matching candidates: `"youden"`, `"auc"`,
 #'   `"sensitivity"`, `"specificity"`, `"accuracy"`, `"ppv"`, or `"npv"`.
 #' @param top_n Number of top candidates to return (NULL for all, 0 for none).
+#' @param allow_full_load Logical. If `TRUE` and storage is chunked, load all
+#'   chunks (may use large amounts of memory). If `FALSE` (default) and
+#'   `top_n` is NULL with chunked storage, errors.
 #'
 #' @return A data.frame of matching candidates, sorted by `rank_by` descending.
 #' @export
@@ -785,24 +1232,8 @@ ncvroc_results <- function(x,
                            cutoff       = NULL,
                            rank_by = c("youden", "auc", "sensitivity", "specificity",
                                        "accuracy", "ppv", "npv"),
-                           top_n = 20) {
-
-  if (inherits(x, "roc_bruteforce_result")) {
-    dat <- .read_results_from_storage(x$results, x$results_file, "results")
-  } else if (inherits(x, "ncvroc_analysis")) {
-    if (isFALSE(x$final_search)) {
-      stop(
-        "Final exhaustive search was not performed. ",
-        "Re-run ncvroc() with final_search = TRUE.",
-        call. = FALSE
-      )
-    }
-    dat <- .read_results_from_storage(
-      x$final_exhaustive_ranked, x$final_exhaustive_file, "results"
-    )
-  } else {
-    stop("x must be an ncvroc_analysis or roc_bruteforce_result object.", call. = FALSE)
-  }
+                           top_n = 20,
+                           allow_full_load = FALSE) {
 
   rank_by <- match.arg(rank_by)
 
@@ -812,6 +1243,104 @@ ncvroc_results <- function(x,
     }
   }
 
+  if (!isTRUE(allow_full_load) && !isFALSE(allow_full_load)) {
+    stop("allow_full_load must be TRUE or FALSE.", call. = FALSE)
+  }
+
+  # ---- Identify storage backend ----
+  is_chunked <- !is.null(x$storage_backend) && x$storage_backend == "chunked_rds"
+  is_single_rds <- !is.null(x$storage_backend) && x$storage_backend == "single_rds"
+  is_memory <- !is.null(x$storage_backend) && x$storage_backend == "memory"
+  is_none <- !is.null(x$storage_backend) && x$storage_backend == "none"
+
+  # ---- Chunked path ----
+  if (is_chunked) {
+    if (is.null(x$chunk_dir) || !dir.exists(x$chunk_dir)) {
+      stop("Chunked results directory no longer exists: ",
+           x$chunk_dir %||% "NULL", call. = FALSE)
+    }
+
+    if (!is.null(top_n) && top_n > 0) {
+      return(.stream_top_n_from_chunks(
+        chunk_dir    = x$chunk_dir,
+        rank_by      = rank_by,
+        top_n        = top_n,
+        sensitivity  = sensitivity,
+        specificity  = specificity,
+        auc          = auc,
+        youden       = youden,
+        accuracy     = accuracy,
+        ppv          = ppv,
+        npv          = npv,
+        n_items      = n_items,
+        cutoff       = cutoff
+      ))
+    }
+
+    if (is.null(top_n) && !allow_full_load) {
+      stop(
+        "Full retrieval from chunked storage may require very large amounts of ",
+        "memory. Specify a finite top_n, or set allow_full_load = TRUE explicitly.",
+        call. = FALSE
+      )
+    }
+
+    if (is.null(top_n) && allow_full_load) {
+      return(.full_load_chunked(
+        chunk_dir    = x$chunk_dir,
+        sensitivity  = sensitivity,
+        specificity  = specificity,
+        auc          = auc,
+        youden       = youden,
+        accuracy     = accuracy,
+        ppv          = ppv,
+        npv          = npv,
+        n_items      = n_items,
+        cutoff       = cutoff
+      ))
+    }
+
+    # top_n == 0: empty result
+    return(.full_load_chunked(
+      chunk_dir = x$chunk_dir,
+      sensitivity = sensitivity,
+      specificity = specificity,
+      auc = auc, youden = youden,
+      accuracy = accuracy, ppv = ppv, npv = npv,
+      n_items = n_items, cutoff = cutoff
+    )[0, , drop = FALSE])
+  }
+
+  # ---- None path ----
+  if (is_none) {
+    stop(
+      "Full results were not stored. Re-run the analysis with ",
+      'results_storage = "memory", "rds", or "auto".',
+      call. = FALSE
+    )
+  }
+
+  # ---- Legacy / memory / single_rds path ----
+  if (inherits(x, "roc_bruteforce_result")) {
+    dat <- .read_results_from_storage(x$results, x$results_file, x$chunk_dir,
+                                       x$storage_backend, "results")
+  } else if (inherits(x, "ncvroc_analysis")) {
+    if (isFALSE(x$final_search)) {
+      stop(
+        "Final exhaustive search was not performed. ",
+        "Re-run ncvroc() with final_search = TRUE.",
+        call. = FALSE
+      )
+    }
+    dat <- .read_results_from_storage(
+      x$final_exhaustive_ranked, x$final_exhaustive_file, x$chunk_dir,
+      x$storage_backend, "results"
+    )
+  } else {
+    stop("x must be an ncvroc_analysis or roc_bruteforce_result object.", call. = FALSE)
+  }
+
+  # ---- Filter by conditions ----
   conditions <- list(
     sensitivity = sensitivity,
     specificity = specificity,
@@ -848,7 +1377,7 @@ ncvroc_results <- function(x,
     dat <- dat[keep, , drop = FALSE]
   }
 
-  # Sort by rank_by descending with tiebreakers
+  # ---- Sort ----
   tie_cols <- setdiff(c("youden", "auc", "sensitivity", "specificity", "accuracy"), rank_by)
   tie_cols <- intersect(tie_cols, names(dat))
 
@@ -866,3 +1395,6 @@ ncvroc_results <- function(x,
     utils::head(dat, top_n)
   }
 }
+
+# Backward compat %||% operator
+`%||%` <- function(x, y) if (is.null(x)) y else x

@@ -30,6 +30,9 @@
 #'   `rank_by`, models with fewer items are ranked higher. Default `TRUE`.
 #' @param engine Character, computation engine. `"R"` (default) or `"Rcpp"`.
 #' @param progress Logical, show progress bar? Default `TRUE`.
+#' @param chunk_start Internal: zero-based global combination index to start
+#'   from. When set together with `chunk_size`, only that range is evaluated.
+#' @param chunk_size Internal: number of combinations to evaluate in this chunk.
 #'
 #' @return A data.frame with columns: `rank`, `items` (comma-separated string),
 #'   `n_items`, `auc`, `cutoff`, `sensitivity`, `specificity`, `youden`,
@@ -58,7 +61,9 @@ exhaustive_sum_roc <- function(data,
                                top_n = NULL,
                                prefer_fewer_items = TRUE,
                                engine = c("R", "Rcpp"),
-                               progress = TRUE) {
+                               progress = TRUE,
+                               chunk_start = NULL,
+                               chunk_size = NULL) {
 
   # ---- Argument validation ----
   cutoff_method <- match.arg(cutoff_method)
@@ -78,96 +83,153 @@ exhaustive_sum_roc <- function(data,
   x     <- validated$data
   y     <- validated$y          # 0/1 numeric vector
   items <- validated$items
+  n_items <- length(items)
 
   n_total <- length(y)
   n_pos   <- sum(y == 1L)
   n_neg   <- sum(y == 0L)
 
-  # ---- Enumerate all item combinations ----
-  combos <- enumerate_combinations(items, min_items = min_items, max_items = max_items)
-  n_combos <- length(combos)
+  # ---- Determine if we are in chunked mode ----
+  is_chunked <- !is.null(chunk_start) && !is.null(chunk_size)
 
-  if (engine == "Rcpp") {
-    # ---- Rcpp engine ----
-    x_mat <- as.matrix(x[, items, drop = FALSE])
-    combo_indices <- lapply(combos, function(v) match(v, items) - 1L)
+  if (is_chunked) {
+    # --- Chunked evaluation path ---
+    if (!is.numeric(chunk_start) || length(chunk_start) != 1 || chunk_start < 0) {
+      stop("`chunk_start` must be a non-negative number.", call. = FALSE)
+    }
+    if (!is.numeric(chunk_size) || length(chunk_size) != 1 || chunk_size <= 0 ||
+        chunk_size != floor(chunk_size)) {
+      stop("`chunk_size` must be a positive integer.", call. = FALSE)
+    }
+    chunk_size <- as.integer(chunk_size)
+    chunk_start <- as.double(chunk_start)
 
-    results <- evaluate_combos_cpp(x_mat, y, combo_indices, cutoff_method)
-    results$items <- sapply(combos, format_items)
+    if (engine == "Rcpp") {
+      x_mat <- as.matrix(x[, items, drop = FALSE])
+      results <- evaluate_combos_cpp_chunk(
+        x_mat, y,
+        min_items = min_items,
+        max_items = max_items,
+        cutoff_method = cutoff_method,
+        chunk_start = chunk_start,
+        chunk_size = chunk_size
+      )
+      # Resolve column indices to item-name strings
+      total_combos <- .count_total_combos(n_items, min_items, max_items)
+      chunk_end <- min(chunk_start + chunk_size, total_combos)
+      n_this_chunk <- as.integer(chunk_end - chunk_start)
+      items_vec <- character(n_this_chunk)
+      for (gi in seq_len(n_this_chunk)) {
+        global_rank <- chunk_start + (gi - 1L)
+        resolved <- .resolve_global_combination_rank(n_items, min_items, max_items, global_rank)
+        idx <- .combination_unrank(n_items, resolved$k, resolved$rank_within_k)
+        items_vec[gi] <- format_items(items[idx + 1L])
+      }
+      results$items <- items_vec
+
+    } else {
+      # R engine chunked: enumerate combos via combinadic, evaluate each
+      combo_chunk <- .enumerate_combinations_chunk(
+        items, min_items, max_items, chunk_start, chunk_size
+      )
+      n_this_chunk <- length(combo_chunk)
+
+      results <- vector("list", n_this_chunk)
+      for (i in seq_len(n_this_chunk)) {
+        combo_items <- combo_chunk[[i]]
+        k <- length(combo_items)
+        scores <- rowSums(x[, combo_items, drop = FALSE])
+        freq <- compute_score_frequencies(scores, y)
+        auc_val <- compute_auc_from_table(freq$pos_counts, freq$neg_counts)
+        metrics <- compute_roc_metrics_from_table(freq$pos_counts, freq$neg_counts)
+        best <- find_optimal_cutoff(metrics, method = cutoff_method)
+
+        results[[i]] <- data.frame(
+          items       = format_items(combo_items),
+          n_items     = k,
+          auc         = auc_val,
+          cutoff      = best$cutoff,
+          sensitivity = best$sensitivity,
+          specificity = best$specificity,
+          youden      = best$youden,
+          accuracy    = best$accuracy,
+          ppv         = best$ppv,
+          npv         = best$npv,
+          n_positive  = n_pos,
+          n_negative  = n_neg,
+          stringsAsFactors = FALSE
+        )
+      }
+      results <- do.call(rbind, results)
+    }
 
   } else {
-    # ---- R engine ----
+    # --- Full (non-chunked) evaluation path ---
+    combos <- enumerate_combinations(items, min_items = min_items, max_items = max_items)
+    n_combos <- length(combos)
 
-    # Progress bar
-    if (progress) {
-      pb <- utils::txtProgressBar(min = 0, max = n_combos, style = 3)
-      on.exit(close(pb), add = TRUE)
-    }
-
-    results <- vector("list", n_combos)
-
-    for (i in seq_len(n_combos)) {
-      combo_items <- combos[[i]]
-      k <- length(combo_items)
-
-      # Simple sum score
-      scores <- rowSums(x[, combo_items, drop = FALSE])
-
-      # Frequency table
-      freq <- compute_score_frequencies(scores, y)
-
-      # AUC
-      auc_val <- compute_auc_from_table(freq$pos_counts, freq$neg_counts)
-
-      # Full ROC metrics at all cutoffs
-      metrics <- compute_roc_metrics_from_table(freq$pos_counts, freq$neg_counts)
-
-      # Optimal cutoff
-      best <- find_optimal_cutoff(metrics, method = cutoff_method)
-
-      results[[i]] <- data.frame(
-        items       = format_items(combo_items),
-        n_items     = k,
-        auc         = auc_val,
-        cutoff      = best$cutoff,
-        sensitivity = best$sensitivity,
-        specificity = best$specificity,
-        youden      = best$youden,
-        accuracy    = best$accuracy,
-        ppv         = best$ppv,
-        npv         = best$npv,
-        n_positive  = n_pos,
-        n_negative  = n_neg,
-        stringsAsFactors = FALSE
-      )
-
+    if (engine == "Rcpp") {
+      x_mat <- as.matrix(x[, items, drop = FALSE])
+      combo_indices <- lapply(combos, function(v) match(v, items) - 1L)
+      results <- evaluate_combos_cpp(x_mat, y, combo_indices, cutoff_method)
+      results$items <- sapply(combos, format_items)
+    } else {
       if (progress) {
-        utils::setTxtProgressBar(pb, i)
+        pb <- utils::txtProgressBar(min = 0, max = n_combos, style = 3)
+        on.exit(close(pb), add = TRUE)
       }
-    }
 
-    results <- do.call(rbind, results)
+      results <- vector("list", n_combos)
+      for (i in seq_len(n_combos)) {
+        combo_items <- combos[[i]]
+        k <- length(combo_items)
+        scores <- rowSums(x[, combo_items, drop = FALSE])
+        freq <- compute_score_frequencies(scores, y)
+        auc_val <- compute_auc_from_table(freq$pos_counts, freq$neg_counts)
+        metrics <- compute_roc_metrics_from_table(freq$pos_counts, freq$neg_counts)
+        best <- find_optimal_cutoff(metrics, method = cutoff_method)
+
+        results[[i]] <- data.frame(
+          items       = format_items(combo_items),
+          n_items     = k,
+          auc         = auc_val,
+          cutoff      = best$cutoff,
+          sensitivity = best$sensitivity,
+          specificity = best$specificity,
+          youden      = best$youden,
+          accuracy    = best$accuracy,
+          ppv         = best$ppv,
+          npv         = best$npv,
+          n_positive  = n_pos,
+          n_negative  = n_neg,
+          stringsAsFactors = FALSE
+        )
+
+        if (progress) {
+          utils::setTxtProgressBar(pb, i)
+        }
+      }
+
+      results <- do.call(rbind, results)
+    }
   }
 
   # ---- Sort ----
   sort_col <- results[[rank_by]]
   if (prefer_fewer_items) {
-    # Descending rank_by, then ascending n_items
     ord <- order(-sort_col, results$n_items)
   } else {
     ord <- order(-sort_col)
   }
   results <- results[ord, , drop = FALSE]
 
-  # Truncate if top_n specified
-  if (!is.null(top_n)) {
+  # Don't truncate in chunked mode — caller slices
+  if (!is_chunked && !is.null(top_n)) {
     results <- utils::head(results, top_n)
   }
 
-  # Add rank column
   results$rank <- seq_len(nrow(results))
 
-  # Reorder columns: rank first
   col_order <- c("rank", "items", "n_items", "auc", "cutoff",
                  "sensitivity", "specificity", "youden", "accuracy",
                  "ppv", "npv", "n_positive", "n_negative")

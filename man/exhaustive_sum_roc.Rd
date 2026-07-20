@@ -17,7 +17,9 @@ exhaustive_sum_roc(
   top_n = NULL,
   prefer_fewer_items = TRUE,
   engine = c("R", "Rcpp"),
-  progress = TRUE
+  progress = TRUE,
+  chunk_start = NULL,
+  chunk_size = NULL
 )
 }
 \arguments{
@@ -51,6 +53,11 @@ Euclidean distance to (0,1) in ROC space). Default `"youden"`.}
 \item{engine}{Character, computation engine. `"R"` (default) or `"Rcpp"`.}
 
 \item{progress}{Logical, show progress bar? Default `TRUE`.}
+
+\item{chunk_start}{Internal: zero-based global combination index to start
+from. When set together with `chunk_size`, only that range is evaluated.}
+
+\item{chunk_size}{Internal: number of combinations to evaluate in this chunk.}
 }
 \value{
 A data.frame with columns: `rank`, `items` (comma-separated string),

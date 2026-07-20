@@ -2,23 +2,32 @@
 % Please edit documentation in R/ncvroc.R
 \name{.read_results_from_storage}
 \alias{.read_results_from_storage}
-\title{Read full candidate results from memory or an RDS file}
+\title{Read full candidate results from memory or storage}
 \usage{
-.read_results_from_storage(dat, file, context = "results")
+.read_results_from_storage(
+  dat,
+  file,
+  chunk_dir = NULL,
+  storage_backend = NULL,
+  context = "results"
+)
 }
 \arguments{
 \item{dat}{In-memory data.frame or NULL.}
 
 \item{file}{Path to RDS file or NULL.}
 
-\item{context}{Label for error messages (e.g. "results").}
+\item{chunk_dir}{Path to chunk directory or NULL.}
+
+\item{storage_backend}{Character, "memory", "single_rds", "chunked_rds", or "none".}
+
+\item{context}{Label for error messages.}
 }
 \value{
 A data.frame of candidate results.
 }
 \description{
-Returns the full candidate table, reading from an RDS file if necessary.
-Errors clearly if results are not available (e.g. `results_storage =
-"none"`).
+Returns the full candidate table, reading from disk if necessary.
+Errors if results are not available.
 }
 \keyword{internal}

@@ -20,9 +20,12 @@ roc_bruteforce(
   progress = interactive(),
   save_results = FALSE,
   output_dir = ".",
-  results_storage = c("rds", "memory", "none"),
+  results_storage = c("auto", "memory", "rds", "none"),
   results_name = NULL,
   results_dir = NULL,
+  chunk_size = 200000L,
+  cache = c("off", "reuse", "refresh"),
+  cache_dir = NULL,
   item_count = NULL
 )
 
@@ -41,9 +44,12 @@ roc_bf(
   progress = interactive(),
   save_results = FALSE,
   output_dir = ".",
-  results_storage = c("rds", "memory", "none"),
+  results_storage = c("auto", "memory", "rds", "none"),
   results_name = NULL,
   results_dir = NULL,
+  chunk_size = 200000L,
+  cache = c("off", "reuse", "refresh"),
+  cache_dir = NULL,
   item_count = NULL
 )
 }
@@ -79,23 +85,25 @@ roc_bf(
 \item{output_dir}{Directory for saved CSVs (default `"."`).}
 
 \item{results_storage}{Where to store the full results table:
-`"rds"` (save to RDS file, default), `"memory"` (keep in RAM), or
-`"none"` (discard).}
+`"auto"` (default), `"memory"`, `"rds"`, or `"none"`.}
 
-\item{results_name}{Optional label prefix for the RDS filename. Analysis
-conditions (item count, k range, rank_by) are always appended.}
+\item{results_name}{Optional label prefix for the RDS filename.}
 
 \item{results_dir}{Directory for the full results RDS file, or NULL
-(default) to use the current working directory.}
+(default) to use `tempdir()`.}
+
+\item{chunk_size}{Integer, combinations per chunk (default 200000).}
+
+\item{cache}{One of `"off"` (default), `"reuse"`, or `"refresh"`.}
+
+\item{cache_dir}{Directory for caching, or NULL.}
 
 \item{item_count}{Concise model-size specification: `"==4"` (exactly 4
 items), `"<=4"` (up to 4 items), or `"2:4"` (2 through 4 items).
 Cannot be combined with `min_items` or `max_items`. Default NULL.}
 }
 \value{
-An object of class `"roc_bruteforce_result"`. Use `$results`
-  for the full table, `$candidates` for the `top_n` subset, and
-  `$best_model` for the top-ranked model.
+An object of class `"roc_bruteforce_result"`.
 }
 \description{
 Evaluates all requested item combinations directly on the full dataset

@@ -16,8 +16,7 @@
 )
 }
 \arguments{
-\item{results_dir}{Directory for the RDS file, or NULL for the current
-working directory (typically the folder containing your Rmd/Qmd file).}
+\item{results_dir}{Directory for the RDS file, or NULL for tempdir().}
 
 \item{prefix}{Function name prefix (e.g. "roc_bruteforce").}
 

@@ -240,7 +240,7 @@ test_that("n_combinations matches nrow(results) with memory storage", {
 test_that("n_combinations is correct with RDS storage (results is NULL)", {
   d <- make_bf_data()
   res <- roc_bruteforce(d, "y", c("Q1", "Q2", "Q3"), max_items = 2,
-                         engine = "R", progress = FALSE)
+                         engine = "R", progress = FALSE, results_storage = "rds")
   expect_null(res$results)
   expect_gt(res$n_combinations, 0)
   expect_true(!is.null(res$results_file))
@@ -330,10 +330,10 @@ test_that("non-numeric character values throw error", {
 
 # ---- results_storage ----
 
-test_that("default results_storage = 'rds' sets results to NULL", {
+test_that("results_storage = 'rds' sets results to NULL", {
   d <- make_bf_data()
   res <- roc_bruteforce(d, "y", c("Q1", "Q2", "Q3"), max_items = 2,
-                         engine = "R", progress = FALSE)
+                         engine = "R", progress = FALSE, results_storage = "rds")
   expect_null(res$results)
   expect_true(!is.null(res$results_file))
   expect_equal(res$results_storage, "rds")
@@ -363,7 +363,7 @@ test_that("results_storage = 'none' causes ncvroc_results() to error", {
                          engine = "R", progress = FALSE, results_storage = "none")
   expect_error(
     ncvroc_results(res),
-    "not available"
+    "not stored"
   )
 })
 
@@ -384,7 +384,7 @@ test_that("results_dir saves RDS to specified path", {
   on.exit(unlink(tmp, recursive = TRUE), add = TRUE)
   res <- roc_bruteforce(d, "y", c("Q1", "Q2", "Q3"), max_items = 2,
                          engine = "R", progress = FALSE,
-                         results_dir = tmp)
+                         results_storage = "rds", results_dir = tmp)
   expect_true(dir.exists(tmp))
   expect_true(file.exists(res$results_file))
   expect_equal(normalizePath(dirname(res$results_file), winslash = "/", mustWork = FALSE),
@@ -395,7 +395,7 @@ test_that("results_name appears as prefix in RDS filename", {
   d <- make_bf_data()
   res <- roc_bruteforce(d, "y", c("Q1", "Q2", "Q3"), max_items = 2,
                          engine = "R", progress = FALSE,
-                         results_name = "my_study")
+                         results_storage = "rds", results_name = "my_study")
   fname <- basename(res$results_file)
   expect_match(fname, "^my_study_")
   expect_match(fname, "_p3_k1-2_auc_")
@@ -404,7 +404,7 @@ test_that("results_name appears as prefix in RDS filename", {
 test_that("RDS file contains ncvroc_metadata attribute", {
   d <- make_bf_data()
   res <- roc_bruteforce(d, "y", c("Q1", "Q2", "Q3"), max_items = 2,
-                         engine = "R", progress = FALSE)
+                         engine = "R", progress = FALSE, results_storage = "rds")
   full <- readRDS(res$results_file)
   meta <- attr(full, "ncvroc_metadata")
   expect_type(meta, "list")
@@ -429,7 +429,7 @@ test_that("RDS roundtrip is identical to memory mode", {
 test_that("deleted RDS file causes ncvroc_results() to error", {
   d <- make_bf_data()
   res <- roc_bruteforce(d, "y", c("Q1", "Q2", "Q3"), max_items = 2,
-                         engine = "R", progress = FALSE)
+                         engine = "R", progress = FALSE, results_storage = "rds")
   unlink(res$results_file)
   expect_error(
     ncvroc_results(res),
@@ -440,7 +440,7 @@ test_that("deleted RDS file causes ncvroc_results() to error", {
 test_that("print survives missing RDS file", {
   d <- make_bf_data()
   res <- roc_bruteforce(d, "y", c("Q1", "Q2", "Q3"), max_items = 2,
-                         engine = "R", progress = FALSE)
+                         engine = "R", progress = FALSE, results_storage = "rds")
   unlink(res$results_file)
   expect_output(
     print(res),
@@ -461,7 +461,7 @@ test_that("seed is not consumed by filename generation", {
 test_that("print shows storage info for RDS mode", {
   d <- make_bf_data()
   res <- roc_bruteforce(d, "y", c("Q1", "Q2", "Q3"), max_items = 2,
-                         engine = "R", progress = FALSE)
+                         engine = "R", progress = FALSE, results_storage = "rds")
   expect_output(
     print(res),
     "stored in"
@@ -485,7 +485,7 @@ test_that("save_results CSV still works with rds storage", {
   on.exit(unlink(tmp, recursive = TRUE), add = TRUE)
   res <- roc_bruteforce(d, "y", c("Q1", "Q2", "Q3"), max_items = 2,
                          engine = "R", progress = FALSE,
-                         results_storage = "rds",
+                         results_storage = "memory",
                          save_results = TRUE, output_dir = tmp)
   expect_true(file.exists(file.path(tmp, "roc_bruteforce_results.csv")))
   expect_true(file.exists(file.path(tmp, "roc_bruteforce_candidates.csv")))
@@ -541,16 +541,15 @@ test_that("empty results_dir errors", {
   )
 })
 
-test_that("default RDS storage uses the working directory", {
+test_that("results_storage = 'rds' uses results_dir", {
   d <- make_bf_data()
-  old_wd <- getwd()
   tmp <- tempfile("ncvroc-wd-")
   dir.create(tmp)
-  on.exit(setwd(old_wd), add = TRUE)
-  setwd(tmp)
+  on.exit(unlink(tmp, recursive = TRUE), add = TRUE)
 
   res <- roc_bruteforce(d, "y", c("Q1", "Q2", "Q3"), max_items = 2,
-                         engine = "R", progress = FALSE)
+                         engine = "R", progress = FALSE, results_storage = "rds",
+                         results_dir = tmp)
 
   expect_equal(normalizePath(dirname(res$results_file)),
                normalizePath(tmp))
@@ -628,7 +627,7 @@ test_that("R and Rcpp engines equivalent with item_count", {
 test_that("item_count reflects in RDS filename range", {
   d <- make_bf_data()
   res <- roc_bruteforce(d, "y", c("Q1", "Q2", "Q3"), item_count = "==2",
-                         engine = "R", progress = FALSE)
+                         engine = "R", progress = FALSE, results_storage = "rds")
   expect_match(res$results_file, "_k2-2_")
   expect_equal(res$item_count, "==2")
 })

@@ -272,6 +272,98 @@
   )
 }
 
+#' Streaming top-N exhaustive search
+#'
+#' Evaluates all combinations chunk-by-chunk and keeps a running top-N buffer.
+#' Never builds the full candidate table in memory. Used by nested_sum_roc()
+#' for per-fold preselection when total combos exceed AUTO_MEMORY_LIMIT.
+#'
+#' @param data A data.frame.
+#' @param outcome Character, outcome column name.
+#' @param items Character vector of item names.
+#' @param min_items Integer.
+#' @param max_items Integer.
+#' @param positive_label Scalar.
+#' @param negative_label Scalar.
+#' @param cutoff_method Character.
+#' @param rank_by Character, metric to sort by.
+#' @param top_n Integer, number of top candidates to keep.
+#' @param engine Character, "R" or "Rcpp".
+#'
+#' @return A data.frame of at most `top_n` rows in the standard exhaustive_sum_roc format.
+#' @keywords internal
+.streaming_top_n_exhaustive <- function(data,
+                                         outcome,
+                                         items,
+                                         min_items,
+                                         max_items,
+                                         positive_label,
+                                         negative_label,
+                                         cutoff_method,
+                                         rank_by,
+                                         top_n,
+                                         engine) {
+  validated <- validate_inputs(data, outcome, items, positive_label, negative_label)
+  x     <- validated$data
+  y     <- validated$y
+  items <- validated$items
+  n_items <- length(items)
+
+  # Use the non-chunked version if total combos fits in one chunk
+  total <- .count_total_combos(n_items, min_items, max_items)
+  chunk_size <- DEFAULT_CHUNK_SIZE
+
+  best_so_far <- NULL
+  chunk_start <- 0.0
+  chunk_index <- 0L
+
+  while (chunk_start < total) {
+    chunk <- exhaustive_sum_roc(
+      data              = data,
+      outcome           = outcome,
+      items             = items,
+      min_items         = min_items,
+      max_items         = max_items,
+      positive_label    = positive_label,
+      negative_label    = negative_label,
+      cutoff_method     = cutoff_method,
+      rank_by           = rank_by,
+      top_n             = NULL,
+      prefer_fewer_items = TRUE,
+      engine            = engine,
+      progress          = FALSE,
+      chunk_start       = chunk_start,
+      chunk_size        = chunk_size
+    )
+
+    # Keep running top-N
+    combined <- if (is.null(best_so_far)) {
+      chunk
+    } else {
+      rbind(best_so_far, chunk)
+    }
+
+    ord <- order(
+      -combined[[rank_by]],
+      -combined$youden,
+      -combined$sensitivity,
+      -combined$specificity,
+      combined$n_items
+    )
+    combined <- combined[ord, , drop = FALSE]
+    best_so_far <- utils::head(combined, top_n)
+
+    chunk_start <- chunk_start + chunk_size
+    chunk_index <- chunk_index + 1L
+  }
+
+  if (is.null(best_so_far)) {
+    stop("No combinations evaluated in streaming search.", call. = FALSE)
+  }
+
+  best_so_far
+}
+
 # ---- Main exported function ----
 
 #' Nested cross-validation for item-set score selection
@@ -432,6 +524,17 @@ nested_sum_roc <- function(data,
   )
   n_folds <- length(outer_folds)
 
+  # ---- Determine if nested CV needs streaming ----
+  total_ncv_combos <- .count_total_combos(length(items), min_items, max_items)
+  use_streaming_ncv <- total_ncv_combos > AUTO_MEMORY_LIMIT
+
+  if (verbose && use_streaming_ncv) {
+    message(
+      "Nested CV: ", total_ncv_combos, " combinations, using streaming top-",
+      preselect_top_n, " preselection"
+    )
+  }
+
   if (verbose) {
     message(
       "Nested CV: ", outer_k, "-fold outer CV x ", outer_repeats, " repeat(s), ",
@@ -453,21 +556,37 @@ nested_sum_roc <- function(data,
     }
 
     # Step 1: exhaustive search on outer train ONLY
-    candidates <- exhaustive_sum_roc(
-      data             = full_data[train_idx, , drop = FALSE],
-      outcome          = outcome_col,
-      items            = items,
-      min_items        = min_items,
-      max_items        = max_items,
-      positive_label   = positive_label,
-      negative_label   = negative_label,
-      cutoff_method    = cutoff_method,
-      rank_by          = preselect_by,
-      top_n            = NULL,
-      prefer_fewer_items = TRUE,
-      engine           = engine,
-      progress         = FALSE
-    )
+    if (use_streaming_ncv) {
+      candidates <- .streaming_top_n_exhaustive(
+        data             = full_data[train_idx, , drop = FALSE],
+        outcome          = outcome_col,
+        items            = items,
+        min_items        = min_items,
+        max_items        = max_items,
+        positive_label   = positive_label,
+        negative_label   = negative_label,
+        cutoff_method    = cutoff_method,
+        rank_by          = preselect_by,
+        top_n            = preselect_top_n,
+        engine           = engine
+      )
+    } else {
+      candidates <- exhaustive_sum_roc(
+        data             = full_data[train_idx, , drop = FALSE],
+        outcome          = outcome_col,
+        items            = items,
+        min_items        = min_items,
+        max_items        = max_items,
+        positive_label   = positive_label,
+        negative_label   = negative_label,
+        cutoff_method    = cutoff_method,
+        rank_by          = preselect_by,
+        top_n            = NULL,
+        prefer_fewer_items = TRUE,
+        engine           = engine,
+        progress         = FALSE
+      )
+    }
 
     # Step 2: pre-select top candidates
     top_candidates <- .select_top_candidates(candidates, preselect_top_n, preselect_by)

@@ -164,6 +164,7 @@ test_that("ncvroc() save_results writes all expected CSV files", {
 
   result <- do.call(ncvroc, c(list(data = dat, outcome = "y", items = c("Q1", "Q2"),
                                    final_search = TRUE, save_results = TRUE,
+                                   results_storage = "rds",
                                    output_dir = tmp), COMMON_CV))
 
   expect_true(file.exists(file.path(tmp, "nested_cv_outer_fold_results.csv")))
@@ -292,7 +293,8 @@ test_that("save_results writes final_candidates.csv and final_model.csv", {
   on.exit(unlink(tmp, recursive = TRUE), add = TRUE)
 
   do.call(ncvroc, c(list(data = dat, outcome = "y", items = c("Q1", "Q2"),
-                         save_results = TRUE, output_dir = tmp), COMMON_CV_FINAL))
+                         save_results = TRUE, results_storage = "rds",
+                         output_dir = tmp), COMMON_CV_FINAL))
 
   expect_true(file.exists(file.path(tmp, "final_exhaustive_results_ranked.csv")))
   expect_true(file.exists(file.path(tmp, "final_candidates.csv")))
@@ -510,9 +512,10 @@ COMMON_CV_STORAGE <- c(
   list(final_search = TRUE)
 )
 
-test_that("default results_storage = 'rds' makes final_exhaustive_ranked NULL", {
+test_that("results_storage = 'rds' makes final_exhaustive_ranked NULL", {
   dat <- make_ncvroc_test_data()
-  result <- do.call(ncvroc, c(list(data = dat, outcome = "y", items = c("Q1", "Q2")),
+  result <- do.call(ncvroc, c(list(data = dat, outcome = "y", items = c("Q1", "Q2"),
+                                   results_storage = "rds"),
                               COMMON_CV_STORAGE))
   expect_null(result$final_exhaustive_ranked)
   expect_true(!is.null(result$final_exhaustive_file))
@@ -540,7 +543,8 @@ test_that("results_storage = 'none' discards final results", {
 
 test_that("ncvroc_results() reads from RDS transparently", {
   dat <- make_ncvroc_test_data()
-  result <- do.call(ncvroc, c(list(data = dat, outcome = "y", items = c("Q1", "Q2")),
+  result <- do.call(ncvroc, c(list(data = dat, outcome = "y", items = c("Q1", "Q2"),
+                                   results_storage = "rds"),
                               COMMON_CV_STORAGE))
   filtered <- ncvroc_results(result, top_n = 3)
   expect_s3_class(filtered, "data.frame")
@@ -549,7 +553,8 @@ test_that("ncvroc_results() reads from RDS transparently", {
 
 test_that("final_n_combinations is correct", {
   dat <- make_ncvroc_test_data()
-  result <- do.call(ncvroc, c(list(data = dat, outcome = "y", items = c("Q1", "Q2")),
+  result <- do.call(ncvroc, c(list(data = dat, outcome = "y", items = c("Q1", "Q2"),
+                                   results_storage = "rds"),
                               COMMON_CV_STORAGE))
   expect_gt(result$final_n_combinations, 0)
 })
@@ -580,26 +585,26 @@ test_that("ncvroc_results() errors when storage = 'none'", {
                               COMMON_CV_STORAGE))
   expect_error(
     ncvroc_results(result),
-    "not available"
+    "not stored"
   )
 })
 
 test_that("print shows storage info for RDS mode", {
   dat <- make_ncvroc_test_data()
-  result <- do.call(ncvroc, c(list(data = dat, outcome = "y", items = c("Q1", "Q2")),
+  result <- do.call(ncvroc, c(list(data = dat, outcome = "y", items = c("Q1", "Q2"),
+                                   results_storage = "rds"),
                               COMMON_CV_STORAGE))
   expect_output(print(result), "stored in")
 })
 
-test_that("default RDS storage uses the working directory", {
+test_that("results_storage = 'rds' uses results_dir", {
   dat <- make_ncvroc_test_data()
-  old_wd <- getwd()
   tmp <- tempfile("ncvroc-wd-")
   dir.create(tmp)
-  on.exit(setwd(old_wd), add = TRUE)
-  setwd(tmp)
+  on.exit(unlink(tmp, recursive = TRUE), add = TRUE)
 
-  result <- do.call(ncvroc, c(list(data = dat, outcome = "y", items = c("Q1", "Q2")),
+  result <- do.call(ncvroc, c(list(data = dat, outcome = "y", items = c("Q1", "Q2"),
+                                   results_storage = "rds", results_dir = tmp),
                               COMMON_CV_STORAGE))
 
   expect_equal(normalizePath(dirname(result$final_exhaustive_file)),
@@ -837,6 +842,7 @@ test_that("item_count is the last formal argument in ncvroc()", {
                  "engine", "seed", "final_search", "final_top_n",
                  "final_rank_by", "save_results", "output_dir",
                  "results_storage", "results_name", "results_dir",
+                 "chunk_size", "cache", "cache_dir",
                  "progress", "verbose", "return")
   expect_identical(head(names(formals(ncvroc)), length(old_names)), old_names)
   expect_identical(tail(names(formals(ncvroc)), 1L), "item_count")

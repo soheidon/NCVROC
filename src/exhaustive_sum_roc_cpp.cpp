@@ -237,3 +237,314 @@ DataFrame evaluate_combos_cpp(
     _["n_negative"]  = out_n_negative
   );
 }
+
+// ---- Combinadic unranking (C++ helpers) ----
+
+// Compute binomial coefficient (n choose k) using multiplicative formula.
+// Returns 0 for invalid inputs (k < 0, k > n, n < 0).
+static double binom(int n, int k) {
+  if (k < 0 || k > n || n < 0) return 0.0;
+  if (k == 0 || k == n) return 1.0;
+  if (k > n - k) k = n - k;
+  double result = 1.0;
+  for (int i = 1; i <= k; i++) {
+    result = result * (n - k + i) / i;
+  }
+  return result;
+}
+
+// Unrank a single combination: 0-based rank -> 0-based indices.
+// Matches R's combn(0:(n-1), k) lexicographic column order.
+// rank must be in [0, choose(n, k) - 1].
+static std::vector<int> unrank_combination(int n, int k, double rank) {
+  std::vector<int> result(k);
+  int next_min = 0;
+  double remaining_rank = rank;
+
+  for (int position = 0; position < k; position++) {
+    int remaining_slots = k - position - 1;
+    int max_value = n - remaining_slots - 1;
+
+    for (int candidate = next_min; candidate <= max_value; candidate++) {
+      double block_size = binom(n - candidate - 1, remaining_slots);
+
+      if (remaining_rank < block_size) {
+        result[position] = candidate;
+        next_min = candidate + 1;
+        break;
+      }
+      remaining_rank -= block_size;
+    }
+  }
+  return result;
+}
+
+// [[Rcpp::export]]
+DataFrame evaluate_combos_cpp_chunk(
+    NumericMatrix x,           // rows=subjects, cols=items
+    IntegerVector y,           // 0/1 outcome, length = nrow(x)
+    int min_items,             // minimum items per combination
+    int max_items,             // maximum items per combination
+    std::string cutoff_method, // "youden" or "closest_topleft"
+    double chunk_start,        // zero-based global combination index
+    int chunk_size             // number of combos to evaluate (may be < at tail)
+) {
+  int n = x.nrow();
+  int n_cols = x.ncol();
+
+  // Cap max_items at n_cols to avoid overflow
+  if (max_items > n_cols) max_items = n_cols;
+  if (min_items > max_items) min_items = max_items;
+  if (min_items < 1) min_items = 1;
+
+  // Compute k-level sizes and total combos
+  int n_k = max_items - min_items + 1;
+  std::vector<double> level_sizes(n_k);
+  std::vector<double> level_starts(n_k);
+  double total = 0.0;
+  for (int ki = 0; ki < n_k; ki++) {
+    int k = min_items + ki;
+    level_sizes[ki] = binom(n_cols, k);
+    level_starts[ki] = total;
+    total += level_sizes[ki];
+  }
+
+  if (chunk_start < 0 || chunk_start >= total) {
+    stop("chunk_start is outside the combination range.");
+  }
+
+  double chunk_end = chunk_start + (double)chunk_size;
+  if (chunk_end > total) chunk_end = total;
+  int actual_size = (int)(chunk_end - chunk_start);
+
+  IntegerVector out_n_items(actual_size);
+  NumericVector out_auc(actual_size);
+  NumericVector out_cutoff(actual_size);
+  NumericVector out_sensitivity(actual_size);
+  NumericVector out_specificity(actual_size);
+  NumericVector out_youden(actual_size);
+  NumericVector out_accuracy(actual_size);
+  NumericVector out_ppv(actual_size);
+  NumericVector out_npv(actual_size);
+  IntegerVector out_n_positive(actual_size);
+  IntegerVector out_n_negative(actual_size);
+
+  // Count total positives and negatives
+  int total_pos = 0, total_neg = 0;
+  for (int i = 0; i < n; i++) {
+    if (y[i] == 1) total_pos++; else total_neg++;
+  }
+  int total_n = total_pos + total_neg;
+
+  // Per-combo working buffers
+  std::vector<double> scores(n);
+  std::map<double, int> pos_counts;
+  std::map<double, int> neg_counts;
+  std::vector<double> unique_scores;
+  std::vector<double> cum_pos, cum_neg;
+  std::vector<double> tp, fp, fn, tn;
+  std::vector<double> sensitivity, specificity, youden_vals, accuracy;
+  std::vector<double> ppv_vals, npv_vals;
+
+  // Current k-level index (to avoid O(chunk_size) find-interval per combo)
+  int current_ki = 0;
+  while (current_ki < n_k - 1 && chunk_start >= level_starts[current_ki + 1]) {
+    current_ki++;
+  }
+
+  for (int gi = 0; gi < actual_size; gi++) {
+    double global_rank = chunk_start + (double)gi;
+
+    // Advance k-level if needed
+    while (current_ki < n_k - 1 && global_rank >= level_starts[current_ki + 1]) {
+      current_ki++;
+    }
+
+    int k = min_items + current_ki;
+    double level_start = level_starts[current_ki];
+    double local_rank = global_rank - level_start;
+
+    out_n_items[gi] = k;
+    out_n_positive[gi] = total_pos;
+    out_n_negative[gi] = total_neg;
+
+    // Unrank to column indices
+    std::vector<int> cols = unrank_combination(n_cols, k, local_rank);
+
+    // ---- 1. Compute sum scores ----
+    for (int i = 0; i < n; i++) {
+      double s = 0.0;
+      for (int j = 0; j < k; j++) {
+        s += x(i, cols[j]);
+      }
+      scores[i] = s;
+    }
+
+    // ---- 2. Frequency table ----
+    pos_counts.clear();
+    neg_counts.clear();
+    for (int i = 0; i < n; i++) {
+      if (y[i] == 1) {
+        pos_counts[scores[i]]++;
+      } else {
+        neg_counts[scores[i]]++;
+      }
+    }
+
+    // ---- 3. AUC ----
+    if (total_pos == 0 || total_neg == 0) {
+      out_auc[gi] = NA_REAL;
+      out_cutoff[gi] = NA_REAL;
+      out_sensitivity[gi] = NA_REAL;
+      out_specificity[gi] = NA_REAL;
+      out_youden[gi] = NA_REAL;
+      out_accuracy[gi] = NA_REAL;
+      out_ppv[gi] = NA_REAL;
+      out_npv[gi] = NA_REAL;
+      continue;
+    }
+
+    double auc_sum = 0.0;
+    for (auto &p : pos_counts) {
+      double sp = p.first;
+      int pc = p.second;
+      for (auto &n : neg_counts) {
+        double sn = n.first;
+        int nc = n.second;
+        double pair_count = (double)pc * nc;
+        if (sp > sn) {
+          auc_sum += pair_count;
+        } else if (sp == sn) {
+          auc_sum += 0.5 * pair_count;
+        }
+      }
+    }
+    out_auc[gi] = auc_sum / ((double)total_pos * total_neg);
+
+    // ---- 4. ROC metrics ----
+    unique_scores.clear();
+    for (auto &p : pos_counts) {
+      unique_scores.push_back(p.first);
+    }
+    for (auto &n : neg_counts) {
+      bool found = false;
+      for (double s : unique_scores) {
+        if (s == n.first) { found = true; break; }
+      }
+      if (!found) unique_scores.push_back(n.first);
+    }
+    std::sort(unique_scores.begin(), unique_scores.end(),
+              std::greater<double>());
+
+    int n_scores = unique_scores.size();
+    cum_pos.resize(n_scores);
+    cum_neg.resize(n_scores);
+
+    for (int si = 0; si < n_scores; si++) {
+      double sc = unique_scores[si];
+      int prev_pos = (si == 0) ? 0 : cum_pos[si - 1];
+      int prev_neg = (si == 0) ? 0 : cum_neg[si - 1];
+      cum_pos[si] = prev_pos + pos_counts[sc];
+      cum_neg[si] = prev_neg + neg_counts[sc];
+    }
+
+    tp.resize(n_scores);
+    fp.resize(n_scores);
+    fn.resize(n_scores);
+    tn.resize(n_scores);
+    sensitivity.resize(n_scores);
+    specificity.resize(n_scores);
+    youden_vals.resize(n_scores);
+    accuracy.resize(n_scores);
+    ppv_vals.resize(n_scores);
+    npv_vals.resize(n_scores);
+
+    for (int si = 0; si < n_scores; si++) {
+      tp[si] = cum_pos[si];
+      fp[si] = cum_neg[si];
+      fn[si] = total_pos - tp[si];
+      tn[si] = total_neg - fp[si];
+
+      sensitivity[si] = tp[si] / total_pos;
+      specificity[si] = tn[si] / total_neg;
+      youden_vals[si] = sensitivity[si] + specificity[si] - 1.0;
+      accuracy[si] = (tp[si] + tn[si]) / (double)total_n;
+
+      if (tp[si] + fp[si] > 0) {
+        ppv_vals[si] = tp[si] / (tp[si] + fp[si]);
+      } else {
+        ppv_vals[si] = NA_REAL;
+      }
+      if (tn[si] + fn[si] > 0) {
+        npv_vals[si] = tn[si] / (tn[si] + fn[si]);
+      } else {
+        npv_vals[si] = NA_REAL;
+      }
+    }
+
+    // ---- 5. Optimal cutoff ----
+    int best_idx = 0;
+
+    if (cutoff_method == "youden") {
+      double best_youden = -2.0, best_sens = -1.0, best_spec = -1.0;
+      double best_cutoff_val = R_PosInf;
+      for (int si = 0; si < n_scores; si++) {
+        double yd = youden_vals[si];
+        double se = sensitivity[si];
+        double sp = specificity[si];
+        double co = unique_scores[si];
+
+        if (yd > best_youden ||
+            (yd == best_youden && se > best_sens) ||
+            (yd == best_youden && se == best_sens && sp > best_spec) ||
+            (yd == best_youden && se == best_sens && sp == best_spec && co < best_cutoff_val)) {
+          best_youden = yd;
+          best_sens = se;
+          best_spec = sp;
+          best_cutoff_val = co;
+          best_idx = si;
+        }
+      }
+    } else if (cutoff_method == "closest_topleft") {
+      double best_dist = R_PosInf;
+      double best_youden = -2.0;
+      for (int si = 0; si < n_scores; si++) {
+        double d = std::sqrt(
+          (1.0 - sensitivity[si]) * (1.0 - sensitivity[si]) +
+          (1.0 - specificity[si]) * (1.0 - specificity[si]));
+        double yd = youden_vals[si];
+
+        if (d < best_dist ||
+            (d == best_dist && yd > best_youden)) {
+          best_dist = d;
+          best_youden = yd;
+          best_idx = si;
+        }
+      }
+    } else {
+      stop("Unknown cutoff_method: '%s'", cutoff_method);
+    }
+
+    out_cutoff[gi]      = unique_scores[best_idx];
+    out_sensitivity[gi] = sensitivity[best_idx];
+    out_specificity[gi] = specificity[best_idx];
+    out_youden[gi]      = youden_vals[best_idx];
+    out_accuracy[gi]    = accuracy[best_idx];
+    out_ppv[gi]         = ppv_vals[best_idx];
+    out_npv[gi]         = npv_vals[best_idx];
+  }
+
+  return DataFrame::create(
+    _["n_items"]     = out_n_items,
+    _["auc"]         = out_auc,
+    _["cutoff"]      = out_cutoff,
+    _["sensitivity"] = out_sensitivity,
+    _["specificity"] = out_specificity,
+    _["youden"]      = out_youden,
+    _["accuracy"]    = out_accuracy,
+    _["ppv"]         = out_ppv,
+    _["npv"]         = out_npv,
+    _["n_positive"]  = out_n_positive,
+    _["n_negative"]  = out_n_negative
+  );
+}

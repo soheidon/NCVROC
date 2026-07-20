@@ -16,7 +16,8 @@ ncvroc_results(
   n_items = NULL,
   cutoff = NULL,
   rank_by = c("youden", "auc", "sensitivity", "specificity", "accuracy", "ppv", "npv"),
-  top_n = 20
+  top_n = 20,
+  allow_full_load = FALSE
 )
 }
 \arguments{
@@ -44,6 +45,10 @@ ncvroc_results(
 `"sensitivity"`, `"specificity"`, `"accuracy"`, `"ppv"`, or `"npv"`.}
 
 \item{top_n}{Number of top candidates to return (NULL for all, 0 for none).}
+
+\item{allow_full_load}{Logical. If `TRUE` and storage is chunked, load all
+chunks (may use large amounts of memory). If `FALSE` (default) and
+`top_n` is NULL with chunked storage, errors.}
 }
 \value{
 A data.frame of matching candidates, sorted by `rank_by` descending.

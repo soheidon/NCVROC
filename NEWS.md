@@ -1,3 +1,53 @@
+# NCVROC 0.10.0
+
+## New features
+
+- New `results_storage = "auto"` (default): automatically selects RAM for
+  small searches and chunked disk storage for large searches, preventing
+  out-of-memory errors. Explicit `"memory"`, `"rds"`, and `"none"` modes
+  remain available.
+- Chunked evaluation: for search spaces exceeding 5,000,000 combinations,
+  candidates are evaluated in chunks of `chunk_size` (default 200,000) and
+  written to individual RDS files, with peak memory independent of total
+  combinations.
+- New `cache = "reuse"` parameter for `ncvroc()` and `roc_bruteforce()`:
+  caches complete results to `cache_dir` by content hash. Subsequent runs
+  with identical inputs and `cache = "reuse"` return the cached result
+  instantly. `cache = "refresh"` forces re-computation.
+- Lexicographic combination unranking: direct 0-based rank → column-index
+  mapping matching `combn()` column order, used by both the R and C++
+  chunked evaluation engines.
+- New C++ chunk evaluator (`evaluate_combos_cpp_chunk`) that unranks and
+  evaluates combinations directly without building the full index list.
+- `ncvroc_results()` gains `allow_full_load` parameter. When storage is
+  chunked and `top_n` is finite, results are streamed chunk-by-chunk with
+  constant memory. `top_n = NULL` with chunked storage requires
+  `allow_full_load = TRUE`.
+- `results_dir` default changed from `getwd()` to `tempdir()` (CRAN-safe).
+- All default writes go to `tempdir()`.
+
+## Internal changes
+
+- `.resolve_global_combination_rank()`: maps global rank to (k, rank_within_k).
+- `.enumerate_combinations_chunk()`: enumerates a slice via combinadic.
+- `.compute_cache_key()`: deterministic hash of normalized data + all
+  analysis parameters using `serialize()` + `tools::md5sum()`.
+- `.save_cache()` / `.load_cache()`: atomic cache writes via
+  `.building-<pid>/` staging directory.
+- `.evaluate_final_exhaustive()`: unified final-search engine used by both
+  `ncvroc()` and `roc_bruteforce()`.
+- `.streaming_top_n_exhaustive()`: streaming top-N for nested CV
+  preselection when combinations exceed `AUTO_MEMORY_LIMIT`.
+
+## Breaking changes
+
+- `results_storage` default changed from `"rds"` to `"auto"`.
+- `results_dir` default changed from `getwd()` to `tempdir()`.
+- `ncvroc_result` objects now include `storage_backend`, `chunk_dir`,
+  `chunk_prefix`, `chunk_size`, `cache_key`, and `cache_dir` fields.
+
+---
+
 # NCVROC 0.9.0
 
 ## New features

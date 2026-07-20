@@ -1,6 +1,6 @@
 [English](README.md) | [日本語](docs/reference-ja.md)
 
-# NCVROC 0.9.0
+# NCVROC 0.10.0
 
 **N**ested **C**ross-**V**alidation for Combinatorial **ROC**-based Selection of Item-set Scores
 
@@ -163,23 +163,72 @@ Low-level functions (`exhaustive_sum_roc()`, `nested_sum_roc()`,
 ### Result storage
 
 `ncvroc()` and `roc_bruteforce()` accept a `results_storage` parameter to
-control where full candidate tables are stored. The default is `"rds"` because
-exhaustive searches with many items can produce tables with hundreds of
-thousands of rows, consuming hundreds of MB of memory indefinitely if kept in
-RAM. Writing to an RDS file avoids this while keeping the full table accessible
-via `ncvroc_results()`.
+control where full candidate tables are stored. Since v0.10.0 the default is
+`"auto"`, which selects the storage mode automatically based on search size.
 
 | `results_storage` | Behavior |
 |---|---|
-| `"rds"` (default) | Full table saved to an RDS file in the current working directory. In RStudio or Quarto projects this is typically the project root. The save location is always shown in the printed output. Use `getwd()` to check the current directory, or set `results_dir` to an explicit path if the default is not suitable. `$results` / `$final_exhaustive_ranked` is `NULL`. |
+| `"auto"` (default) | Small searches use in-memory storage; large searches (> 5 million combinations) use chunked RDS files on disk. |
 | `"memory"` | Keep full table in RAM (pre-v0.9.0 behavior). |
+| `"rds"` | Save the full table to a single RDS file. In RStudio or Quarto projects this is typically the project root. The save location is always shown in the printed output. Use `getwd()` to check the current directory, or set `results_dir` to an explicit path if the default is not suitable. `$results` / `$final_exhaustive_ranked` is `NULL`. |
 | `"none"` | Discard full table. `ncvroc_results()` will error. |
 
-Use `ncvroc_results()` to retrieve the full table when `results_storage` is `"rds"` or `"memory"` (reads from RDS transparently):
+Use `ncvroc_results()` to retrieve the full table when `results_storage` is not
+`"none"`:
 
 ```r
-ncvroc_results(result, top_n = NULL)  # get all candidates
+ncvroc_results(result, top_n = 20)  # get top 20 candidates
 ```
+
+For chunked RDS results (produced by `"auto"` on large searches or explicitly
+with `"rds"` when chunked), `top_n = NULL` requires
+`allow_full_load = TRUE`:
+
+```r
+ncvroc_results(result, top_n = NULL, allow_full_load = TRUE)
+```
+
+### Caching (new in v0.10.0)
+
+Large exhaustive searches can take significant time. `ncvroc()` and
+`roc_bruteforce()` support result caching to avoid recomputation:
+
+```r
+result <- ncvroc(
+  data    = analysis_dat,
+  outcome = y,
+  items   = Q1:Q5,
+  item_count = "<=4",
+  mode    = "balanced",
+  cache   = "reuse",     # "off" (default), "reuse", or "refresh"
+  seed    = 20260705
+)
+
+# Second identical call loads from cache instantly
+result2 <- ncvroc(
+  data    = analysis_dat,
+  outcome = y,
+  items   = Q1:Q5,
+  item_count = "<=4",
+  mode    = "balanced",
+  cache   = "reuse",
+  seed    = 20260705
+)
+```
+
+| `cache` | Behavior |
+|---|---|
+| `"off"` (default) | No caching. |
+| `"reuse"` | Use cached result if available (same data + same parameters); otherwise compute and cache. |
+| `"refresh"` | Always recompute and overwrite the cache. |
+
+`cache_dir` controls where cached results are stored (default: `tempdir()`).
+
+### Chunk size
+
+The `chunk_size` parameter (default `200000`) controls how many combinations are
+evaluated per chunk in large exhaustive searches. You typically do not need to
+change this.
 
 ### Final candidate output
 
@@ -192,7 +241,7 @@ For convenience, the following are kept in memory:
 result$final_candidates       # top N rows (controlled by final_top_n)
 result$final_model            # best single model (first row)
 result$final_n_combinations   # total combinations evaluated
-result$final_results_storage  # storage mode ("rds", "memory", or "none")
+result$final_results_storage  # storage mode ("auto", "rds", "memory", or "none")
 result$final_exhaustive_file  # RDS file path (in "rds" mode)
 ```
 
@@ -276,7 +325,7 @@ ncvroc(
   final_search      = TRUE,
   final_top_n       = 20,
   final_rank_by     = c("auc", "youden", "sensitivity", "specificity", "accuracy"),
-  results_storage   = c("rds", "memory", "none"),
+  results_storage   = c("auto", "memory", "rds", "none"),
   results_name      = NULL,
   results_dir       = NULL,
   save_results      = FALSE,
@@ -284,7 +333,10 @@ ncvroc(
   progress          = TRUE,
   verbose           = TRUE,
   return            = "full",
-  item_count        = NULL
+  item_count        = NULL,
+  chunk_size        = 200000L,
+  cache             = c("off", "reuse", "refresh"),
+  cache_dir         = NULL
 )
 ```
 
@@ -316,11 +368,14 @@ ncvroc_results(
   n_items      = NULL,
   cutoff       = NULL,
   rank_by = c("youden", "auc", "sensitivity", "specificity", "accuracy", "ppv", "npv"),
-  top_n  = 20
+  top_n  = 20,
+  allow_full_load = FALSE
 )
 ```
 
 Each condition is a string like `">= 0.90"` or `"<= 3"`. Six operators are supported: `>=`, `>`, `<=`, `<`, `==`, `!=`. Multiple conditions are combined with AND logic. Results are ranked by `rank_by` with stable tiebreakers. Set `top_n = NULL` to return all matching rows, or `0` for an empty table.
+
+For chunked RDS storage, `top_n = NULL` requires `allow_full_load = TRUE`.
 
 **Returns:** A data.frame containing the filtered and ranked candidate models.
 
@@ -351,10 +406,13 @@ roc_bruteforce(
   progress         = interactive(),
   save_results     = FALSE,
   output_dir       = ".",
-  results_storage  = c("rds", "memory", "none"),
+  results_storage  = c("auto", "memory", "rds", "none"),
   results_name     = NULL,
   results_dir      = NULL,
-  item_count       = NULL
+  item_count       = NULL,
+  chunk_size       = 200000L,
+  cache            = c("off", "reuse", "refresh"),
+  cache_dir        = NULL
 )
 ```
 
@@ -391,7 +449,10 @@ ncvroc_config(
   negative_label    = 0,
   stratified        = TRUE,
   engine            = c("Rcpp", "R"),
-  item_count        = NULL
+  item_count        = NULL,
+  chunk_size        = 200000L,
+  cache             = c("off", "reuse", "refresh"),
+  cache_dir         = NULL
 )
 ```
 
@@ -557,7 +618,7 @@ count_item_combinations(
 )
 ```
 
-`items_or_n` accepts a character vector of item names or a single integer n.  
+`items_or_n` accepts a character vector of item names or a single integer n.
 `detail = TRUE` returns a data.frame with per-k breakdown.
 
 ---
