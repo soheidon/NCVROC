@@ -1,3 +1,15 @@
+# NCVROC 0.10.2
+
+## Bug fixes
+
+- Fixed `ncvroc_results()` on chunked RDS storage returning per-chunk `rank`
+  values and rownames instead of globally sequential numbering. The `rank`
+  column is now reassigned to `seq_len(nrow(dat))` and rownames are reset
+  after filtering, sorting, and top-N selection. This affects all three
+  chunked retrieval paths: streaming top-N, full load, and empty result.
+
+---
+
 # NCVROC 0.10.1
 
 ## Bug fixes
