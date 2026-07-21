@@ -32,3 +32,4 @@ tests/testthat/Rplots.pdf
 
 # RDS artifacts (test outputs)
 tests/testthat/*.rds
+NCVROC_*.pdf

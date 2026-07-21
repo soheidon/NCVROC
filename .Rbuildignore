@@ -7,3 +7,5 @@
 ^docs$
 ^pkgdown$
 ^LICENSE\.md$
+^NCVROC_[0-9.]+\.pdf$
+^NCVROC_[0-9.]+\.tar\.gz$

@@ -7,7 +7,7 @@
 #' independent shuffling per repeat.
 #'
 #' @param y A binary vector (exactly two unique values allowed).
-#' @param k Integer, number of folds. Must be ≥ 2.
+#' @param k Integer, number of folds. Must be >= 2.
 #' @param repeats Integer, number of independent repeats of the k-fold split
 #'   (default 1).
 #' @param seed Integer, seed for reproducibility. If provided, the seed for

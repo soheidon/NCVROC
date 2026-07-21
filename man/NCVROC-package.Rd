@@ -10,7 +10,12 @@ Develops short item-based screening scales through combinatorial
 item-set selection, ROC-based evaluation, and nested cross-validation.
 }
 \author{
-\strong{Maintainer}: Sohei Ide \email{soheidon@users.noreply.github.com}
+\strong{Maintainer}: Sohei Ide \email{sohei@ni.tama.ac.jp} [copyright holder]
+
+Authors:
+\itemize{
+  \item Sohei Ide \email{sohei@ni.tama.ac.jp} [copyright holder]
+}
 
 }
 \keyword{internal}

@@ -1,8 +1,14 @@
 Package: NCVROC
 Type: Package
-Title: Nested Cross-Validation for Combinatorial ROC-based Selection of Item-set Scores
+Title: Nested Cross-Validation for Combinatorial ROC-Based Selection of Item-Set Scores
 Version: 0.10.2
-Authors@R: person(given = "Sohei", family = "Ide", email = "soheidon@users.noreply.github.com", role = c("aut", "cre"))
+Authors@R:
+    person(
+        given = "Sohei",
+        family = "Ide",
+        email = "sohei@ni.tama.ac.jp",
+        role = c("aut", "cre", "cph")
+    )
 Description: Develops short item-based screening scales through combinatorial
     item-set selection, ROC-based evaluation, and nested cross-validation.
     For psychological/clinical questionnaire data, identifies which small
@@ -10,7 +16,6 @@ Description: Develops short item-based screening scales through combinatorial
     Assumes higher sum scores indicate higher probability of a positive outcome.
 License: MIT + file LICENSE
 Encoding: UTF-8
-LazyData: true
 Config/testthat/edition: 3
 Imports:
     Rcpp,

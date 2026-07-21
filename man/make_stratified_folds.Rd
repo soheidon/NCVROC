@@ -9,7 +9,7 @@ make_stratified_folds(y, k = 5, repeats = 1, seed = NULL)
 \arguments{
 \item{y}{A binary vector (exactly two unique values allowed).}
 
-\item{k}{Integer, number of folds. Must be ≥ 2.}
+\item{k}{Integer, number of folds. Must be >= 2.}
 
 \item{repeats}{Integer, number of independent repeats of the k-fold split
 (default 1).}
