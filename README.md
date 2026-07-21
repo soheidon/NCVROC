@@ -1,4 +1,4 @@
-[English](README.md) | [日本語](docs/reference-ja.md)
+[English](README.md) | [日本語](https://github.com/soheidon/NCVROC/blob/master/docs/reference-ja.md)
 
 # NCVROC 0.10.2
 

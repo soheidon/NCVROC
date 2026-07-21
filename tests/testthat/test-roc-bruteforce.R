@@ -692,9 +692,7 @@ test_that("roc_bruteforce chunked_rds: results_dir is respected", {
                         results_storage = "rds", results_dir = results_dir)
 
   expect_equal(res$storage_backend, "chunked_rds")
-  expect_true(grepl(results_dir,
-                    normalizePath(res$chunk_dir, winslash = "/", mustWork = FALSE),
-                    fixed = TRUE))
+  expect_path_inside(res$chunk_dir, results_dir)
 })
 
 test_that("roc_bruteforce chunked_rds: results_dir = NULL falls back to tempdir()", {
@@ -707,7 +705,5 @@ test_that("roc_bruteforce chunked_rds: results_dir = NULL falls back to tempdir(
                         results_storage = "rds", results_dir = NULL)
 
   expect_equal(res$storage_backend, "chunked_rds")
-  expect_true(grepl(normalizePath(tempdir(), winslash = "/", mustWork = FALSE),
-                    normalizePath(res$chunk_dir, winslash = "/", mustWork = FALSE),
-                    fixed = TRUE))
+  expect_path_inside(res$chunk_dir, tempdir())
 })

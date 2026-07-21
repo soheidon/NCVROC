@@ -431,13 +431,12 @@ test_that("chunked_rds: results_dir is respected when cache is off", {
                 progress = FALSE, verbose = FALSE)
 
   expect_equal(out$storage_backend, "chunked_rds")
-  expect_true(grepl(results_dir,
-                    normalizePath(out$chunk_dir, winslash = "/", mustWork = FALSE),
-                    fixed = TRUE))
+  expect_path_inside(out$chunk_dir, results_dir)
   # chunks must NOT be under tempdir()
-  expect_false(grepl(normalizePath(tempdir(), winslash = "/", mustWork = FALSE),
-                     normalizePath(out$chunk_dir, winslash = "/", mustWork = FALSE),
-                     fixed = TRUE))
+  expect_false(
+    identical(normalize_test_path(out$chunk_dir), normalize_test_path(tempdir())) ||
+    startsWith(normalize_test_path(out$chunk_dir), paste0(normalize_test_path(tempdir()), "/"))
+  )
 })
 
 test_that("chunked_rds: results_dir = NULL falls back to tempdir()", {
@@ -453,9 +452,7 @@ test_that("chunked_rds: results_dir = NULL falls back to tempdir()", {
                 progress = FALSE, verbose = FALSE)
 
   expect_equal(out$storage_backend, "chunked_rds")
-  expect_true(grepl(normalizePath(tempdir(), winslash = "/", mustWork = FALSE),
-                    normalizePath(out$chunk_dir, winslash = "/", mustWork = FALSE),
-                    fixed = TRUE))
+  expect_path_inside(out$chunk_dir, tempdir())
 })
 
 test_that("single_rds: results_dir is respected (regression guard)", {
@@ -473,9 +470,7 @@ test_that("single_rds: results_dir is respected (regression guard)", {
 
   # With 10 combos and default AUTO_MEMORY_LIMIT = 100000, this is single_rds
   expect_equal(out$storage_backend, "single_rds")
-  expect_true(grepl(results_dir,
-                    normalizePath(out$final_exhaustive_file, winslash = "/", mustWork = FALSE),
-                    fixed = TRUE))
+  expect_path_inside(out$final_exhaustive_file, results_dir)
 })
 
 test_that("chunked_rds: cache enabled -> building_dir/chunks, not results_dir", {
@@ -502,10 +497,9 @@ test_that("chunked_rds: cache enabled -> building_dir/chunks, not results_dir", 
 
   expect_equal(out$storage_backend, "chunked_rds")
   # chunks go to cache_dir, NOT results_dir
-  expect_true(grepl(cache_dir,
-                    normalizePath(out$chunk_dir, winslash = "/", mustWork = FALSE),
-                    fixed = TRUE))
-  expect_false(grepl(results_dir,
-                     normalizePath(out$chunk_dir, winslash = "/", mustWork = FALSE),
-                     fixed = TRUE))
+  expect_path_inside(out$chunk_dir, cache_dir)
+  expect_false(
+    identical(normalize_test_path(out$chunk_dir), normalize_test_path(results_dir)) ||
+    startsWith(normalize_test_path(out$chunk_dir), paste0(normalize_test_path(results_dir), "/"))
+  )
 })
