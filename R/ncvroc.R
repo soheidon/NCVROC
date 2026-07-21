@@ -1263,7 +1263,7 @@ ncvroc_results <- function(x,
     }
 
     if (!is.null(top_n) && top_n > 0) {
-      return(.stream_top_n_from_chunks(
+      dat <- .stream_top_n_from_chunks(
         chunk_dir    = x$chunk_dir,
         rank_by      = rank_by,
         top_n        = top_n,
@@ -1276,7 +1276,10 @@ ncvroc_results <- function(x,
         npv          = npv,
         n_items      = n_items,
         cutoff       = cutoff
-      ))
+      )
+      dat$rank      <- seq_len(nrow(dat))
+      rownames(dat) <- NULL
+      return(dat)
     }
 
     if (is.null(top_n) && !allow_full_load) {
@@ -1288,7 +1291,7 @@ ncvroc_results <- function(x,
     }
 
     if (is.null(top_n) && allow_full_load) {
-      return(.full_load_chunked(
+      dat <- .full_load_chunked(
         chunk_dir    = x$chunk_dir,
         sensitivity  = sensitivity,
         specificity  = specificity,
@@ -1299,18 +1302,24 @@ ncvroc_results <- function(x,
         npv          = npv,
         n_items      = n_items,
         cutoff       = cutoff
-      ))
+      )
+      dat$rank      <- seq_len(nrow(dat))
+      rownames(dat) <- NULL
+      return(dat)
     }
 
     # top_n == 0: empty result
-    return(.full_load_chunked(
+    dat <- .full_load_chunked(
       chunk_dir = x$chunk_dir,
       sensitivity = sensitivity,
       specificity = specificity,
       auc = auc, youden = youden,
       accuracy = accuracy, ppv = ppv, npv = npv,
       n_items = n_items, cutoff = cutoff
-    )[0, , drop = FALSE])
+    )[0, , drop = FALSE]
+    dat$rank      <- integer(0)
+    rownames(dat) <- NULL
+    return(dat)
   }
 
   # ---- None path ----

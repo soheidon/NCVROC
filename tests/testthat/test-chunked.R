@@ -371,6 +371,25 @@ test_that(".full_load_chunked with conditions filters correctly", {
   expect_equal(nrow(filtered), 2)
 })
 
+# ---- ncvroc_results from chunked_rds renumbers rank and resets rownames ----
+
+test_that("ncvroc_results() from chunked_rds renumbers rank and resets rownames", {
+  old_limit <- NCVROC:::AUTO_MEMORY_LIMIT
+  assignInNamespace("AUTO_MEMORY_LIMIT", 1L, "NCVROC")
+  on.exit(assignInNamespace("AUTO_MEMORY_LIMIT", old_limit, "NCVROC"), add = TRUE)
+
+  out <- ncvroc(make_chunk_test_data(), y, Q1:Q4, max_items = 2,
+                results_storage = "rds",
+                cache = "off", outer_k = 2, inner_k = 2, outer_repeats = 1,
+                engine = "R", seed = 42, final_search = TRUE,
+                progress = FALSE, verbose = FALSE)
+
+  expect_equal(out$storage_backend, "chunked_rds")
+  result <- ncvroc_results(out, top_n = 10)
+  expect_identical(result$rank, seq_len(nrow(result)))
+  expect_equal(rownames(result), as.character(seq_len(nrow(result))))
+})
+
 # ---- Argument validation ----
 
 test_that("chunk_start must be non-negative", {
