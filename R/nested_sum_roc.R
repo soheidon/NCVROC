@@ -716,7 +716,8 @@ nested_sum_roc <- function(data,
 #'
 #' @param x An object of class `"ncvroc_result"`.
 #' @param ... Additional arguments (ignored).
-#' @return The original `"ncvroc_result"` object, returned invisibly.
+#' @return The original object of class `"ncvroc_result"`, returned
+#'   invisibly. The object contains the nested cross-validation results.
 #'   This method is called primarily for its side effect of printing
 #'   formatted nested cross-validation results.
 #' @keywords internal
@@ -743,9 +744,10 @@ print.ncvroc_result <- function(x, ...) {
 #'
 #' @param object An object of class `"ncvroc_result"`.
 #' @param ... Additional arguments (ignored).
-#' @return The original `"ncvroc_result"` object, returned invisibly.
+#' @return The original object of class `"ncvroc_result"`, returned
+#'   invisibly. The object contains the nested cross-validation results.
 #'   This method is called primarily for its side effect of printing
-#'   a detailed summary of nested cross-validation results.
+#'   a detailed summary of those results.
 #' @keywords internal
 #' @export
 summary.ncvroc_result <- function(object, ...) {
@@ -805,9 +807,10 @@ summary.ncvroc_result <- function(object, ...) {
 #' @param which Character, which plot: `"selection"` (barplot of model
 #'   frequencies) or `"auc"` (dotplot of per-fold AUC). Default `"selection"`.
 #' @param ... Additional arguments (ignored).
-#' @return The original `"ncvroc_result"` object, returned invisibly.
+#' @return The original object of class `"ncvroc_result"`, returned
+#'   invisibly. The object contains the nested cross-validation results.
 #'   This method is called primarily for its side effect of producing
-#'   a base-graphics plot.
+#'   a base-graphics plot of those results.
 #' @keywords internal
 #' @export
 plot.ncvroc_result <- function(x, which = c("selection", "auc"), ...) {

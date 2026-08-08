@@ -12,7 +12,8 @@
 \item{...}{Additional arguments (ignored).}
 }
 \value{
-The original `"ncvroc_result"` object, returned invisibly.
+The original object of class `"ncvroc_result"`, returned
+  invisibly. The object contains the nested cross-validation results.
   This method is called primarily for its side effect of printing
   formatted nested cross-validation results.
 }
