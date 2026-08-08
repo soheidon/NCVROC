@@ -11,6 +11,11 @@
 
 \item{...}{Additional arguments (ignored).}
 }
+\value{
+The original `"ncvroc_result"` object, returned invisibly.
+  This method is called primarily for its side effect of printing
+  formatted nested cross-validation results.
+}
 \description{
 Print NCVROC nested cross-validation result
 }

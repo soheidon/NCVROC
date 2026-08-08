@@ -419,7 +419,7 @@
 #'   \item{settings}{list of all argument values.}
 #'
 #' @examples
-#' \dontrun{
+#' set.seed(42)
 #' d <- data.frame(
 #'   y  = sample(0:1, 100, replace = TRUE),
 #'   q1 = sample(0:2, 100, replace = TRUE),
@@ -427,9 +427,9 @@
 #'   q3 = sample(0:2, 100, replace = TRUE)
 #' )
 #' result <- nested_sum_roc(d, "y", c("q1", "q2", "q3"),
-#'   max_items = 2, outer_k = 3, inner_k = 2, seed = 42)
+#'   max_items = 2, outer_k = 3, inner_k = 2, seed = 42,
+#'   progress = FALSE, verbose = FALSE)
 #' summary(result)
-#' }
 #'
 #' @export
 nested_sum_roc <- function(data,
@@ -716,6 +716,9 @@ nested_sum_roc <- function(data,
 #'
 #' @param x An object of class `"ncvroc_result"`.
 #' @param ... Additional arguments (ignored).
+#' @return The original `"ncvroc_result"` object, returned invisibly.
+#'   This method is called primarily for its side effect of printing
+#'   formatted nested cross-validation results.
 #' @keywords internal
 #' @export
 print.ncvroc_result <- function(x, ...) {
@@ -740,6 +743,9 @@ print.ncvroc_result <- function(x, ...) {
 #'
 #' @param object An object of class `"ncvroc_result"`.
 #' @param ... Additional arguments (ignored).
+#' @return The original `"ncvroc_result"` object, returned invisibly.
+#'   This method is called primarily for its side effect of printing
+#'   a detailed summary of nested cross-validation results.
 #' @keywords internal
 #' @export
 summary.ncvroc_result <- function(object, ...) {
@@ -799,6 +805,9 @@ summary.ncvroc_result <- function(object, ...) {
 #' @param which Character, which plot: `"selection"` (barplot of model
 #'   frequencies) or `"auc"` (dotplot of per-fold AUC). Default `"selection"`.
 #' @param ... Additional arguments (ignored).
+#' @return The original `"ncvroc_result"` object, returned invisibly.
+#'   This method is called primarily for its side effect of producing
+#'   a base-graphics plot.
 #' @keywords internal
 #' @export
 plot.ncvroc_result <- function(x, which = c("selection", "auc"), ...) {

@@ -10,10 +10,14 @@ Authors@R:
         role = c("aut", "cre", "cph")
     )
 Description: Develops short item-based screening scales through combinatorial
-    item-set selection, ROC-based evaluation, and nested cross-validation.
-    For psychological/clinical questionnaire data, identifies which small
-    subset of items best predicts a binary outcome using simple sum scores.
-    Assumes higher sum scores indicate higher probability of a positive outcome.
+    item-set selection, receiver operating characteristic (ROC) curve
+    evaluation, and nested cross-validation. For psychological/clinical
+    questionnaire data, identifies which small subset of items best predicts
+    a binary outcome using simple sum scores. Assumes higher sum scores
+    indicate higher probability of a positive outcome. Methods for ROC
+    analysis are described by Fawcett (2006)
+    <doi:10.1016/j.patrec.2005.10.010>, and nested cross-validation for model
+    selection by Varma and Simon (2006) <doi:10.1186/1471-2105-7-91>.
 License: MIT + file LICENSE
 Encoding: UTF-8
 Config/testthat/edition: 3

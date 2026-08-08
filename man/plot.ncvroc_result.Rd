@@ -14,6 +14,11 @@ frequencies) or `"auc"` (dotplot of per-fold AUC). Default `"selection"`.}
 
 \item{...}{Additional arguments (ignored).}
 }
+\value{
+The original `"ncvroc_result"` object, returned invisibly.
+  This method is called primarily for its side effect of producing
+  a base-graphics plot.
+}
 \description{
 Plot NCVROC nested cross-validation result
 }

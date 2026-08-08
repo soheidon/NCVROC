@@ -107,7 +107,7 @@ cutoff within each outer training fold, reducing optimistic bias.
 - The cutoff rule is `predicted_positive = score >= cutoff`.
 }
 \examples{
-\dontrun{
+set.seed(42)
 d <- data.frame(
   y  = sample(0:1, 100, replace = TRUE),
   q1 = sample(0:2, 100, replace = TRUE),
@@ -115,8 +115,8 @@ d <- data.frame(
   q3 = sample(0:2, 100, replace = TRUE)
 )
 result <- nested_sum_roc(d, "y", c("q1", "q2", "q3"),
-  max_items = 2, outer_k = 3, inner_k = 2, seed = 42)
+  max_items = 2, outer_k = 3, inner_k = 2, seed = 42,
+  progress = FALSE, verbose = FALSE)
 summary(result)
-}
 
 }
