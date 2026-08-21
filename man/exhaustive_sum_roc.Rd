@@ -16,6 +16,8 @@ exhaustive_sum_roc(
   rank_by = c("auc", "youden", "sensitivity", "specificity", "accuracy"),
   top_n = NULL,
   prefer_fewer_items = TRUE,
+  ci = FALSE,
+  conf_level = 0.95,
   engine = c("R", "Rcpp"),
   progress = TRUE,
   chunk_start = NULL,
@@ -50,6 +52,12 @@ Euclidean distance to (0,1) in ROC space). Default `"youden"`.}
 \item{prefer_fewer_items}{Logical. If `TRUE` and multiple models tie on
 `rank_by`, models with fewer items are ranked higher. Default `TRUE`.}
 
+\item{ci}{Logical. If `TRUE`, compute confidence intervals for AUC (DeLong)
+and classification metrics (Clopper-Pearson exact binomial) for the top
+models. Default `FALSE`.}
+
+\item{conf_level}{Numeric confidence level in (0, 1), default 0.95.}
+
 \item{engine}{Character, computation engine. `"R"` (default) or `"Rcpp"`.}
 
 \item{progress}{Logical, show progress bar? Default `TRUE`.}
@@ -63,6 +71,15 @@ from. When set together with `chunk_size`, only that range is evaluated.}
 A data.frame with columns: `rank`, `items` (comma-separated string),
   `n_items`, `auc`, `cutoff`, `sensitivity`, `specificity`, `youden`,
   `accuracy`, `ppv`, `npv`, `n_positive`, `n_negative`.
+  If `ci = TRUE`, includes:
+  \itemize{
+    \item \code{auc_lower}, \code{auc_upper}: DeLong confidence limits for AUC.
+    \item \code{sensitivity_lower}, \code{sensitivity_upper}: Clopper-Pearson exact limits for sensitivity.
+    \item \code{specificity_lower}, \code{specificity_upper}: Clopper-Pearson exact limits for specificity.
+    \item \code{accuracy_lower}, \code{accuracy_upper}: Clopper-Pearson exact limits for accuracy.
+    \item \code{ppv_lower}, \code{ppv_upper}: Clopper-Pearson exact limits for positive predictive value.
+    \item \code{npv_lower}, \code{npv_upper}: Clopper-Pearson exact limits for negative predictive value.
+  }
   Sorted by the chosen `rank_by` metric in descending order.
 }
 \description{
@@ -76,6 +93,25 @@ The sum score of each item combination is computed as `rowSums()`.
 outcome.** Users must reverse-code items beforehand if needed.
 
 The cutoff rule is `predicted_positive = score >= cutoff`.
+
+
+When `ci = TRUE`, confidence intervals are calculated after ranking and
+`top_n` truncation to maintain high combinatorial search speed:
+\itemize{
+  \item \strong{AUC CI}: Non-parametric asymptotic normal approximation using
+    the method of DeLong et al. (1988), computed efficiently from score frequency
+    distributions in O(K) time.
+  \item \strong{Sensitivity, Specificity, Accuracy, PPV, NPV CI}: Exact binomial
+    confidence intervals using the Clopper-Pearson method (Clopper & Pearson, 1934)
+    via Beta distribution quantiles (\code{\link[stats]{qbeta}}).
+}
+
+\strong{Important note on CI interpretation:} Confidence intervals for
+performance metrics evaluated on the full dataset quantify sampling uncertainty
+for the candidate model on that specific data. They do not account for uncertainty
+introduced by model or cutoff selection and should not be interpreted as
+cross-validated confidence intervals. Use \code{\link{nested_sum_roc}} for
+cross-validated performance estimation.
 }
 \examples{
 d <- data.frame(
@@ -86,4 +122,14 @@ d <- data.frame(
 )
 exhaustive_sum_roc(d, "y", c("q1", "q2", "q3"), max_items = 2)
 
+}
+\references{
+DeLong, E. R., DeLong, D. M., & Clarke-Pearson, D. L. (1988). Comparing the areas
+under two or more correlated receiver operating characteristic curves: a
+nonparametric approach. \emph{Biometrics}, 44(3), 837--845.
+\doi{10.2307/2531595}
+
+Clopper, C. J., & Pearson, E. S. (1934). The use of confidence or fiducial
+limits illustrated in the case of the binomial. \emph{Biometrika}, 26(4),
+404--413. \doi{10.1093/biomet/26.4.404}
 }

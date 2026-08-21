@@ -1,6 +1,6 @@
 [English](README.md) | [日本語](https://github.com/soheidon/NCVROC/blob/master/docs/reference-ja.md)
 
-# NCVROC 0.10.2
+# NCVROC 0.11.0
 
 **N**ested **C**ross-**V**alidation for Combinatorial **ROC**-based Selection of Item-set Scores
 
@@ -545,20 +545,22 @@ exhaustive_sum_roc(
   data,
   outcome,
   items,
-  min_items         = 1,
-  max_items         = 4,
-  positive_label    = 1,
-  negative_label    = 0,
-  cutoff_method     = c("youden", "closest_topleft"),
-  rank_by           = c("auc", "youden", "sensitivity", "specificity", "accuracy"),
-  top_n             = NULL,
+  min_items          = 1,
+  max_items          = 4,
+  positive_label     = 1,
+  negative_label     = 0,
+  cutoff_method      = c("youden", "closest_topleft"),
+  rank_by            = c("auc", "youden", "sensitivity", "specificity", "accuracy"),
+  top_n              = NULL,
   prefer_fewer_items = TRUE,
-  engine            = c("R", "Rcpp"),
-  progress          = TRUE
+  ci                 = FALSE,
+  conf_level         = 0.95,
+  engine             = c("R", "Rcpp"),
+  progress           = TRUE
 )
 ```
 
-**Returns:** data.frame with columns `rank`, `items`, `n_items`, `auc`, `cutoff`, `sensitivity`, `specificity`, `youden`, `accuracy`, `ppv`, `npv`, `n_positive`, `n_negative`. Sorted by `rank_by` descending.
+**Returns:** data.frame with columns `rank`, `items`, `n_items`, `auc`, `cutoff`, `sensitivity`, `specificity`, `youden`, `accuracy`, `ppv`, `npv`, `n_positive`, `n_negative`. When `ci = TRUE`, also includes `auc_lower`, `auc_upper`, `sensitivity_lower`, `sensitivity_upper`, `specificity_lower`, `specificity_upper`, `accuracy_lower`, `accuracy_upper`, `ppv_lower`, `ppv_upper`, `npv_lower`, `npv_upper`. Sorted by `rank_by` descending.
 
 **Performance is apparent (in-sample), not cross-validated.**
 
@@ -582,12 +584,14 @@ fit_final_sum_scale(
   cutoff_method  = c("youden", "closest_topleft"),
   rank_by        = c("auc", "youden", "sensitivity", "specificity", "accuracy"),
   top_n          = 20,
+  ci             = TRUE,
+  conf_level     = 0.95,
   engine         = c("R", "Rcpp"),
   progress       = TRUE
 )
 ```
 
-**Returns:** data.frame with `attr(result, "performance_type") <- "apparent"`. These are in-sample estimates, not cross-validated. Use `nested_sum_roc()` for validated performance.
+**Returns:** data.frame with point estimates and confidence intervals (when `ci = TRUE`), tagged with `attr(result, "performance_type") <- "apparent"`. These are in-sample estimates, not cross-validated. Use `nested_sum_roc()` for validated performance.
 
 Default is `engine = "R"`. For ~7x speedup, use `engine = "Rcpp"`.
 
@@ -694,6 +698,50 @@ summary(result)
 | `nested_sum_roc()` | Nested cross-validated | Validated performance estimation |
 | `run_ncvroc()` | Nested cross-validated | Convenience wrapper (config-driven) |
 | `fit_final_sum_scale()` | Apparent (in-sample) | Final scale on full data |
+
+---
+
+## Confidence intervals
+
+`NCVROC` provides confidence interval (CI) estimation for final scale performance metrics evaluated on the full dataset:
+
+- **AUC CI:** Non-parametric asymptotic method by DeLong et al. (1988), computed directly and efficiently from score frequency distributions in $O(K)$ time.
+- **Sensitivity, Specificity, Accuracy, PPV, NPV CI:** Exact binomial confidence intervals by Clopper and Pearson (1934) computed using Beta distribution quantiles (`stats::qbeta`).
+- **Confidence level:** Specified via `conf_level` (default `0.95` for 95% CIs).
+- **Default behavior:**
+  - `fit_final_sum_scale()` and `ncvroc()` compute CIs for final models/candidates by default (`ci = TRUE`).
+  - `exhaustive_sum_roc()` defaults to `ci = FALSE` to maintain high combinatorial search speed, computing CIs only after ranking and top-$N$ candidate selection when `ci = TRUE`.
+
+### Example
+
+```r
+# Fit final scale with 95% confidence intervals
+final <- fit_final_sum_scale(
+  data       = d,
+  outcome    = "y",
+  items      = c("Q1", "Q2", "Q3"),
+  max_items  = 2,
+  ci         = TRUE,
+  conf_level = 0.95
+)
+
+# Output includes point estimates alongside lower/upper bounds
+final[, c("rank", "items", "auc", "auc_lower", "auc_upper",
+          "sensitivity", "sensitivity_lower", "sensitivity_upper",
+          "specificity", "specificity_lower", "specificity_upper")]
+```
+
+For small samples or perfect classification (e.g. 10/10 true positives), the Clopper–Pearson exact method properly quantifies sample uncertainty:
+```text
+Sensitivity: 1.000 [0.692, 1.000]
+```
+
+### Important note on CI interpretation
+
+> [!IMPORTANT]
+> **Confidence intervals for final-model performance quantify sampling uncertainty for the fitted model evaluated on the full dataset. They do not account for uncertainty introduced by model or cutoff selection and should not be interpreted as cross-validated confidence intervals.**
+>
+> Use `nested_sum_roc()` or `ncvroc()` to assess out-of-sample generalizability across outer cross-validation folds.
 
 ---
 

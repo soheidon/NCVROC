@@ -38,6 +38,8 @@ ncvroc(
   progress = TRUE,
   verbose = TRUE,
   return = "full",
+  ci = TRUE,
+  conf_level = 0.95,
   item_count = NULL
 )
 }
@@ -119,9 +121,16 @@ when `cache != "off"`).}
 
 \item{return}{Return mode: `"full"` or `"summary"` (default `"full"`).}
 
+\item{ci}{Logical. If `TRUE` (default), compute confidence intervals for
+AUC (DeLong) and classification metrics (Clopper-Pearson exact binomial)
+for `final_model` and `final_candidates`. Note: these CIs quantify
+sampling uncertainty for the fixed model on the full dataset, not
+cross-validated uncertainty.}
+
+\item{conf_level}{Numeric confidence level in (0, 1), default 0.95.}
+
 \item{item_count}{Concise model-size specification: `"==4"` (exactly 4
-items), `"<=4"` (up to 4 items), or `"2:4"` (2 through 4 items).
-Cannot be combined with `min_items` or `max_items`. Default NULL.}
+items), `"<=4"` (up to 4 items), or `"2:4"` (2 through 4 items).}
 }
 \value{
 An object of class `"ncvroc_analysis"`.
@@ -131,6 +140,25 @@ Primary user-facing function for nested cross-validation of combinatorial
 ROC-based item-set selection. Resolves outcome and item columns using
 base-R style selection, prepares data, creates a configuration, runs
 nested CV, and optionally performs a final exhaustive search.
+}
+\details{
+When `final_search = TRUE` and `ci = TRUE`, confidence intervals are
+attached to `final_model` and `final_candidates`:
+\itemize{
+  \item \strong{AUC CI}: Non-parametric asymptotic normal approximation using
+    the method of DeLong et al. (1988), computed efficiently from score frequency
+    distributions in O(K) time.
+  \item \strong{Sensitivity, Specificity, Accuracy, PPV, NPV CI}: Exact binomial
+    confidence intervals using the Clopper-Pearson method (Clopper & Pearson, 1934)
+    via Beta distribution quantiles (\code{\link[stats]{qbeta}}).
+}
+
+\strong{Important note on CI interpretation:} Confidence intervals for
+final-model performance quantify sampling uncertainty for the fitted model
+evaluated on the full dataset. They do not account for uncertainty introduced
+by model or cutoff selection and should not be interpreted as cross-validated
+confidence intervals. Cross-validated performance and its variability are
+estimated by the nested cross-validation outer loop (\code{nested_cv_summary}).
 }
 \examples{
 set.seed(42)
@@ -146,4 +174,22 @@ result <- ncvroc(d, y, Q1:Q3, max_items = 2, mode = "quick",
   seed = 42, final_search = FALSE)
 print(result)
 }
+}
+\references{
+DeLong, E. R., DeLong, D. M., & Clarke-Pearson, D. L. (1988). Comparing the areas
+under two or more correlated receiver operating characteristic curves: a
+nonparametric approach. \emph{Biometrics}, 44(3), 837--845.
+\doi{10.2307/2531595}
+
+Clopper, C. J., & Pearson, E. S. (1934). The use of confidence or fiducial
+limits illustrated in the case of the binomial. \emph{Biometrika}, 26(4),
+404--413. \doi{10.1093/biomet/26.4.404}
+
+Varma, S., & Simon, R. (2006). Bias in error estimation when using
+cross-validation for model selection. \emph{BMC Bioinformatics}, 7, 91.
+\doi{10.1186/1471-2105-7-91}
+
+Fawcett, T. (2006). An introduction to ROC analysis. \emph{Pattern
+Recognition Letters}, 27(8), 861--874.
+\doi{10.1016/j.patrec.2005.10.010}
 }

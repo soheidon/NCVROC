@@ -1,4 +1,4 @@
-# NCVROC 0.10.2 リファレンス
+# NCVROC 0.11.0 リファレンス
 
 **N**ested **C**ross-**V**alidation for Combinatorial **ROC**-based Selection of Item-set Scores（項目セット得点の組み合わせROC選択のためのネスト交差検証）
 
@@ -656,6 +656,49 @@ summary(result)
 | `nested_sum_roc()` | ネスト交差検証済み | 検証済みパフォーマンス推定 |
 | `run_ncvroc()` | ネスト交差検証済み | 便利なラッパー（設定駆動） |
 | `fit_final_sum_scale()` | 見かけ上（インサンプル） | 全データでの最終尺度 |
+
+---
+
+## 信頼区間（Confidence intervals）
+
+`NCVROC` は全データで評価された最終尺度の性能指標に対して信頼区間（CI）推定を提供します：
+
+- **AUC CI:** DeLongら（1988）によるノンパラメトリック漸近正規近似法。スコア度数分布から $O(K)$ で高速に計算されます。
+- **Sensitivity, Specificity, Accuracy, PPV, NPV CI:** Clopper and Pearson（1934）による二項分布の正確信頼区間（Beta分布分位数 `stats::qbeta` を使用）。
+- **信頼水準:** `conf_level` で指定（デフォルト `0.95` で95% CI）。
+- **デフォルトの動作:**
+  - `fit_final_sum_scale()` および `ncvroc()` は、最終モデル/候補に対してデフォルトでCIを付与します（`ci = TRUE`）。
+  - `exhaustive_sum_roc()` は探索速度維持のためデフォルトで `ci = FALSE` となっており、`ci = TRUE` の場合もランキング・top-$N$抽出後にのみCIを計算します。
+
+### 使用例
+
+```r
+# 95%信頼区間付きで最終尺度を適合
+final <- fit_final_sum_scale(
+  data       = d,
+  outcome    = "y",
+  items      = c("Q1", "Q2", "Q3"),
+  max_items  = 2,
+  ci         = TRUE,
+  conf_level = 0.95
+)
+
+# 出力には点推定値とともに下限（_lower）と上限（_upper）が含まれます
+final[, c("rank", "items", "auc", "auc_lower", "auc_upper",
+          "sensitivity", "sensitivity_lower", "sensitivity_upper",
+          "specificity", "specificity_lower", "specificity_upper")]
+```
+
+小標本や完全分類（例: 10例中10例正解の10/10）の場合でも、Clopper–Pearson法により標本不確実性が適切に定量化されます：
+```text
+Sensitivity: 1.000 [0.692, 1.000]
+```
+
+### 信頼区間の解釈に関する重要な注意
+
+> **重要:** 最終モデルの性能に対する信頼区間は、全データで評価された固定モデルの**標本不確実性（sampling uncertainty）**を定量化するものです。モデル選択やカットオフ選択によって生じる不確実性は考慮されておらず、**交差検証された信頼区間（cross-validated confidence intervals）として解釈すべきではありません**。
+>
+> 汎化性能の検証には `nested_sum_roc()` または `ncvroc()` の外部交差検証ループ結果（`nested_cv_summary`）を使用してください。
 
 ---
 

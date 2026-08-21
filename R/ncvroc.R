@@ -596,9 +596,50 @@
 #' @param progress Logical, show progress bars (default TRUE).
 #' @param verbose Logical, print diagnostic messages (default TRUE).
 #' @param return Return mode: `"full"` or `"summary"` (default `"full"`).
+#' @param ci Logical. If `TRUE` (default), compute confidence intervals for
+#'   AUC (DeLong) and classification metrics (Clopper-Pearson exact binomial)
+#'   for `final_model` and `final_candidates`. Note: these CIs quantify
+#'   sampling uncertainty for the fixed model on the full dataset, not
+#'   cross-validated uncertainty.
+#' @param conf_level Numeric confidence level in (0, 1), default 0.95.
 #' @param item_count Concise model-size specification: `"==4"` (exactly 4
 #'   items), `"<=4"` (up to 4 items), or `"2:4"` (2 through 4 items).
-#'   Cannot be combined with `min_items` or `max_items`. Default NULL.
+#' @details
+#' When `final_search = TRUE` and `ci = TRUE`, confidence intervals are
+#' attached to `final_model` and `final_candidates`:
+#' \itemize{
+#'   \item \strong{AUC CI}: Non-parametric asymptotic normal approximation using
+#'     the method of DeLong et al. (1988), computed efficiently from score frequency
+#'     distributions in O(K) time.
+#'   \item \strong{Sensitivity, Specificity, Accuracy, PPV, NPV CI}: Exact binomial
+#'     confidence intervals using the Clopper-Pearson method (Clopper & Pearson, 1934)
+#'     via Beta distribution quantiles (\code{\link[stats]{qbeta}}).
+#' }
+#'
+#' \strong{Important note on CI interpretation:} Confidence intervals for
+#' final-model performance quantify sampling uncertainty for the fitted model
+#' evaluated on the full dataset. They do not account for uncertainty introduced
+#' by model or cutoff selection and should not be interpreted as cross-validated
+#' confidence intervals. Cross-validated performance and its variability are
+#' estimated by the nested cross-validation outer loop (\code{nested_cv_summary}).
+#'
+#' @references
+#' DeLong, E. R., DeLong, D. M., & Clarke-Pearson, D. L. (1988). Comparing the areas
+#' under two or more correlated receiver operating characteristic curves: a
+#' nonparametric approach. \emph{Biometrics}, 44(3), 837--845.
+#' \doi{10.2307/2531595}
+#'
+#' Clopper, C. J., & Pearson, E. S. (1934). The use of confidence or fiducial
+#' limits illustrated in the case of the binomial. \emph{Biometrika}, 26(4),
+#' 404--413. \doi{10.1093/biomet/26.4.404}
+#'
+#' Varma, S., & Simon, R. (2006). Bias in error estimation when using
+#' cross-validation for model selection. \emph{BMC Bioinformatics}, 7, 91.
+#' \doi{10.1186/1471-2105-7-91}
+#'
+#' Fawcett, T. (2006). An introduction to ROC analysis. \emph{Pattern
+#' Recognition Letters}, 27(8), 861--874.
+#' \doi{10.1016/j.patrec.2005.10.010}
 #'
 #' @return An object of class `"ncvroc_analysis"`.
 #' @export
@@ -650,6 +691,8 @@ ncvroc <- function(data,
                    progress = TRUE,
                    verbose = TRUE,
                    return = "full",
+                   ci = TRUE,
+                   conf_level = 0.95,
                    item_count = NULL) {
 
   # ---- 1. Capture & resolve ----
@@ -661,6 +704,15 @@ ncvroc <- function(data,
   final_rank_by <- match.arg(final_rank_by)
   results_storage <- match.arg(results_storage)
   cache <- match.arg(cache)
+
+  if (!is.logical(ci) || length(ci) != 1L || is.na(ci)) {
+    stop("`ci` must be TRUE or FALSE.", call. = FALSE)
+  }
+
+  if (!is.numeric(conf_level) || length(conf_level) != 1L ||
+      is.na(conf_level) || conf_level <= 0 || conf_level >= 1) {
+    stop("`conf_level` must be a single numeric value in (0, 1).", call. = FALSE)
+  }
 
   if (!is.null(results_name) &&
       (length(results_name) != 1L || !is.character(results_name) ||
@@ -878,6 +930,55 @@ ncvroc <- function(data,
   } else {
     final_model <- NULL
     final_candidates <- NULL
+  }
+
+  # ---- 5c. Compute CIs for final model and candidates if requested ----
+  if (ci && !is.null(final_model) && nrow(final_model) > 0) {
+    if (!("auc_lower" %in% names(final_model))) {
+      final_model <- add_performance_cis(
+        final_model,
+        data = analysis_dat,
+        outcome = outcome_name,
+        conf_level = conf_level
+      )
+      col_order <- c(
+        "rank", "items", "n_items",
+        "auc", "auc_lower", "auc_upper",
+        "cutoff",
+        "sensitivity", "sensitivity_lower", "sensitivity_upper",
+        "specificity", "specificity_lower", "specificity_upper",
+        "youden",
+        "accuracy", "accuracy_lower", "accuracy_upper",
+        "ppv", "ppv_lower", "ppv_upper",
+        "npv", "npv_lower", "npv_upper",
+        "n_positive", "n_negative"
+      )
+      final_model <- final_model[, col_order, drop = FALSE]
+    }
+  }
+
+  if (ci && !is.null(final_candidates) && nrow(final_candidates) > 0) {
+    if (!("auc_lower" %in% names(final_candidates))) {
+      final_candidates <- add_performance_cis(
+        final_candidates,
+        data = analysis_dat,
+        outcome = outcome_name,
+        conf_level = conf_level
+      )
+      col_order <- c(
+        "rank", "items", "n_items",
+        "auc", "auc_lower", "auc_upper",
+        "cutoff",
+        "sensitivity", "sensitivity_lower", "sensitivity_upper",
+        "specificity", "specificity_lower", "specificity_upper",
+        "youden",
+        "accuracy", "accuracy_lower", "accuracy_upper",
+        "ppv", "ppv_lower", "ppv_upper",
+        "npv", "npv_lower", "npv_upper",
+        "n_positive", "n_negative"
+      )
+      final_candidates <- final_candidates[, col_order, drop = FALSE]
+    }
   }
 
   # ---- 6. Optional save (CSV export, unchanged from v0.8.0) ----

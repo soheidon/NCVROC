@@ -1,3 +1,17 @@
+# NCVROC 0.11.0
+
+## New features
+
+- **Confidence interval (CI) estimation**:
+  - **AUC 95% CI**: Non-parametric asymptotic method by DeLong et al. (1988), computed efficiently from score frequency distributions in $O(K)$ time.
+  - **Classification metrics 95% CI**: Exact binomial confidence intervals by Clopper and Pearson (1934) for sensitivity, specificity, accuracy, positive predictive value (PPV), and negative predictive value (NPV) via Beta distribution quantiles (`stats::qbeta`).
+  - Added `ci` (logical) and `conf_level` (default `0.95`) arguments across `fit_final_sum_scale()`, `ncvroc()`, and `exhaustive_sum_roc()`.
+  - Added output columns: `auc_lower`, `auc_upper`, `sensitivity_lower`, `sensitivity_upper`, `specificity_lower`, `specificity_upper`, `accuracy_lower`, `accuracy_upper`, `ppv_lower`, `ppv_upper`, `npv_lower`, `npv_upper`.
+  - In `exhaustive_sum_roc()`, CIs are calculated only after ranking and top-$N$ candidate selection to preserve high combinatorial search speed.
+  - Added clear documentation distinguishing apparent full-data sampling uncertainty CIs for fixed models from nested cross-validation out-of-fold performance variability.
+
+---
+
 # NCVROC 0.10.2
 
 ## Bug fixes

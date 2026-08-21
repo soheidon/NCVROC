@@ -1,7 +1,7 @@
 Package: NCVROC
 Type: Package
 Title: Nested Cross-Validation for Combinatorial ROC-Based Selection of Item-Set Scores
-Version: 0.10.2
+Version: 0.11.0
 Authors@R:
     person(
         given = "Sohei",
@@ -36,4 +36,4 @@ Suggests:
     pROC
 VignetteBuilder: knitr
 Config/roxygen2/version: 8.0.0
-RoxygenNote: 7.3.3
+RoxygenNote: 8.0.0

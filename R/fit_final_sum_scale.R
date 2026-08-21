@@ -11,8 +11,13 @@
 #' internally validated performance. Use [nested_sum_roc()] for nested
 #' cross-validated performance estimation.
 #'
-#' This function does exactly the same computation as [exhaustive_sum_roc()]
-#' and returns the same data.frame. The only difference is that it tags the
+#' Confidence intervals for final-model performance quantify sampling
+#' uncertainty for the fitted model evaluated on the full dataset. They do not
+#' account for uncertainty introduced by model or cutoff selection and should
+#' not be interpreted as cross-validated confidence intervals.
+#'
+#' This function evaluates combinations via [exhaustive_sum_roc()], computes
+#' confidence intervals for the top models (if `ci = TRUE`), and tags the
 #' result with `attr("performance_type") <- "apparent"` to clearly flag
 #' that these are NOT cross-validated estimates.
 #'
@@ -28,13 +33,52 @@
 #' @param rank_by Metric for ranking models. One of `"auc"`, `"youden"`,
 #'   `"sensitivity"`, `"specificity"`, or `"accuracy"`. Default `"auc"`.
 #' @param top_n Integer, return only the top N models (default 20).
+#' @param ci Logical. If `TRUE` (default), compute confidence intervals for
+#'   AUC (DeLong) and classification metrics (Clopper-Pearson exact binomial).
+#' @param conf_level Numeric confidence level in (0, 1), default 0.95.
 #' @param engine Character, computation engine. `"R"` (default) or `"Rcpp"`.
 #' @param progress Logical, show progress bar? Default `TRUE`.
 #'
-#' @return A data.frame with the same structure as [exhaustive_sum_roc()]:
-#'   columns `rank`, `items`, `n_items`, `auc`, `cutoff`, `sensitivity`,
-#'   `specificity`, `youden`, `accuracy`, `ppv`, `npv`, `n_positive`,
-#'   `n_negative`. Has attribute `performance_type` set to `"apparent"`.
+#' @details
+#' When `ci = TRUE`, confidence intervals are calculated as follows:
+#' \itemize{
+#'   \item \strong{AUC CI}: Non-parametric asymptotic normal approximation using
+#'     the method of DeLong et al. (1988), computed efficiently from score frequency
+#'     distributions in O(K) time.
+#'   \item \strong{Sensitivity, Specificity, Accuracy, PPV, NPV CI}: Exact binomial
+#'     confidence intervals using the Clopper-Pearson method (Clopper & Pearson, 1934)
+#'     via Beta distribution quantiles (\code{\link[stats]{qbeta}}).
+#' }
+#'
+#' \strong{Important note on CI interpretation:} Confidence intervals for
+#' final-model performance quantify sampling uncertainty for the fitted model
+#' evaluated on the full dataset. They do not account for uncertainty introduced
+#' by model or cutoff selection and should not be interpreted as cross-validated
+#' confidence intervals. Use \code{\link{nested_sum_roc}} for cross-validated
+#' performance estimation.
+#'
+#' @references
+#' DeLong, E. R., DeLong, D. M., & Clarke-Pearson, D. L. (1988). Comparing the areas
+#' under two or more correlated receiver operating characteristic curves: a
+#' nonparametric approach. \emph{Biometrics}, 44(3), 837--845.
+#' \doi{10.2307/2531595}
+#'
+#' Clopper, C. J., & Pearson, E. S. (1934). The use of confidence or fiducial
+#' limits illustrated in the case of the binomial. \emph{Biometrika}, 26(4),
+#' 404--413. \doi{10.1093/biomet/26.4.404}
+#'
+#' @return A data.frame with columns: `rank`, `items`, `n_items`, `auc`,
+#'   `cutoff`, `sensitivity`, `specificity`, `youden`, `accuracy`, `ppv`,
+#'   `npv`, `n_positive`, `n_negative`. When `ci = TRUE`, also includes:
+#'   \itemize{
+#'     \item \code{auc_lower}, \code{auc_upper}: DeLong confidence limits for AUC.
+#'     \item \code{sensitivity_lower}, \code{sensitivity_upper}: Clopper-Pearson exact limits for sensitivity.
+#'     \item \code{specificity_lower}, \code{specificity_upper}: Clopper-Pearson exact limits for specificity.
+#'     \item \code{accuracy_lower}, \code{accuracy_upper}: Clopper-Pearson exact limits for accuracy.
+#'     \item \code{ppv_lower}, \code{ppv_upper}: Clopper-Pearson exact limits for positive predictive value.
+#'     \item \code{npv_lower}, \code{npv_upper}: Clopper-Pearson exact limits for negative predictive value.
+#'   }
+#'   Has attribute `performance_type` set to `"apparent"`.
 #'
 #' @examples
 #' d <- data.frame(
@@ -63,6 +107,8 @@ fit_final_sum_scale <- function(data,
                                 rank_by = c("auc", "youden", "sensitivity",
                                             "specificity", "accuracy"),
                                 top_n = 20,
+                                ci = TRUE,
+                                conf_level = 0.95,
                                 engine = c("R", "Rcpp"),
                                 progress = TRUE) {
   cutoff_method <- match.arg(cutoff_method)
@@ -70,19 +116,21 @@ fit_final_sum_scale <- function(data,
   engine <- match.arg(engine)
 
   result <- exhaustive_sum_roc(
-    data             = data,
-    outcome          = outcome,
-    items            = items,
-    min_items        = min_items,
-    max_items        = max_items,
-    positive_label   = positive_label,
-    negative_label   = negative_label,
-    cutoff_method    = cutoff_method,
-    rank_by          = rank_by,
-    top_n            = top_n,
+    data               = data,
+    outcome            = outcome,
+    items              = items,
+    min_items          = min_items,
+    max_items          = max_items,
+    positive_label     = positive_label,
+    negative_label     = negative_label,
+    cutoff_method      = cutoff_method,
+    rank_by            = rank_by,
+    top_n              = top_n,
     prefer_fewer_items = TRUE,
-    engine           = engine,
-    progress         = progress
+    ci                 = ci,
+    conf_level         = conf_level,
+    engine             = engine,
+    progress           = progress
   )
 
   attr(result, "performance_type") <- "apparent"
