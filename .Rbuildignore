@@ -12,3 +12,4 @@
 ^tests/testthat/Rplots[.]pdf$
 ^Release$
 ^\.Release$
+^README-ja\.md$
