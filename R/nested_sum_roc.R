@@ -591,6 +591,56 @@
   max(1L, as.integer(workers))
 }
 
+#' Validate threads per outer worker
+#'
+#' @noRd
+.validate_threads_per_worker <- function(threads_per_worker) {
+  if (!is.numeric(threads_per_worker) || length(threads_per_worker) != 1L ||
+      is.na(threads_per_worker) || threads_per_worker <= 0 ||
+      threads_per_worker != as.integer(threads_per_worker)) {
+    stop("`threads_per_worker` must be a positive integer.", call. = FALSE)
+  }
+  as.integer(threads_per_worker)
+}
+
+#' Resolve a safe hybrid outer-process and intra-process thread budget
+#'
+#' @noRd
+.resolve_hybrid_budget <- function(n_workers = NULL,
+                                   threads_per_worker = 1L,
+                                   n_folds = NULL,
+                                   warn = TRUE) {
+  requested_threads <- .validate_threads_per_worker(threads_per_worker)
+  max_cores <- .get_max_workers()
+  outer_workers <- .resolve_n_workers(
+    parallel = TRUE,
+    n_workers = n_workers,
+    n_folds = n_folds
+  )
+  safe_threads <- max(1L, min(requested_threads, max_cores %/% outer_workers))
+
+  requested_outer <- if (is.null(n_workers)) outer_workers else as.integer(n_workers)
+  requested_total <- requested_outer * requested_threads
+  effective_total <- outer_workers * safe_threads
+  if (isTRUE(warn) &&
+      (requested_outer != outer_workers || requested_threads != safe_threads)) {
+    warning(
+      "Hybrid parallelism was capped from ", requested_outer, " x ",
+      requested_threads, " = ", requested_total, " to ", outer_workers,
+      " x ", safe_threads, " = ", effective_total,
+      " to respect outer-fold, available CPU, and CRAN core limits.",
+      call. = FALSE
+    )
+  }
+
+  list(
+    n_workers = as.integer(outer_workers),
+    threads_per_worker = as.integer(safe_threads),
+    total_parallelism = as.integer(effective_total),
+    max_cores = as.integer(max_cores)
+  )
+}
+
 # ---- Main exported function ----
 
 #' Nested cross-validation for item-set score selection
@@ -634,15 +684,25 @@
 #'   If `"chunks"`, inner exhaustive searches are evaluated across persistent chunk socket
 #'   workers. If `"threads"`, outer folds are evaluated serially while inner exhaustive
 #'   searches use C++ multi-threading within the main R process via RcppParallel.
+#'   If `"hybrid"`, outer folds use socket workers and each worker uses C++
+#'   multi-threading for its exhaustive candidate evaluation.
 #'   Default `FALSE`.
-#' @param n_workers Integer, number of worker processes (for `"outer"` or `"chunks"`)
-#'   or threads (for `"threads"`), or `NULL` (default) for automatic detection.
+#' @param n_workers Integer, number of worker processes (for `"outer"` or `"chunks"`),
+#'   threads (for `"threads"`), or outer PSOCK workers (for `"hybrid"`), or
+#'   `NULL` (default) for automatic detection. In hybrid mode, the outer worker
+#'   count is resolved first; `threads_per_worker` is then capped to the remaining
+#'   CPU budget.
 #'   Ignored when `parallel = FALSE` or `"none"`.
 #'   When `parallel = TRUE` and `n_workers = NULL`, worker count defaults to
 #'   \code{max(1L, parallel::detectCores(logical = FALSE) - 1L)}. The effective
 #'   worker count is automatically capped by available CPU cores and CRAN core limits
 #'   (\code{_R_CHECK_LIMIT_CORES_}). For `"outer"`, it is additionally capped by the
 #'   number of outer folds.
+#' @param threads_per_worker Positive integer, requested number of C++ threads
+#'   used inside each outer socket worker when `parallel = "hybrid"` (default 1).
+#'   The effective value may be reduced according to the CPU budget, resolved
+#'   outer worker count, and `_R_CHECK_LIMIT_CORES_`. For other modes this must
+#'   remain 1.
 #' @param progress Logical, show progress bars? Default `TRUE`.
 #' @param verbose Logical, print progress messages? Default `TRUE`.
 #' @param return Character, `"full"` (all details) or `"summary"` (summary
@@ -693,6 +753,7 @@ nested_sum_roc <- function(data,
                            engine = "R",
                            parallel = FALSE,
                            n_workers = NULL,
+                           threads_per_worker = 1L,
                            progress = TRUE,
                            verbose = TRUE,
                            return = c("full", "summary"),
@@ -756,7 +817,7 @@ nested_sum_roc <- function(data,
   parallel_mode <- .resolve_parallel_mode(
     parallel,
     context = "nested",
-    allowed = c("none", "outer", "chunks", "threads")
+    allowed = c("none", "outer", "chunks", "threads", "hybrid")
   )
 
   if (!is.null(n_workers)) {
@@ -765,6 +826,15 @@ nested_sum_roc <- function(data,
       stop("`n_workers` must be a positive integer or NULL.", call. = FALSE)
     }
     n_workers <- as.integer(n_workers)
+  }
+
+  threads_per_worker <- .validate_threads_per_worker(threads_per_worker)
+  if (parallel_mode != "hybrid" && threads_per_worker != 1L) {
+    stop("`threads_per_worker` can only exceed 1 when `parallel = 'hybrid'`.",
+         call. = FALSE)
+  }
+  if (parallel_mode == "hybrid" && engine != "Rcpp") {
+    stop("`parallel = 'hybrid'` requires `engine = 'Rcpp'`.", call. = FALSE)
   }
 
   # ---- Validate inputs ----
@@ -783,12 +853,32 @@ nested_sum_roc <- function(data,
   n_folds <- length(outer_folds)
 
   # ---- Resolve parallel execution ----
+  hybrid_budget <- if (parallel_mode == "hybrid") {
+    .resolve_hybrid_budget(n_workers, threads_per_worker, n_folds)
+  } else {
+    NULL
+  }
   actual_workers <- if (parallel_mode == "outer") {
-    .resolve_n_workers(n_workers, max_tasks = n_folds)
+    .resolve_n_workers(parallel = TRUE, n_workers = n_workers, n_folds = n_folds)
+  } else if (parallel_mode == "hybrid") {
+    hybrid_budget$n_workers
   } else if (parallel_mode %in% c("chunks", "threads")) {
-    .resolve_n_workers(n_workers)
+    .resolve_n_workers(parallel = TRUE, n_workers = n_workers)
   } else {
     1L
+  }
+  actual_threads_per_worker <- if (parallel_mode == "hybrid") {
+    hybrid_budget$threads_per_worker
+  } else {
+    1L
+  }
+  if (parallel_mode == "hybrid") {
+    settings$requested_outer_workers <- if (is.null(n_workers)) NA_integer_ else n_workers
+    settings$requested_threads_per_worker <- threads_per_worker
+    settings$effective_outer_workers <- actual_workers
+    settings$effective_threads_per_worker <- actual_threads_per_worker
+    settings$effective_total_parallelism <- hybrid_budget$total_parallelism
+    settings$effective_max_cores <- hybrid_budget$max_cores
   }
 
   # ---- Determine if nested CV needs streaming ----
@@ -807,14 +897,19 @@ nested_sum_roc <- function(data,
       "Nested CV: ", outer_k, "-fold outer CV x ", outer_repeats, " repeat(s), ",
       inner_k, "-fold inner CV"
     )
-    if (parallel_mode != "none" && actual_workers > 1L) {
+    if (parallel_mode == "hybrid") {
+      msg <- paste0(msg, " (parallel: hybrid, ", actual_workers,
+                    " outer worker", if (actual_workers == 1L) "" else "s",
+                    " x ", actual_threads_per_worker, " threads = ",
+                    hybrid_budget$total_parallelism, " total)")
+    } else if (parallel_mode != "none" && actual_workers > 1L) {
       msg <- paste0(msg, " (parallel: ", parallel_mode, ", ", actual_workers, " workers)")
     }
     message(msg)
   }
 
   # ---- Main loop over outer folds (Serial, Outer-Parallel, Chunks-Parallel, or Threads-Parallel) ----
-  if (parallel_mode == "outer" && actual_workers > 1L) {
+  if (parallel_mode %in% c("outer", "hybrid") && actual_workers > 1L) {
     cl <- parallel::makePSOCKcluster(actual_workers)
     on.exit(parallel::stopCluster(cl), add = TRUE)
 
@@ -859,8 +954,8 @@ nested_sum_roc <- function(data,
         progress            = FALSE,
         verbose             = FALSE,
         cl_chunk            = NULL,
-        parallel_inner      = "none",
-        n_workers_inner     = 1L
+        parallel_inner      = if (parallel_mode == "hybrid") "threads" else "none",
+        n_workers_inner     = if (parallel_mode == "hybrid") actual_threads_per_worker else 1L
       )
     }
 
@@ -918,7 +1013,7 @@ nested_sum_roc <- function(data,
       )
     }
 
-  } else if (parallel_mode == "threads") {
+  } else if (parallel_mode %in% c("threads", "hybrid")) {
     # Sequential outer folds with multi-threaded C++ inner exhaustive evaluation
     per_fold <- vector("list", n_folds)
     for (i in seq_len(n_folds)) {
@@ -947,7 +1042,7 @@ nested_sum_roc <- function(data,
         verbose             = verbose,
         cl_chunk            = NULL,
         parallel_inner      = "threads",
-        n_workers_inner     = actual_workers
+        n_workers_inner     = if (parallel_mode == "hybrid") actual_threads_per_worker else actual_workers
       )
     }
 

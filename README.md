@@ -1,6 +1,6 @@
 [English](README.md) | [日本語 README](README-ja.md) | [日本語詳細リファレンス](docs/reference-ja.md)
 
-# NCVROC 0.13.0
+# NCVROC 0.14.0
 
 **N**ested **C**ross-**V**alidation for Combinatorial **ROC**-based Selection of Item-set Scores
 
@@ -10,12 +10,12 @@ Assume higher sum scores indicate higher probability of a positive outcome. User
 
 ---
 
-## What's new in NCVROC 0.13.0
+## What's new in NCVROC 0.14.0
 
 - **C++ Shared-Memory Multi-Threading (`parallel = "threads"`)**: Evaluates combinatorial candidate search spaces in parallel directly within the main R process using native C++ threads via `RcppParallel`.
 - **Zero Socket Startup Overhead**: Avoids socket process initialization, IPC serialization, and process-level data duplication.
 - **Deterministic Exact Results**: Produces identical results and rankings to single-threaded serial execution across all evaluation metrics and cutoff selection methods.
-- **Single-Level Concurrency Guarantees**: Nested cross-validation executes outer folds serially while accelerating inner search with C++ threads, completely preventing nested thread explosion or CPU oversubscription.
+- **Explicit Hybrid Concurrency Budgeting**: Nested CV can safely combine outer PSOCK workers with C++ threads while capping total concurrency to available CPU and CRAN limits.
 - **Cross-Platform Portability**: Built on `RcppParallel` and verified with clean compilation and full test suites under Windows.
 
 ---
@@ -251,12 +251,13 @@ result2 <- ncvroc(
 
 ### Parallel computing
 
-NCVROC provides three distinct parallelization modes to suit different analysis scales and workflows:
+NCVROC provides four distinct parallelization modes to suit different analysis scales and workflows:
 
 | Mode | `parallel` | Description | Best For |
 |---|---|---|---|
 | **C++ Multi-Threading** | `"threads"` | Evaluates combinations in parallel within the main R process using native C++ threads via RcppParallel (shared memory, zero socket startup). | High-speed in-memory exhaustive search (`roc_bruteforce()`, `exhaustive_sum_roc()`, or `ncvroc()` with thorough/exhaustive search). |
 | **Outer Fold Parallel** | `"outer"` (or `TRUE` in nested CV) | Evaluates outer cross-validation folds in parallel using PSOCK socket worker processes. | Standard nested CV workflows across multiple folds (`ncvroc()`, `nested_sum_roc()`). |
+| **Hybrid Nested CV** | `"hybrid"` | Evaluates outer folds with PSOCK workers and each fold's exhaustive search with C++ threads. | Nested CV workloads where both fold-level and within-fold concurrency are useful. |
 | **Chunk Process Parallel** | `"chunks"` (or `TRUE` in exhaustive search) | Evaluates combination chunks across persistent PSOCK socket worker processes. | Massive searches using disk-backed chunked storage, caching, and process isolation. |
 
 ```r
@@ -278,6 +279,17 @@ result <- ncvroc(
   max_items  = 3,
   parallel   = "outer",
   n_workers  = 4
+)
+
+# Hybrid outer processes x C++ threads (total budget 8):
+result <- ncvroc(
+  data               = d,
+  outcome            = y,
+  items              = Q1:Q10,
+  max_items          = 3,
+  parallel           = "hybrid",
+  n_workers          = 4,
+  threads_per_worker = 2
 )
 ```
 
@@ -806,10 +818,11 @@ Sensitivity: 1.000 [0.692, 1.000]
 
 ## Parallel execution
 
-`NCVROC` supports multi-core parallelization across three distinct operational modes:
+`NCVROC` supports multi-core parallelization across four distinct operational modes:
 
 - **C++ Multi-Threading (`parallel = "threads"`)**: Evaluates combinatorial candidate search spaces in parallel directly within the main R process using native C++ threads via `RcppParallel`. Features zero socket IPC overhead, no process-level duplication of input data, and negligible startup latency.
 - **Outer-Fold Parallelization (`parallel = "outer"`)**: Evaluates outer cross-validation folds concurrently across socket worker processes (`parallel::makePSOCKcluster`). Preselection within each fold runs sequentially.
+- **Hybrid Nested CV (`parallel = "hybrid"`)**: Evaluates outer folds across PSOCK workers while each worker evaluates exhaustive candidates with `threads_per_worker` C++ threads. This mode is available only for nested CV with `engine = "Rcpp"`.
 - **Chunk-Level Parallelization (`parallel = "chunks"`)**: Evaluates large combinatorial search spaces ($O(\binom{M}{K})$ candidate models) concurrently across chunks via persistent socket worker processes.
 
 ### Parallel modes and contextual resolution
@@ -822,19 +835,25 @@ Sensitivity: 1.000 [0.692, 1.000]
 | `parallel = "threads"` | Outer folds run sequentially; inner exhaustive searches use C++ multi-threading | Evaluates exhaustive combinations in parallel using C++ multi-threading |
 | `parallel = "outer"` | Evaluates outer cross-validation folds in parallel | Unsupported (raises error) |
 | `parallel = "chunks"` | Outer folds run sequentially; inner preselection chunks are evaluated in parallel (reusing a single cluster) | Evaluates candidate combination chunks in parallel across socket workers |
+| `parallel = "hybrid"` | Outer folds use PSOCK workers; each worker uses C++ threads for exhaustive evaluation | Unsupported (raises error) |
 
 > [!NOTE]
-> `parallel = "auto"` is reserved for a future release. In v0.13.0, specifying `"auto"` raises an informative error prompting you to choose `"none"`, `"threads"`, `"outer"`, or `"chunks"`.
+> `parallel = "auto"` is reserved for a future release. Specifying `"auto"` raises an informative error prompting you to choose `"none"`, `"threads"`, `"outer"`, `"chunks"`, or `"hybrid"`.
 
-### Worker and thread count (`n_workers`)
+### Worker count (`n_workers`)
 
 - **`n_workers = NULL` (Default)**: Automatically detects available physical CPU cores (`max(1L, parallel::detectCores(logical = FALSE) - 1L)`).
 - **`n_workers = 4`**: Uses up to 4 worker processes or threads.
 - **Automatic Capping**: The effective worker count is safely capped by available CPU cores, task count (for outer folds), and CRAN environment limits (`_R_CHECK_LIMIT_CORES_`).
+- **Hybrid meaning**: In `parallel = "hybrid"`, `n_workers` is the requested number of outer PSOCK workers. When it is `NULL`, NCVROC resolves the outer worker count first, then caps `threads_per_worker` to the remaining CPU budget.
 
-### Strict single-level concurrency (no nested parallelism)
+### Threads per hybrid worker (`threads_per_worker`)
 
-Outer parallelization, chunk parallelization, and C++ multi-threading are **never nested concurrently**. When outer folds are parallelized (`parallel = "outer"`), worker processes run single-threaded evaluators. When C++ multi-threading is active (`parallel = "threads"`), outer folds execute sequentially. This prevents CPU oversubscription and socket exhaustion.
+`threads_per_worker` is the requested number of C++ threads used inside each outer PSOCK worker in hybrid mode. Its effective value may be reduced according to the CPU budget, the resolved outer worker count, and `_R_CHECK_LIMIT_CORES_`. The effective product of outer workers and threads per worker is kept within the available budget; CRAN checks are limited to at most 2.
+
+### Controlled concurrency and oversubscription protection
+
+Except for the explicitly budgeted `"hybrid"` mode, outer parallelization, chunk parallelization, and C++ multi-threading are never nested concurrently. Hybrid combines only outer PSOCK workers with call-local C++ threads and caps their product to prevent oversubscription. Chunk PSOCK workers are never used inside outer workers.
 
 ### Persistent cluster reuse in nested CV
 
@@ -848,6 +867,22 @@ In v0.12.0 and v0.13.0, the exhaustive search engine generates combinations on-t
 - **Streaming Top-N invariant**: Each chunk retains at least as many candidates as required for the final global Top-N (`top_n_local >= global_top_n`), so no candidate belonging to the global Top-N can be lost during chunk reduction.
 
 ### Usage examples
+
+#### Hybrid nested CV
+
+```r
+res_hybrid <- ncvroc(
+  data               = analysis_dat,
+  outcome            = y,
+  items              = Q1:Q30,
+  max_items          = 4,
+  parallel           = "hybrid",
+  n_workers          = 4,
+  threads_per_worker = 2
+)
+```
+
+Hybrid performance depends on fold count, candidate-space size, data size, and hardware; it is not always faster than outer-only or threads-only execution.
 
 #### Example 1: In-memory C++ multi-threading (fastest for exhaustive search)
 

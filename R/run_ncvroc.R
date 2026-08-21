@@ -7,7 +7,7 @@
 #'
 #' Thin wrapper around `nested_sum_roc()` that reads all parameters from
 #' a configuration object created by `ncvroc_config()`, including parallel
-#' execution options (`parallel`, `n_workers`).
+#' execution options (`parallel`, `n_workers`, `threads_per_worker`).
 #'
 #' @param data A data.frame containing outcome and item columns.
 #' @param items Character vector of candidate item names.
@@ -82,6 +82,7 @@ run_ncvroc <- function(data,
     engine              = config$engine,
     parallel            = config$parallel,
     n_workers           = config$n_workers,
+    threads_per_worker  = if (is.null(config$threads_per_worker)) 1L else config$threads_per_worker,
     progress            = progress,
     verbose             = verbose,
     return              = return

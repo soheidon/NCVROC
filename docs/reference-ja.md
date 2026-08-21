@@ -1,6 +1,6 @@
 [English README](../README.md) | [日本語 README](../README-ja.md)
 
-# NCVROC 0.13.0 リファレンス
+# NCVROC 0.14.0 リファレンス
 
 > [!TIP]
 > **入門ガイドや基本的な使い方の概要をお探しの場合は、[日本語 README](../README-ja.md) をご覧ください。** 本ドキュメントは、NCVROC の全関数、パラメータ、返り値の完全な仕様を記載した詳細技術リファレンスです。
@@ -13,12 +13,12 @@
 
 ---
 
-## NCVROC 0.13.0 の主要変更点
+## NCVROC 0.14.0 の主要変更点
 
 - **C++ 共有メモリマルチスレッド並列化 (`parallel = "threads"`)**: メイン R プロセス内で `RcppParallel` を介してネイティブ C++ スレッドにより組み合わせ探索空間を高速に並列評価。
 - **ゼロソケットオーバーヘッド**: ソケットワーカプロセスの起動・IPC通信・プロセス間データ複製を完全排除。
 - **決定論的かつ厳密な解の一致**: すべての評価指標およびカットオフ選択手法において、シングルスレッドのシリアル実行と完全に同一の結果および順位付けを保証。
-- **単一階層並列性（Single-Level Concurrency）の保証**: ネスト交差検証実行時、外部 CV 分割はシーケンシャルに処理し内部全探索を C++ スレッドで高速化することで、多重スレッド展開による CPU 過負荷を完全防止。
+- **hybrid総並列度の明示的管理**: outer PSOCKワーカとC++スレッドを安全に併用し、総並列度を利用可能CPU数とCRAN制限内に自動調整。
 - **高いクロスプラットフォーム移植性**: `RcppParallel` を採用し、Windows 環境でのクリーンコンパイルおよびテスト通過を検証済み。
 
 ---
@@ -230,12 +230,13 @@ result <- ncvroc(
 
 ### 並列計算（Parallel computing）
 
-NCVROCは、解析規模やワークフローに応じた3つの並列化モードを提供します：
+NCVROCは、解析規模やワークフローに応じた4つの並列化モードを提供します：
 
 | モード | `parallel` の指定 | 概要 | 推奨ユースケース |
 |---|---|---|---|
 | **C++ マルチスレッド** | `"threads"` | RcppParallelを介してメインプロセス内でネイティブC++スレッドにより組み合わせを並列評価（共有メモリ、ソケット起動オーバーヘッドなし）。 | メモリ内で完結する高速全探索（`roc_bruteforce()`、`exhaustive_sum_roc()`、または `ncvroc()` の thorough/exhaustive 探索）。 |
 | **Outer分割並列** | `"outer"`（またはネストCV系で `TRUE`） | PSOCKソケットワーカプロセスを用いて外部CV分割を並列評価。 | 複数分割を持つ標準的なネストCV（`ncvroc()`、`nested_sum_roc()`）。 |
+| **ハイブリッド・ネストCV** | `"hybrid"` | outer foldをPSOCKワーカで並列化し、各ワーカ内の全探索をC++スレッドで並列化。 | fold間とfold内の両方の並列性を利用できるネストCV。 |
 | **チャンク分割並列** | `"chunks"`（または全探索系で `TRUE`） | 永続PSOCKソケットワーカプロセスを用いて組み合わせチャンクを並列評価。 | ディスク保存、キャッシュ、中断再開を活用する超大規模全探索。 |
 
 ```r
@@ -257,6 +258,17 @@ result <- ncvroc(
   max_items  = 3,
   parallel   = "outer",
   n_workers  = 4
+)
+
+# ハイブリッド（outerプロセス × C++スレッド）:
+result <- ncvroc(
+  data               = d,
+  outcome            = y,
+  items              = Q1:Q10,
+  max_items          = 3,
+  parallel           = "hybrid",
+  n_workers          = 4,
+  threads_per_worker = 2
 )
 ```
 
@@ -801,10 +813,12 @@ Sensitivity: 1.000 [0.692, 1.000]
 
 ## 並列実行（Outer Fold & Chunk Parallelization）
 
-`NCVROC`（>= 0.12.0）は、ソケットクラスタ（`parallel::makePSOCKcluster`）を用いた**外側交差検証フォールド（outer fold）並列化**および**大規模全探索チャンク（chunk）並列化**をサポートしています。Windows、macOS、Linux でシームレスに動作します：
+`NCVROC`はouter fold、chunk、C++ thread、およびhybrid並列化をサポートします。Windows、macOS、Linuxで動作します：
 
 - **外側フォールド並列化 (`parallel = "outer"`)**: 外側交差検証フォールドをワーカー間で並列評価します。フォールド内の事前選択は逐次実行されます。
 - **チャンク単位の並列化 (`parallel = "chunks"`)**: 数百万通りにおよぶ大規模な組み合わせ探索空間（$O(\binom{M}{K})$ 通り）をチャンク単位でワーカー間に分散して並列評価します。
+- **C++スレッド (`parallel = "threads"`)**: outer foldを逐次実行し、内部全探索をメインRプロセス内のC++スレッドで評価します。
+- **ハイブリッド (`parallel = "hybrid"`)**: outer foldをPSOCK並列化し、各ワーカ内の全探索を`threads_per_worker`本のC++スレッドで評価します。
 
 ### 並列化モードと文脈による解釈
 
@@ -815,19 +829,26 @@ Sensitivity: 1.000 [0.692, 1.000]
 | `parallel = "none"` | 単一プロセス逐次実行 | 単一プロセス逐次実行 |
 | `parallel = "outer"` | 外側交差検証フォールドを並列化 | 未サポート（エラー） |
 | `parallel = "chunks"` | 外側フォールドは逐次、各フォールド内の事前選択チャンク探索を並列化（クラスタ再利用） | 候補組み合わせチャンクを並列化 |
+| `parallel = "threads"` | outer foldは逐次、内部全探索をC++スレッドで並列化 | 全探索をC++スレッドで並列化 |
+| `parallel = "hybrid"` | outer foldをPSOCK並列化し、各ワーカ内でC++スレッドを使用 | 未サポート（エラー） |
 
 > [!NOTE]
-> `parallel = "auto"` は将来のリリース向けに予約されています。v0.12.0 で `"auto"` を指定すると、`"none"`、`"outer"`、または `"chunks"` のいずれかを明示するよう促すエラーメッセージが表示されます。
+> `parallel = "auto"` は将来のリリース向けに予約されています。現在 `"auto"` を指定すると、`"none"`、`"outer"`、`"chunks"`、`"threads"`、または `"hybrid"` のいずれかを明示するよう促すエラーメッセージが表示されます。
 
 ### ワーカー数指定 (`n_workers`)
 
 - **`n_workers = NULL`（デフォルト）**: 利用可能な物理 CPU コア数（`max(1L, parallel::detectCores(logical = FALSE) - 1L)`）から自動決定されます。
 - **`n_workers = 4`**: 最大4つのワーカープロセスを使用します。
 - **安全な上限キャップ**: 実際のワーカー数は、タスク数（フォールド数またはチャンク数）、利用可能な物理コア数、および CRAN 環境変数（`_R_CHECK_LIMIT_CORES_`）によって安全に自動上限調整されます。
+- **hybridでの意味**: `parallel = "hybrid"` では、`n_workers` はouter PSOCK worker数の要求値です。`NULL` の場合はouter worker数を先に自動決定し、その後、残りのCPU budgetに応じて`threads_per_worker`をcapします。
+
+### hybrid worker当たりのスレッド数 (`threads_per_worker`)
+
+`threads_per_worker`は、hybrid modeで各outer PSOCK worker内に使用するC++ thread数の要求値です。実効値はCPU budget、決定済みのouter worker数、`_R_CHECK_LIMIT_CORES_`に応じて縮小されることがあります。outer worker数とworker当たりthread数の積はCPU budget内に制限され、CRAN check時は最大2相当に抑えられます。
 
 ### 相互排他ルールの強制（二重並列化の禁止）
 
-NCVROC では、外側フォールド並列とチャンク並列を同時にネスト実行すること（例: 4 outer × 4 chunks = 16 プロセス）は**禁止**されています。CPU oversubscription やソケット枯渇、メモリ複製のオーバーヘッドを防ぎ、1回の実行につき1つの並列化レベルのみをクリーンに適用します。
+hybrid以外では並列化レベルを多重にネストしません。hybridはouter PSOCKとC++スレッドだけを安全な総並列度で併用し、chunk PSOCKをworker内で起動しません。
 
 ### ネストCVにおけるクラスタの永続再利用
 

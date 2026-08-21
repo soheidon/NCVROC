@@ -35,7 +35,7 @@ An `ncvroc_result` object from `nested_sum_roc()`.
 \description{
 Thin wrapper around `nested_sum_roc()` that reads all parameters from
 a configuration object created by `ncvroc_config()`, including parallel
-execution options (`parallel`, `n_workers`).
+execution options (`parallel`, `n_workers`, `threads_per_worker`).
 }
 \examples{
 cfg <- ncvroc_config("y", items = paste0("q", 1:5), max_items = 2, mode = "quick")

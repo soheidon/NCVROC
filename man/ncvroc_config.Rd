@@ -24,6 +24,7 @@ ncvroc_config(
   engine = c("Rcpp", "R"),
   parallel = FALSE,
   n_workers = NULL,
+  threads_per_worker = 1L,
   chunk_size = 200000L,
   cache = c("off", "reuse", "refresh"),
   cache_dir = NULL,
@@ -72,14 +73,23 @@ folds in parallel using socket workers (\code{\link[parallel]{makePSOCKcluster}}
 If `"chunks"`, inner exhaustive searches are evaluated across persistent chunk socket
 workers. If `"threads"`, outer folds are evaluated serially while inner and final exhaustive
 searches use C++ multi-threading within the main R process via RcppParallel.
+If `"hybrid"`, outer folds use socket workers and each worker uses C++ threads.
 Default `FALSE`.}
 
-\item{n_workers}{Integer, number of worker processes (for `"outer"` or `"chunks"`)
-or threads (for `"threads"`), or `NULL` (default) for automatic detection.
+\item{n_workers}{Integer, number of worker processes (for `"outer"` or `"chunks"`),
+threads (for `"threads"`), or outer PSOCK workers (for `"hybrid"`), or
+`NULL` (default) for automatic detection. In hybrid mode, the outer worker
+count is resolved first; `threads_per_worker` is then capped to the remaining
+CPU budget.
 Ignored when `parallel = FALSE` or `"none"`.
 The effective worker count is capped by available CPU cores and CRAN core limits
 (\code{_R_CHECK_LIMIT_CORES_}). For `"outer"`, it is additionally capped by the
 number of outer folds.}
+
+\item{threads_per_worker}{Positive integer, requested C++ threads per outer
+worker for `parallel = "hybrid"` (default 1). The effective value may be
+reduced according to the CPU budget, resolved outer worker count, and
+`_R_CHECK_LIMIT_CORES_`. For other modes this must remain 1.}
 
 \item{chunk_size}{Integer, combinations per chunk (default 200000).}
 

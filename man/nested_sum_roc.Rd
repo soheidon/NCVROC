@@ -25,6 +25,7 @@ nested_sum_roc(
   engine = "R",
   parallel = FALSE,
   n_workers = NULL,
+  threads_per_worker = 1L,
   progress = TRUE,
   verbose = TRUE,
   return = c("full", "summary"),
@@ -80,16 +81,27 @@ folds are evaluated in parallel using socket workers (\code{\link[parallel]{make
 If `"chunks"`, inner exhaustive searches are evaluated across persistent chunk socket
 workers. If `"threads"`, outer folds are evaluated serially while inner exhaustive
 searches use C++ multi-threading within the main R process via RcppParallel.
+If `"hybrid"`, outer folds use socket workers and each worker uses C++
+multi-threading for its exhaustive candidate evaluation.
 Default `FALSE`.}
 
-\item{n_workers}{Integer, number of worker processes (for `"outer"` or `"chunks"`)
-or threads (for `"threads"`), or `NULL` (default) for automatic detection.
+\item{n_workers}{Integer, number of worker processes (for `"outer"` or `"chunks"`),
+threads (for `"threads"`), or outer PSOCK workers (for `"hybrid"`), or
+`NULL` (default) for automatic detection. In hybrid mode, the outer worker
+count is resolved first; `threads_per_worker` is then capped to the remaining
+CPU budget.
 Ignored when `parallel = FALSE` or `"none"`.
 When `parallel = TRUE` and `n_workers = NULL`, worker count defaults to
 \code{max(1L, parallel::detectCores(logical = FALSE) - 1L)}. The effective
 worker count is automatically capped by available CPU cores and CRAN core limits
 (\code{_R_CHECK_LIMIT_CORES_}). For `"outer"`, it is additionally capped by the
 number of outer folds.}
+
+\item{threads_per_worker}{Positive integer, requested number of C++ threads
+used inside each outer socket worker when `parallel = "hybrid"` (default 1).
+The effective value may be reduced according to the CPU budget, resolved
+outer worker count, and `_R_CHECK_LIMIT_CORES_`. For other modes this must
+remain 1.}
 
 \item{progress}{Logical, show progress bars? Default `TRUE`.}
 

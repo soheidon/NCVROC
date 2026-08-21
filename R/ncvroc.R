@@ -631,13 +631,21 @@
 #'   If `"chunks"`, inner exhaustive searches are evaluated across persistent chunk socket
 #'   workers. If `"threads"`, outer folds are evaluated serially while inner and final exhaustive
 #'   searches use C++ multi-threading within the main R process via RcppParallel.
+#'   If `"hybrid"`, outer folds use socket workers and each worker uses C++ threads.
 #'   Default `FALSE`.
-#' @param n_workers Integer, number of worker processes (for `"outer"` or `"chunks"`)
-#'   or threads (for `"threads"`), or `NULL` (default) for automatic detection.
+#' @param n_workers Integer, number of worker processes (for `"outer"` or `"chunks"`),
+#'   threads (for `"threads"`), or outer PSOCK workers (for `"hybrid"`), or
+#'   `NULL` (default) for automatic detection. In hybrid mode, the outer worker
+#'   count is resolved first; `threads_per_worker` is then capped to the remaining
+#'   CPU budget.
 #'   Ignored when `parallel = FALSE` or `"none"`.
 #'   The effective worker count is capped by available CPU cores and CRAN core limits
 #'   (\code{_R_CHECK_LIMIT_CORES_}). For `"outer"`, it is additionally capped by the
 #'   number of outer folds.
+#' @param threads_per_worker Positive integer, requested C++ threads per outer
+#'   socket worker for `parallel = "hybrid"` (default 1). The effective value may
+#'   be reduced according to the CPU budget, resolved outer worker count, and
+#'   `_R_CHECK_LIMIT_CORES_`. For other modes this must remain 1.
 #' @param item_count Concise model-size specification: `"==4"` (exactly 4
 #'   items), `"<=4"` (up to 4 items), or `"2:4"` (2 through 4 items).
 #'   Cannot be combined with `min_items` or `max_items`. Default NULL.
@@ -732,6 +740,7 @@ ncvroc <- function(data,
                    conf_level = 0.95,
                    parallel = FALSE,
                    n_workers = NULL,
+                   threads_per_worker = 1L,
                    item_count = NULL) {
 
   # ---- 1. Capture & resolve ----
@@ -756,7 +765,7 @@ ncvroc <- function(data,
   parallel_mode <- .resolve_parallel_mode(
     parallel,
     context = "nested",
-    allowed = c("none", "outer", "chunks", "threads")
+    allowed = c("none", "outer", "chunks", "threads", "hybrid")
   )
 
   if (!is.null(n_workers)) {
@@ -765,6 +774,14 @@ ncvroc <- function(data,
       stop("`n_workers` must be a positive integer or NULL.", call. = FALSE)
     }
     n_workers <- as.integer(n_workers)
+  }
+  threads_per_worker <- .validate_threads_per_worker(threads_per_worker)
+  if (parallel_mode != "hybrid" && threads_per_worker != 1L) {
+    stop("`threads_per_worker` can only exceed 1 when `parallel = 'hybrid'`.",
+         call. = FALSE)
+  }
+  if (parallel_mode == "hybrid" && engine != "Rcpp") {
+    stop("`parallel = 'hybrid'` requires `engine = 'Rcpp'`.", call. = FALSE)
   }
 
   if (!is.null(results_name) &&
@@ -835,6 +852,7 @@ ncvroc <- function(data,
     engine              = engine,
     parallel            = parallel,
     n_workers           = n_workers,
+    threads_per_worker  = threads_per_worker,
     chunk_size          = chunk_size,
     cache               = cache,
     cache_dir           = cache_dir
@@ -908,7 +926,14 @@ ncvroc <- function(data,
       dir.create(building_dir, recursive = TRUE, showWarnings = FALSE)
     }
 
-    final_parallel <- if (parallel_mode %in% c("chunks", "threads")) parallel_mode else "none"
+    final_parallel <- if (parallel_mode == "hybrid") {
+      "threads"
+    } else if (parallel_mode %in% c("chunks", "threads")) {
+      parallel_mode
+    } else {
+      "none"
+    }
+    final_n_workers <- if (parallel_mode == "hybrid") threads_per_worker else n_workers
 
     eval_result <- .evaluate_final_exhaustive(
       analysis_dat       = analysis_dat,
@@ -932,7 +957,7 @@ ncvroc <- function(data,
       resolved_item_count = resolved_item_count,
       function_name       = "ncvroc",
       parallel            = final_parallel,
-      n_workers           = n_workers
+      n_workers           = final_n_workers
     )
 
     final_exhaustive_ranked <- eval_result$final_exhaustive_ranked

@@ -33,13 +33,21 @@
 #'   If `"chunks"`, inner exhaustive searches are evaluated across persistent chunk socket
 #'   workers. If `"threads"`, outer folds are evaluated serially while inner and final exhaustive
 #'   searches use C++ multi-threading within the main R process via RcppParallel.
+#'   If `"hybrid"`, outer folds use socket workers and each worker uses C++ threads.
 #'   Default `FALSE`.
-#' @param n_workers Integer, number of worker processes (for `"outer"` or `"chunks"`)
-#'   or threads (for `"threads"`), or `NULL` (default) for automatic detection.
+#' @param n_workers Integer, number of worker processes (for `"outer"` or `"chunks"`),
+#'   threads (for `"threads"`), or outer PSOCK workers (for `"hybrid"`), or
+#'   `NULL` (default) for automatic detection. In hybrid mode, the outer worker
+#'   count is resolved first; `threads_per_worker` is then capped to the remaining
+#'   CPU budget.
 #'   Ignored when `parallel = FALSE` or `"none"`.
 #'   The effective worker count is capped by available CPU cores and CRAN core limits
 #'   (\code{_R_CHECK_LIMIT_CORES_}). For `"outer"`, it is additionally capped by the
 #'   number of outer folds.
+#' @param threads_per_worker Positive integer, requested C++ threads per outer
+#'   worker for `parallel = "hybrid"` (default 1). The effective value may be
+#'   reduced according to the CPU budget, resolved outer worker count, and
+#'   `_R_CHECK_LIMIT_CORES_`. For other modes this must remain 1.
 #' @param chunk_size Integer, combinations per chunk (default 200000).
 #' @param cache One of `"off"`, `"reuse"`, or `"refresh"` (default `"off"`).
 #' @param cache_dir Directory for caching, or NULL.
@@ -73,6 +81,7 @@ ncvroc_config <- function(outcome,
                           engine = c("Rcpp", "R"),
                           parallel = FALSE,
                           n_workers = NULL,
+                          threads_per_worker = 1L,
                           chunk_size = 200000L,
                           cache = c("off", "reuse", "refresh"),
                           cache_dir = NULL,
@@ -85,7 +94,7 @@ ncvroc_config <- function(outcome,
   parallel_mode <- .resolve_parallel_mode(
     parallel,
     context = "nested",
-    allowed = c("none", "outer", "chunks", "threads")
+    allowed = c("none", "outer", "chunks", "threads", "hybrid")
   )
 
   if (!is.null(n_workers)) {
@@ -94,6 +103,14 @@ ncvroc_config <- function(outcome,
       stop("`n_workers` must be a positive integer or NULL.", call. = FALSE)
     }
     n_workers <- as.integer(n_workers)
+  }
+  threads_per_worker <- .validate_threads_per_worker(threads_per_worker)
+  if (parallel_mode != "hybrid" && threads_per_worker != 1L) {
+    stop("`threads_per_worker` can only exceed 1 when `parallel = 'hybrid'`.",
+         call. = FALSE)
+  }
+  if (parallel_mode == "hybrid" && engine != "Rcpp") {
+    stop("`parallel = 'hybrid'` requires `engine = 'Rcpp'`.", call. = FALSE)
   }
 
   if (!is.numeric(chunk_size) || length(chunk_size) != 1L || chunk_size <= 0L ||
@@ -160,6 +177,7 @@ ncvroc_config <- function(outcome,
     engine              = engine,
     parallel            = parallel,
     n_workers           = n_workers,
+    threads_per_worker  = threads_per_worker,
     chunk_size          = chunk_size,
     cache               = cache,
     cache_dir           = cache_dir
@@ -224,6 +242,9 @@ print.ncvroc_config <- function(x, ...) {
   } else if (!identical(x$parallel, FALSE) && !identical(x$parallel, "none")) {
     workers_str <- if (is.null(x$n_workers)) "auto" else as.character(x$n_workers)
     cat("Parallel:         ", as.character(x$parallel), " (workers: ", workers_str, ")\n", sep = "")
+  }
+  if (identical(x$parallel, "hybrid")) {
+    cat("Threads/worker:   ", x$threads_per_worker, "\n")
   }
   cat("Chunk size:      ", format(x$chunk_size, big.mark = ",", scientific = FALSE), "\n")
   cat("Cache:           ", x$cache, "\n")

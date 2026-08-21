@@ -1,3 +1,18 @@
+# NCVROC 0.14.0 (development)
+
+## New features
+
+- **Hybrid nested-CV parallelism**:
+  - Added `parallel = "hybrid"` to `ncvroc()`, `nested_sum_roc()`, and `ncvroc_config()`.
+  - Added `threads_per_worker`, defining the requested C++ thread count inside each outer-fold PSOCK worker.
+  - Hybrid execution is restricted to nested CV and requires `engine = "Rcpp"`; exhaustive-only APIs reject it.
+  - In hybrid mode, `n_workers` is the requested outer PSOCK worker count. When it is `NULL`, the outer worker count is resolved first; `threads_per_worker` is then capped to the remaining physical CPU budget and `_R_CHECK_LIMIT_CORES_` (maximum total 2 during CRAN checks).
+  - Hybrid results record requested and effective outer-worker, per-worker-thread, and total-parallelism values in `settings`.
+  - Final exhaustive search in `ncvroc()` runs after outer workers finish and uses `threads_per_worker` C++ threads in the main process.
+  - Exactness tests cover both cutoff methods, high-tie data, selected models, predictions, metrics, and deterministic seeds.
+
+---
+
 # NCVROC 0.13.0
 
 ## New features
@@ -276,4 +291,3 @@
 
 - All existing tests pass with both engines, confirming numerical equivalence
   between the R and Rcpp backends.
-

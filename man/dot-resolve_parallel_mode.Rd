@@ -19,7 +19,7 @@
 \item{allowed}{Character vector of allowed modes. Default NULL (auto-resolved per context).}
 }
 \value{
-Character: "none", "outer", "chunks", or "threads".
+Character: "none", "outer", "chunks", "threads", or "hybrid".
 }
 \description{
 Resolve and validate parallel mode setting
