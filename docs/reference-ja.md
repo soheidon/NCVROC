@@ -1,4 +1,4 @@
-# NCVROC 0.11.0 リファレンス
+# NCVROC 0.11.1 リファレンス
 
 **N**ested **C**ross-**V**alidation for Combinatorial **ROC**-based Selection of Item-set Scores（項目セット得点の組み合わせROC選択のためのネスト交差検証）
 
@@ -300,6 +300,10 @@ ncvroc(
   progress          = TRUE,
   verbose           = TRUE,
   return            = "full",
+  ci                = TRUE,
+  conf_level        = 0.95,
+  parallel          = FALSE,
+  n_workers         = NULL,
   item_count        = NULL,
   chunk_size        = 200000L,
   cache             = c("off", "reuse", "refresh"),
@@ -310,8 +314,10 @@ ncvroc(
 `outcome`はベアシンボル（`y`）または文字列（`"y"`）を受け付けます。
 `items`はベア範囲（`Q1:Q5`）、`c()`によるベア名、文字ベクトル、既存変数、または数値位置を受け付けます。
 
-`selection_criterion`はネストCV中にどの候補が選択されるかを制御します。
-`final_rank_by`は最終全データ候補テーブルのランク付け方法を制御します。
+- `selection_criterion`: ネストCV中にどの候補が選択されるかを制御します。
+- `final_rank_by`: 最終全データ候補テーブルのランク付け方法を制御します。
+- `parallel`: `TRUE` の場合、外側交差検証（outer CV）フォールドを PSOCK ソケットワーカーを用いて並列実行します（デフォルト `FALSE`）。
+- `n_workers`: 並列実行時のワーカープロセス数。`NULL`（デフォルト）の場合は利用可能な物理CPUコア数から自動決定されます。ワーカー数はフォールド数・コア数・CRANコア制限（`_R_CHECK_LIMIT_CORES_`）で自動的に上限キャップされます。
 
 **戻り値:** クラス`"ncvroc_analysis"`のS3オブジェクト。`print()`, `summary()`, `plot()`のS3メソッドが利用可能です。臨床的制約で最終候補テーブルを絞り込むには`ncvroc_results()`を使用してください。
 
@@ -411,6 +417,8 @@ ncvroc_config(
   negative_label    = 0,
   stratified        = TRUE,
   engine            = c("Rcpp", "R"),
+  parallel          = FALSE,
+  n_workers         = NULL,
   item_count        = NULL,
   chunk_size        = 200000L,
   cache             = c("off", "reuse", "refresh"),
@@ -427,13 +435,13 @@ ncvroc_config(
 | `"thorough"` | 上位1000 | 網羅的探索 |
 | `"exhaustive"` | 全候補 | 完全列挙（低速になる可能性あり） |
 
-**戻り値:** クラス`"ncvroc_config"`のS3オブジェクト。`print()`は整形されたサマリーを表示し、`preselect_top_n >= 100,000`の場合に警告を出します。
+**戻り値:** クラス`"ncvroc_config"`のS3オブジェクト。`parallel` や `n_workers` を含むすべての設定が保持されます。`print()`は整形されたサマリー（並列設定を含む）を表示し、`preselect_top_n >= 100,000`の場合に警告を出します。
 
 ---
 
 ### `run_ncvroc()`
 
-`ncvroc_config`オブジェクトからすべてのパラメータを読み取る`nested_sum_roc()`の便利なラッパー。
+`ncvroc_config`オブジェクトからすべてのパラメータ（並列化設定 `parallel`, `n_workers` を含む）を読み取る`nested_sum_roc()`の便利なラッパー。
 
 ```r
 run_ncvroc(
@@ -475,6 +483,8 @@ nested_sum_roc(
   stratified         = TRUE,
   seed               = NULL,
   engine             = c("R", "Rcpp"),
+  parallel           = FALSE,
+  n_workers          = NULL,
   progress           = TRUE,
   verbose            = TRUE,
   return             = c("full", "summary"),
@@ -482,6 +492,9 @@ nested_sum_roc(
   file_prefix        = "NCVROC"
 )
 ```
+
+- `parallel`: `TRUE` の場合、外側交差検証フォールドを PSOCK ソケットワーカーを用いて並列実行します（デフォルト `FALSE`）。
+- `n_workers`: 並列実行ワーカー数。`NULL` の場合は利用可能コア数から自動決定されます。
 
 **戻り値:** クラス`"ncvroc_result"`のS3オブジェクト。以下の要素を含みます：
 
@@ -699,6 +712,35 @@ Sensitivity: 1.000 [0.692, 1.000]
 > **重要:** 最終モデルの性能に対する信頼区間は、全データで評価された固定モデルの**標本不確実性（sampling uncertainty）**を定量化するものです。モデル選択やカットオフ選択によって生じる不確実性は考慮されておらず、**交差検証された信頼区間（cross-validated confidence intervals）として解釈すべきではありません**。
 >
 > 汎化性能の検証には `nested_sum_roc()` または `ncvroc()` の外部交差検証ループ結果（`nested_cv_summary`）を使用してください。
+
+---
+
+## 並列実行（Outer Fold Parallelization）
+
+`NCVROC`（>= 0.11.1）は、ソケットクラスタ（`parallel::makePSOCKcluster`）を用いた**外側交差検証フォールド（outer fold）のマルチコア並列化**をサポートしています。Windows、macOS、Linux でシームレスに動作します：
+
+- **`parallel = FALSE`（デフォルト）:** 単一プロセスで逐次実行します。CPU使用率が予測可能で、100%の後方互換性が保たれます。
+- **`parallel = TRUE, n_workers = NULL`（自動検出）:** 利用可能な物理CPUコア数（`max(1L, parallel::detectCores(logical = FALSE) - 1L)`）からワーカー数を自動決定します。
+- **`parallel = TRUE, n_workers = 4`:** ワーカー数を明示的に指定します。
+- **自動上限キャップ:** 実際のワーカー数は、外側フォールド数、利用可能な物理コア数、およびCRANコア制限環境変数（`_R_CHECK_LIMIT_CORES_`）によって安全に自動上限調整されます。
+- **統計的再現性の保証:** 固定した `seed` を指定した場合、シリアル実行と並列実行で**完全に同一の統計結果**（AUC、カットオフ、感度、特異度、モデル選抜結果）が得られます。
+
+### 使用例
+
+```r
+result <- ncvroc(
+  data          = analysis_dat,
+  outcome       = y,
+  items         = Q1:Q14,
+  max_items     = 4,
+  outer_k       = 5,
+  inner_k       = 4,
+  outer_repeats = 5,
+  parallel      = TRUE,
+  n_workers     = 4,
+  seed          = 42
+)
+```
 
 ---
 

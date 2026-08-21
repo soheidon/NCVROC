@@ -1,6 +1,6 @@
 [English](README.md) | [日本語](https://github.com/soheidon/NCVROC/blob/master/docs/reference-ja.md)
 
-# NCVROC 0.11.0
+# NCVROC 0.11.1
 
 **N**ested **C**ross-**V**alidation for Combinatorial **ROC**-based Selection of Item-set Scores
 
@@ -742,6 +742,35 @@ Sensitivity: 1.000 [0.692, 1.000]
 > **Confidence intervals for final-model performance quantify sampling uncertainty for the fitted model evaluated on the full dataset. They do not account for uncertainty introduced by model or cutoff selection and should not be interpreted as cross-validated confidence intervals.**
 >
 > Use `nested_sum_roc()` or `ncvroc()` to assess out-of-sample generalizability across outer cross-validation folds.
+
+---
+
+## Parallel execution
+
+`NCVROC` supports **outer-fold parallelization** across multi-core CPUs using socket clusters (`parallel::makePSOCKcluster`), enabling scalable computation across Windows, macOS, and Linux:
+
+- **`parallel = FALSE` (Default):** Executes sequentially in a single process, ensuring predictable CPU usage and 100% backward compatibility.
+- **`parallel = TRUE, n_workers = NULL` (Auto-detection):** Automatically uses available physical cores (`max(1L, parallel::detectCores(logical = FALSE) - 1L)`).
+- **`parallel = TRUE, n_workers = 4`:** Uses an explicit worker count.
+- **Automatic capping:** The effective number of workers is safely capped by the outer fold count, available CPU cores, and CRAN core limits (`_R_CHECK_LIMIT_CORES_`).
+- **Guaranteed statistical equivalence:** Serial and parallel execution produce identical statistical results when using a fixed `seed`.
+
+### Example
+
+```r
+result <- ncvroc(
+  data          = analysis_dat,
+  outcome       = y,
+  items         = Q1:Q14,
+  max_items     = 4,
+  outer_k       = 5,
+  inner_k       = 4,
+  outer_repeats = 5,
+  parallel      = TRUE,
+  n_workers     = 4,
+  seed          = 42
+)
+```
 
 ---
 
