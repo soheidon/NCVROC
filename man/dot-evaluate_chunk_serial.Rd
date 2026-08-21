@@ -15,7 +15,8 @@
   chunk_size,
   engine = "Rcpp",
   n_pos = NULL,
-  n_neg = NULL
+  n_neg = NULL,
+  num_threads = 1L
 )
 }
 \arguments{
@@ -40,6 +41,8 @@
 \item{n_pos}{Optional count of positive samples.}
 
 \item{n_neg}{Optional count of negative samples.}
+
+\item{num_threads}{Integer, number of C++ threads for Rcpp parallel evaluation. Default 1L.}
 }
 \value{
 data.frame of evaluated candidates with .global_combo_index column.

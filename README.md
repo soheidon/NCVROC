@@ -1,12 +1,22 @@
-[English](README.md) | [日本語](https://github.com/soheidon/NCVROC/blob/master/docs/reference-ja.md)
+[English](README.md) | [日本語 README](README-ja.md) | [日本語詳細リファレンス](docs/reference-ja.md)
 
-# NCVROC 0.12.0
+# NCVROC 0.13.0
 
 **N**ested **C**ross-**V**alidation for Combinatorial **ROC**-based Selection of Item-set Scores
 
 Develops short item-based screening scales through combinatorial item-set selection, ROC-based evaluation, and nested cross-validation. For psychological/clinical questionnaire data, identifies which small subset of items best predicts a binary outcome using simple sum scores.
 
 Assume higher sum scores indicate higher probability of a positive outcome. Users must reverse-code items beforehand.
+
+---
+
+## What's new in NCVROC 0.13.0
+
+- **C++ Shared-Memory Multi-Threading (`parallel = "threads"`)**: Evaluates combinatorial candidate search spaces in parallel directly within the main R process using native C++ threads via `RcppParallel`.
+- **Zero Socket Startup Overhead**: Avoids socket process initialization, IPC serialization, and process-level data duplication.
+- **Deterministic Exact Results**: Produces identical results and rankings to single-threaded serial execution across all evaluation metrics and cutoff selection methods.
+- **Single-Level Concurrency Guarantees**: Nested cross-validation executes outer folds serially while accelerating inner search with C++ threads, completely preventing nested thread explosion or CPU oversubscription.
+- **Cross-Platform Portability**: Built on `RcppParallel` and verified with clean compilation and full test suites under Windows.
 
 ---
 
@@ -239,6 +249,40 @@ result2 <- ncvroc(
 
 **Atomic RDS Storage Guarantee**: Chunk RDS files are written to temporary files (`.tmp`) within the target directory and atomically renamed to `.rds`. Incomplete writes from interrupted processes are never treated as valid final chunk files, and stale temporary files are ignored.
 
+### Parallel computing
+
+NCVROC provides three distinct parallelization modes to suit different analysis scales and workflows:
+
+| Mode | `parallel` | Description | Best For |
+|---|---|---|---|
+| **C++ Multi-Threading** | `"threads"` | Evaluates combinations in parallel within the main R process using native C++ threads via RcppParallel (shared memory, zero socket startup). | High-speed in-memory exhaustive search (`roc_bruteforce()`, `exhaustive_sum_roc()`, or `ncvroc()` with thorough/exhaustive search). |
+| **Outer Fold Parallel** | `"outer"` (or `TRUE` in nested CV) | Evaluates outer cross-validation folds in parallel using PSOCK socket worker processes. | Standard nested CV workflows across multiple folds (`ncvroc()`, `nested_sum_roc()`). |
+| **Chunk Process Parallel** | `"chunks"` (or `TRUE` in exhaustive search) | Evaluates combination chunks across persistent PSOCK socket worker processes. | Massive searches using disk-backed chunked storage, caching, and process isolation. |
+
+```r
+# High-speed in-memory C++ multi-threading:
+result <- roc_bruteforce(
+  data       = d,
+  outcome    = y,
+  items      = Q1:Q10,
+  max_items  = 4,
+  parallel   = "threads",
+  n_workers  = 4
+)
+
+# Parallel outer cross-validation folds:
+result <- ncvroc(
+  data       = d,
+  outcome    = y,
+  items      = Q1:Q10,
+  max_items  = 3,
+  parallel   = "outer",
+  n_workers  = 4
+)
+```
+
+**Backward Compatibility**: Specifying `parallel = TRUE` automatically maps to `"outer"` in nested cross-validation functions (`ncvroc()`, `nested_sum_roc()`) and to `"chunks"` in exhaustive search functions (`roc_bruteforce()`, `exhaustive_sum_roc()`).
+
 ### Chunk size
 
 The `chunk_size` parameter (default `200000`) controls how many combinations are
@@ -343,15 +387,13 @@ ncvroc(
   results_storage   = c("auto", "memory", "rds", "none"),
   results_name      = NULL,
   results_dir       = NULL,
-  save_results      = FALSE,
-  output_dir        = ".",
-  progress          = TRUE,
-  verbose           = TRUE,
   return            = "full",
   item_count        = NULL,
   chunk_size        = 200000L,
   cache             = c("off", "reuse", "refresh"),
-  cache_dir         = NULL
+  cache_dir         = NULL,
+  parallel          = FALSE,
+  n_workers         = NULL
 )
 ```
 
@@ -427,7 +469,9 @@ roc_bruteforce(
   item_count       = NULL,
   chunk_size       = 200000L,
   cache            = c("off", "reuse", "refresh"),
-  cache_dir        = NULL
+  cache_dir        = NULL,
+  parallel         = FALSE,
+  n_workers        = NULL
 )
 ```
 
@@ -762,10 +806,11 @@ Sensitivity: 1.000 [0.692, 1.000]
 
 ## Parallel execution
 
-`NCVROC` supports multi-core parallelization across socket clusters (`parallel::makePSOCKcluster`) on Windows, macOS, and Linux:
+`NCVROC` supports multi-core parallelization across three distinct operational modes:
 
-- **Outer-fold parallelization (`parallel = "outer"`)**: Evaluates outer cross-validation folds concurrently across workers. Preselection within each fold runs sequentially.
-- **Chunk-level parallelization (`parallel = "chunks"`)**: Evaluates large combinatorial search spaces ($O(\binom{M}{K})$ candidate models) concurrently across chunks.
+- **C++ Multi-Threading (`parallel = "threads"`)**: Evaluates combinatorial candidate search spaces in parallel directly within the main R process using native C++ threads via `RcppParallel`. Features zero socket IPC overhead, no process-level duplication of input data, and negligible startup latency.
+- **Outer-Fold Parallelization (`parallel = "outer"`)**: Evaluates outer cross-validation folds concurrently across socket worker processes (`parallel::makePSOCKcluster`). Preselection within each fold runs sequentially.
+- **Chunk-Level Parallelization (`parallel = "chunks"`)**: Evaluates large combinatorial search spaces ($O(\binom{M}{K})$ candidate models) concurrently across chunks via persistent socket worker processes.
 
 ### Parallel modes and contextual resolution
 
@@ -774,21 +819,22 @@ Sensitivity: 1.000 [0.692, 1.000]
 | `parallel = FALSE` (Default) | Sequential single-process execution | Sequential single-process execution |
 | `parallel = TRUE` | Resolves to `"outer"` (outer-fold parallelization) | Resolves to `"chunks"` (chunk parallelization) |
 | `parallel = "none"` | Sequential single-process execution | Sequential single-process execution |
+| `parallel = "threads"` | Outer folds run sequentially; inner exhaustive searches use C++ multi-threading | Evaluates exhaustive combinations in parallel using C++ multi-threading |
 | `parallel = "outer"` | Evaluates outer cross-validation folds in parallel | Unsupported (raises error) |
-| `parallel = "chunks"` | Outer folds run sequentially; within each fold, candidate preselection chunks are evaluated in parallel (reusing a single cluster) | Evaluates candidate combination chunks in parallel |
+| `parallel = "chunks"` | Outer folds run sequentially; inner preselection chunks are evaluated in parallel (reusing a single cluster) | Evaluates candidate combination chunks in parallel across socket workers |
 
 > [!NOTE]
-> `parallel = "auto"` is reserved for a future release. In v0.12.0, specifying `"auto"` raises an informative error prompting you to choose `"none"`, `"outer"`, or `"chunks"`.
+> `parallel = "auto"` is reserved for a future release. In v0.13.0, specifying `"auto"` raises an informative error prompting you to choose `"none"`, `"threads"`, `"outer"`, or `"chunks"`.
 
-### Worker count (`n_workers`)
+### Worker and thread count (`n_workers`)
 
 - **`n_workers = NULL` (Default)**: Automatically detects available physical CPU cores (`max(1L, parallel::detectCores(logical = FALSE) - 1L)`).
-- **`n_workers = 4`**: Uses up to 4 worker processes.
-- **Automatic Capping**: The effective worker count is safely capped by the number of tasks (outer folds or candidate chunks), available CPU cores, and CRAN environment limits (`_R_CHECK_LIMIT_CORES_`).
+- **`n_workers = 4`**: Uses up to 4 worker processes or threads.
+- **Automatic Capping**: The effective worker count is safely capped by available CPU cores, task count (for outer folds), and CRAN environment limits (`_R_CHECK_LIMIT_CORES_`).
 
-### Strict mutual exclusivity (no nested parallelism)
+### Strict single-level concurrency (no nested parallelism)
 
-Outer parallelization and chunk parallelization are **never nested concurrently**. For example, `NCVROC` will never create 4 outer workers × 4 chunk workers (16 processes), avoiding CPU oversubscription, socket exhaustion, and memory duplication. You choose one level of parallelism per analysis.
+Outer parallelization, chunk parallelization, and C++ multi-threading are **never nested concurrently**. When outer folds are parallelized (`parallel = "outer"`), worker processes run single-threaded evaluators. When C++ multi-threading is active (`parallel = "threads"`), outer folds execute sequentially. This prevents CPU oversubscription and socket exhaustion.
 
 ### Persistent cluster reuse in nested CV
 
@@ -796,19 +842,27 @@ When running nested CV with `parallel = "chunks"`, `nested_sum_roc()` initialize
 
 ### High-performance chunk/streaming search engine & exactness
 
-In v0.12.0, the exhaustive search engine generates combinations on-the-fly via C++ mathematical unranking (`evaluate_combos_cpp_chunk()`) and maintains streaming local Top-N candidate pools.
+In v0.12.0 and v0.13.0, the exhaustive search engine generates combinations on-the-fly via C++ mathematical unranking (`evaluate_combos_cpp_chunk()`) and maintains streaming local Top-N candidate pools.
 - **Exact exhaustive search**: Evaluates the full exhaustive candidate space without heuristics or screening approximations.
-- **Exact tie-breaking**: Candidates track their 1-based `.global_combo_index` from serial combinatorial enumeration, ensuring identical candidate ordering and numerical metrics between serial and parallel runs.
+- **Exact tie-breaking**: Candidates track their 1-based `.global_combo_index` from serial combinatorial enumeration, ensuring deterministic identical candidate ordering and numerical metrics between serial and parallel runs.
 - **Streaming Top-N invariant**: Each chunk retains at least as many candidates as required for the final global Top-N (`top_n_local >= global_top_n`), so no candidate belonging to the global Top-N can be lost during chunk reduction.
-
-### Performance characteristics
-
-- **Engine Acceleration**: In a 1.03M-combination benchmark (`M = 71`, `K <= 4`, `N = 200`), the new single-worker chunk/streaming engine reduced elapsed time from about 21.3 s to 4.9 s versus the legacy full-enumeration serial path due to C++ unranking and memory optimization.
-- **Multi-Worker Scaling**: Multi-worker scaling is workload-dependent. Because C++ evaluation is very fast, socket IPC overhead on small workloads is noticeable; chunk parallelization becomes increasingly advantageous as candidate spaces (`M >= 40`, `K >= 5`) and sample sizes grow.
 
 ### Usage examples
 
-#### Example 1: Outer-fold parallelization (recommended for `M <= 25`)
+#### Example 1: In-memory C++ multi-threading (fastest for exhaustive search)
+
+```r
+res_threads <- roc_bruteforce(
+  data       = analysis_dat,
+  outcome    = y,
+  items      = Q1:Q30,
+  item_count = "<=4",
+  parallel   = "threads",
+  n_workers  = 4
+)
+```
+
+#### Example 2: Outer-fold parallelization (recommended for nested CV with moderate M)
 
 ```r
 res_outer <- ncvroc(
@@ -825,7 +879,7 @@ res_outer <- ncvroc(
 )
 ```
 
-#### Example 2: Chunk-level parallel exhaustive search (recommended for `M >= 40`)
+#### Example 3: Chunk-level parallel search (recommended for disk-backed/cached massive search)
 
 ```r
 res_chunks <- roc_bruteforce(
@@ -835,21 +889,6 @@ res_chunks <- roc_bruteforce(
   item_count = "<=4",
   parallel   = "chunks",  # or parallel = TRUE
   n_workers  = 4
-)
-```
-
-#### Example 3: Nested CV with chunk-level preselection
-
-```r
-res_nested_chunks <- ncvroc(
-  data       = analysis_dat,
-  outcome    = y,
-  items      = Q1:Q40,
-  item_count = "<=4",
-  mode       = "thorough",
-  parallel   = "chunks",  # outer folds run sequentially, fold preselection runs in parallel
-  n_workers  = 4,
-  seed       = 42
 )
 ```
 

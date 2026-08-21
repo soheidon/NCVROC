@@ -75,16 +75,21 @@ v0.1; values > 1 warn and are reset to 1.}
 
 \item{engine}{Character, computation engine. `"R"` (default) or `"Rcpp"`.}
 
-\item{parallel}{Logical. If `TRUE`, outer cross-validation folds are evaluated
-in parallel using socket workers (\code{\link[parallel]{makePSOCKcluster}}).
+\item{parallel}{Logical or character. If `TRUE` or `"outer"`, outer cross-validation
+folds are evaluated in parallel using socket workers (\code{\link[parallel]{makePSOCKcluster}}).
+If `"chunks"`, inner exhaustive searches are evaluated across persistent chunk socket
+workers. If `"threads"`, outer folds are evaluated serially while inner exhaustive
+searches use C++ multi-threading within the main R process via RcppParallel.
 Default `FALSE`.}
 
-\item{n_workers}{Integer, number of worker processes for parallel execution,
-or `NULL` (default) for automatic detection. Ignored when `parallel = FALSE`.
+\item{n_workers}{Integer, number of worker processes (for `"outer"` or `"chunks"`)
+or threads (for `"threads"`), or `NULL` (default) for automatic detection.
+Ignored when `parallel = FALSE` or `"none"`.
 When `parallel = TRUE` and `n_workers = NULL`, worker count defaults to
 \code{max(1L, parallel::detectCores(logical = FALSE) - 1L)}. The effective
-worker count is automatically capped by the number of outer folds, available
-CPU cores, and CRAN core limits (\code{_R_CHECK_LIMIT_CORES_}).}
+worker count is automatically capped by available CPU cores and CRAN core limits
+(\code{_R_CHECK_LIMIT_CORES_}). For `"outer"`, it is additionally capped by the
+number of outer folds.}
 
 \item{progress}{Logical, show progress bars? Default `TRUE`.}
 

@@ -37,6 +37,11 @@
 #'   AUC (DeLong) and classification metrics (Clopper-Pearson exact binomial).
 #' @param conf_level Numeric confidence level in (0, 1), default 0.95.
 #' @param engine Character, computation engine. `"R"` (default) or `"Rcpp"`.
+#' @param parallel Logical or character. If `TRUE` or `"chunks"`, evaluate chunks in
+#'   parallel across socket workers. If `"threads"`, evaluate in parallel using
+#'   C++ multi-threading within the current R process via RcppParallel. Default `FALSE`.
+#' @param n_workers Integer, number of worker processes or threads, or `NULL` (default)
+#'   for automatic detection. Ignored when `parallel = FALSE`.
 #' @param progress Logical, show progress bar? Default `TRUE`.
 #'
 #' @details
@@ -110,6 +115,8 @@ fit_final_sum_scale <- function(data,
                                 ci = TRUE,
                                 conf_level = 0.95,
                                 engine = c("R", "Rcpp"),
+                                parallel = FALSE,
+                                n_workers = NULL,
                                 progress = TRUE) {
   cutoff_method <- match.arg(cutoff_method)
   rank_by <- match.arg(rank_by)
@@ -130,6 +137,8 @@ fit_final_sum_scale <- function(data,
     ci                 = ci,
     conf_level         = conf_level,
     engine             = engine,
+    parallel           = parallel,
+    n_workers          = n_workers,
     progress           = progress
   )
 

@@ -1,3 +1,17 @@
+# NCVROC 0.13.0
+
+## New features
+
+- **C++ multi-threading for in-memory combinatorial exhaustive search**:
+  - Added support for `parallel = "threads"` across `exhaustive_sum_roc()`, `roc_bruteforce()`, `roc_bf()`, `ncvroc()`, `nested_sum_roc()`, `ncvroc_config()`, and `fit_final_sum_scale()`.
+  - Evaluates combinations in parallel within the main R process using native C++ threads via `RcppParallel::parallelFor` with call-local task arenas.
+  - Features zero socket IPC overhead, no process-level duplication of input data, and low thread-startup overhead.
+  - Guarantees deterministic exact results identical to serial execution across all metrics and cutoff methods.
+  - Enforces single-level concurrency guarantees, eliminating oversubscription and thread explosion under nested cross-validation.
+  - Built with `RcppParallel` for broad cross-platform portability.
+
+---
+
 # NCVROC 0.12.0
 
 ## New features

@@ -33,6 +33,7 @@
 #' @param engine Computation engine: "Rcpp" or "R".
 #' @param n_pos Optional count of positive samples.
 #' @param n_neg Optional count of negative samples.
+#' @param num_threads Integer, number of C++ threads for Rcpp parallel evaluation. Default 1L.
 #' @return data.frame of evaluated candidates with .global_combo_index column.
 #' @keywords internal
 .evaluate_chunk_serial <- function(x_mat,
@@ -45,7 +46,8 @@
                                    chunk_size,
                                    engine = "Rcpp",
                                    n_pos = NULL,
-                                   n_neg = NULL) {
+                                   n_neg = NULL,
+                                   num_threads = 1L) {
   n_items <- length(items)
   if (is.null(n_pos)) n_pos <- sum(y == 1L)
   if (is.null(n_neg)) n_neg <- sum(y == 0L)
@@ -64,14 +66,27 @@
     if (!is.matrix(x_mat)) {
       x_mat <- as.matrix(x_mat[, items, drop = FALSE])
     }
-    results <- evaluate_combos_cpp_chunk(
-      x_mat, y,
-      min_items = min_items,
-      max_items = max_items,
-      cutoff_method = cutoff_method,
-      chunk_start = as.double(chunk_start),
-      chunk_size = as.integer(chunk_size)
-    )
+    if (!is.null(num_threads) && num_threads > 1L) {
+      results <- evaluate_combos_cpp_chunk_parallel(
+        x_mat, y,
+        min_items = min_items,
+        max_items = max_items,
+        cutoff_method = cutoff_method,
+        chunk_start = as.double(chunk_start),
+        chunk_size = as.integer(chunk_size),
+        num_threads = as.integer(num_threads),
+        grain_size = 1000L
+      )
+    } else {
+      results <- evaluate_combos_cpp_chunk(
+        x_mat, y,
+        min_items = min_items,
+        max_items = max_items,
+        cutoff_method = cutoff_method,
+        chunk_start = as.double(chunk_start),
+        chunk_size = as.integer(chunk_size)
+      )
+    }
     items_vec <- character(n_this_chunk)
     for (gi in seq_len(n_this_chunk)) {
       global_rank <- as.double(chunk_start) + (gi - 1L)
@@ -359,9 +374,12 @@
 #' @param conf_level Numeric confidence level in (0, 1), default 0.95.
 #' @param engine Character, computation engine. `"R"` (default) or `"Rcpp"`.
 #' @param parallel Logical or character. If `TRUE` or `"chunks"`, evaluate
-#'   combination chunks in parallel across socket workers. Default `FALSE`.
-#' @param n_workers Integer, number of worker processes for parallel execution,
-#'   or `NULL` (default) for automatic detection. Ignored when `parallel = FALSE`.
+#'   combination chunks in parallel across socket workers. If `"threads"`,
+#'   evaluate combinations in parallel using C++ multi-threading within
+#'   the current R process via RcppParallel. Default `FALSE`.
+#' @param n_workers Integer, number of worker processes (for `"chunks"`) or
+#'   threads (for `"threads"`), or `NULL` (default) for automatic detection.
+#'   Ignored when `parallel = FALSE` or `"none"`.
 #' @param progress Logical, show progress bar? Default `TRUE`.
 #' @param chunk_start Internal: zero-based global combination index to start
 #'   from. When set together with `chunk_size`, only that range is evaluated.
@@ -440,7 +458,7 @@ exhaustive_sum_roc <- function(data,
   parallel_mode <- .resolve_parallel_mode(
     parallel,
     context = "exhaustive",
-    allowed = c("none", "chunks")
+    allowed = c("none", "chunks", "threads")
   )
 
   if (!is.logical(ci) || length(ci) != 1L || is.na(ci)) {
@@ -486,6 +504,12 @@ exhaustive_sum_roc <- function(data,
     chunk_start <- as.double(chunk_start)
 
     x_mat <- as.matrix(x[, items, drop = FALSE])
+    threads_for_chunk <- if (parallel_mode == "threads") {
+      .resolve_n_workers(parallel = TRUE, n_workers = n_workers)
+    } else {
+      1L
+    }
+
     results <- .evaluate_chunk_serial(
       x_mat         = x_mat,
       y             = y,
@@ -497,10 +521,39 @@ exhaustive_sum_roc <- function(data,
       chunk_size    = chunk_size,
       engine        = engine,
       n_pos         = n_pos,
-      n_neg         = n_neg
+      n_neg         = n_neg,
+      num_threads   = threads_for_chunk
     )
     # Remove internal tracking column for public return
     results$.global_combo_index <- NULL
+
+  } else if (parallel_mode == "threads") {
+    # --- Multi-threaded C++ Evaluation Path ---
+    eff_n_threads <- .resolve_n_workers(parallel = TRUE, n_workers = n_workers)
+    total_combos <- .count_total_combos(n_items, min_items, max_items)
+    x_mat <- as.matrix(x[, items, drop = FALSE])
+
+    results <- .evaluate_chunk_serial(
+      x_mat         = x_mat,
+      y             = y,
+      items         = items,
+      min_items     = min_items,
+      max_items     = max_items,
+      cutoff_method = cutoff_method,
+      chunk_start   = 0.0,
+      chunk_size    = total_combos,
+      engine        = engine,
+      n_pos         = n_pos,
+      n_neg         = n_neg,
+      num_threads   = eff_n_threads
+    )
+    results$.global_combo_index <- NULL
+
+    results <- .order_and_rank_candidates(results, rank_by, prefer_fewer_items)
+
+    if (!is.null(top_n)) {
+      results <- utils::head(results, top_n)
+    }
 
   } else if (parallel_mode == "chunks") {
     # --- Parallel Chunk Execution Path ---

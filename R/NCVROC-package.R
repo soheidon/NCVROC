@@ -5,6 +5,7 @@
 #' item-set selection, ROC-based evaluation, and nested cross-validation.
 #'
 #' @useDynLib NCVROC, .registration = TRUE
+#' @import RcppParallel
 #' @importFrom Rcpp evalCpp
 #' @importFrom graphics plot.new text
 #' @importFrom stats complete.cases sd setNames

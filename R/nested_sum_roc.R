@@ -290,6 +290,8 @@
 #' @param top_n Integer, number of top candidates to keep.
 #' @param engine Character, "R" or "Rcpp".
 #'
+#' @param parallel Parallel mode for inner exhaustive search (e.g. "threads" or "none").
+#' @param n_workers Number of workers/threads for inner evaluation.
 #' @return A data.frame of at most `top_n` rows in the standard exhaustive_sum_roc format.
 #' @keywords internal
 .streaming_top_n_exhaustive <- function(data,
@@ -302,7 +304,9 @@
                                          cutoff_method,
                                          rank_by,
                                          top_n,
-                                         engine) {
+                                         engine,
+                                         parallel = "none",
+                                         n_workers = NULL) {
   validated <- validate_inputs(data, outcome, items, positive_label, negative_label)
   x     <- validated$data
   y     <- validated$y
@@ -331,6 +335,8 @@
       top_n             = NULL,
       prefer_fewer_items = TRUE,
       engine            = engine,
+      parallel          = parallel,
+      n_workers         = n_workers,
       progress          = FALSE,
       chunk_start       = chunk_start,
       chunk_size        = chunk_size
@@ -389,7 +395,9 @@
                                         seed,
                                         progress,
                                         verbose,
-                                        cl_chunk = NULL) {
+                                        cl_chunk = NULL,
+                                        parallel_inner = "none",
+                                        n_workers_inner = NULL) {
   test_idx  <- outer_folds[[i]]
   train_idx <- setdiff(seq_len(n_total), test_idx)
   fold_name <- names(outer_folds)[i]
@@ -428,7 +436,9 @@
       cutoff_method    = cutoff_method,
       rank_by          = preselect_by,
       top_n            = preselect_top_n,
-      engine           = engine
+      engine           = engine,
+      parallel         = parallel_inner,
+      n_workers        = n_workers_inner
     )
   } else {
     candidates <- exhaustive_sum_roc(
@@ -444,6 +454,8 @@
       top_n            = NULL,
       prefer_fewer_items = TRUE,
       engine           = engine,
+      parallel         = parallel_inner,
+      n_workers        = n_workers_inner,
       progress         = FALSE
     )
   }
@@ -617,15 +629,20 @@
 #' @param stratified Logical, use stratified folds? Must be `TRUE` in v0.1.
 #' @param seed Integer, seed for reproducibility (default `NULL`).
 #' @param engine Character, computation engine. `"R"` (default) or `"Rcpp"`.
-#' @param parallel Logical. If `TRUE`, outer cross-validation folds are evaluated
-#'   in parallel using socket workers (\code{\link[parallel]{makePSOCKcluster}}).
+#' @param parallel Logical or character. If `TRUE` or `"outer"`, outer cross-validation
+#'   folds are evaluated in parallel using socket workers (\code{\link[parallel]{makePSOCKcluster}}).
+#'   If `"chunks"`, inner exhaustive searches are evaluated across persistent chunk socket
+#'   workers. If `"threads"`, outer folds are evaluated serially while inner exhaustive
+#'   searches use C++ multi-threading within the main R process via RcppParallel.
 #'   Default `FALSE`.
-#' @param n_workers Integer, number of worker processes for parallel execution,
-#'   or `NULL` (default) for automatic detection. Ignored when `parallel = FALSE`.
+#' @param n_workers Integer, number of worker processes (for `"outer"` or `"chunks"`)
+#'   or threads (for `"threads"`), or `NULL` (default) for automatic detection.
+#'   Ignored when `parallel = FALSE` or `"none"`.
 #'   When `parallel = TRUE` and `n_workers = NULL`, worker count defaults to
 #'   \code{max(1L, parallel::detectCores(logical = FALSE) - 1L)}. The effective
-#'   worker count is automatically capped by the number of outer folds, available
-#'   CPU cores, and CRAN core limits (\code{_R_CHECK_LIMIT_CORES_}).
+#'   worker count is automatically capped by available CPU cores and CRAN core limits
+#'   (\code{_R_CHECK_LIMIT_CORES_}). For `"outer"`, it is additionally capped by the
+#'   number of outer folds.
 #' @param progress Logical, show progress bars? Default `TRUE`.
 #' @param verbose Logical, print progress messages? Default `TRUE`.
 #' @param return Character, `"full"` (all details) or `"summary"` (summary
@@ -739,7 +756,7 @@ nested_sum_roc <- function(data,
   parallel_mode <- .resolve_parallel_mode(
     parallel,
     context = "nested",
-    allowed = c("none", "outer", "chunks")
+    allowed = c("none", "outer", "chunks", "threads")
   )
 
   if (!is.null(n_workers)) {
@@ -768,7 +785,7 @@ nested_sum_roc <- function(data,
   # ---- Resolve parallel execution ----
   actual_workers <- if (parallel_mode == "outer") {
     .resolve_n_workers(n_workers, max_tasks = n_folds)
-  } else if (parallel_mode == "chunks") {
+  } else if (parallel_mode %in% c("chunks", "threads")) {
     .resolve_n_workers(n_workers)
   } else {
     1L
@@ -796,7 +813,7 @@ nested_sum_roc <- function(data,
     message(msg)
   }
 
-  # ---- Main loop over outer folds (Serial, Outer-Parallel, or Chunks-Parallel) ----
+  # ---- Main loop over outer folds (Serial, Outer-Parallel, Chunks-Parallel, or Threads-Parallel) ----
   if (parallel_mode == "outer" && actual_workers > 1L) {
     cl <- parallel::makePSOCKcluster(actual_workers)
     on.exit(parallel::stopCluster(cl), add = TRUE)
@@ -841,7 +858,9 @@ nested_sum_roc <- function(data,
         seed                = seed,
         progress            = FALSE,
         verbose             = FALSE,
-        cl_chunk            = NULL
+        cl_chunk            = NULL,
+        parallel_inner      = "none",
+        n_workers_inner     = 1L
       )
     }
 
@@ -893,7 +912,42 @@ nested_sum_roc <- function(data,
         seed                = seed,
         progress            = progress && verbose,
         verbose             = verbose,
-        cl_chunk            = cl_chunk
+        cl_chunk            = cl_chunk,
+        parallel_inner      = "none",
+        n_workers_inner     = 1L
+      )
+    }
+
+  } else if (parallel_mode == "threads") {
+    # Sequential outer folds with multi-threaded C++ inner exhaustive evaluation
+    per_fold <- vector("list", n_folds)
+    for (i in seq_len(n_folds)) {
+      per_fold[[i]] <- .evaluate_single_outer_fold(
+        i                   = i,
+        outer_folds         = outer_folds,
+        full_data           = full_data,
+        y                   = y,
+        n_total             = n_total,
+        items               = items,
+        outcome_col         = outcome_col,
+        min_items           = min_items,
+        max_items           = max_items,
+        positive_label      = positive_label,
+        negative_label      = negative_label,
+        cutoff_method       = cutoff_method,
+        preselect_top_n     = preselect_top_n,
+        preselect_by        = preselect_by,
+        selection_criterion = selection_criterion,
+        inner_k             = inner_k,
+        inner_repeats       = inner_repeats,
+        use_streaming_ncv   = use_streaming_ncv,
+        engine              = engine,
+        seed                = seed,
+        progress            = progress && verbose,
+        verbose             = verbose,
+        cl_chunk            = NULL,
+        parallel_inner      = "threads",
+        n_workers_inner     = actual_workers
       )
     }
 
@@ -923,7 +977,9 @@ nested_sum_roc <- function(data,
         seed                = seed,
         progress            = progress && verbose,
         verbose             = verbose,
-        cl_chunk            = NULL
+        cl_chunk            = NULL,
+        parallel_inner      = "none",
+        n_workers_inner     = 1L
       )
     }
   }

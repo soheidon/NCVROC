@@ -63,10 +63,13 @@ models. Default `FALSE`.}
 \item{engine}{Character, computation engine. `"R"` (default) or `"Rcpp"`.}
 
 \item{parallel}{Logical or character. If `TRUE` or `"chunks"`, evaluate
-combination chunks in parallel across socket workers. Default `FALSE`.}
+combination chunks in parallel across socket workers. If `"threads"`,
+evaluate combinations in parallel using C++ multi-threading within
+the current R process via RcppParallel. Default `FALSE`.}
 
-\item{n_workers}{Integer, number of worker processes for parallel execution,
-or `NULL` (default) for automatic detection. Ignored when `parallel = FALSE`.}
+\item{n_workers}{Integer, number of worker processes (for `"chunks"`) or
+threads (for `"threads"`), or `NULL` (default) for automatic detection.
+Ignored when `parallel = FALSE` or `"none"`.}
 
 \item{progress}{Logical, show progress bar? Default `TRUE`.}
 

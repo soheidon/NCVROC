@@ -7,7 +7,7 @@
 .resolve_parallel_mode(
   parallel,
   context = c("nested", "exhaustive"),
-  allowed = c("none", "outer", "chunks")
+  allowed = NULL
 )
 }
 \arguments{
@@ -16,10 +16,10 @@
 \item{context}{Character, either "nested" (for ncvroc/nested_sum_roc) or
 "exhaustive" (for roc_bruteforce/exhaustive_sum_roc).}
 
-\item{allowed}{Character vector of allowed modes. Default c("none", "outer", "chunks").}
+\item{allowed}{Character vector of allowed modes. Default NULL (auto-resolved per context).}
 }
 \value{
-Character: "none", "outer", or "chunks".
+Character: "none", "outer", "chunks", or "threads".
 }
 \description{
 Resolve and validate parallel mode setting

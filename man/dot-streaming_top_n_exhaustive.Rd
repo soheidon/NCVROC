@@ -15,7 +15,9 @@
   cutoff_method,
   rank_by,
   top_n,
-  engine
+  engine,
+  parallel = "none",
+  n_workers = NULL
 )
 }
 \arguments{
@@ -40,6 +42,10 @@
 \item{top_n}{Integer, number of top candidates to keep.}
 
 \item{engine}{Character, "R" or "Rcpp".}
+
+\item{parallel}{Parallel mode for inner exhaustive search (e.g. "threads" or "none").}
+
+\item{n_workers}{Number of workers/threads for inner evaluation.}
 }
 \value{
 A data.frame of at most `top_n` rows in the standard exhaustive_sum_roc format.
