@@ -1,4 +1,9 @@
+[English README](../README.md) | [日本語 README](../README-ja.md)
+
 # NCVROC 0.13.0 リファレンス
+
+> [!TIP]
+> **入門ガイドや基本的な使い方の概要をお探しの場合は、[日本語 README](../README-ja.md) をご覧ください。** 本ドキュメントは、NCVROC の全関数、パラメータ、返り値の完全な仕様を記載した詳細技術リファレンスです。
 
 **N**ested **C**ross-**V**alidation for Combinatorial **ROC**-based Selection of Item-set Scores（項目セット得点の組み合わせROC選択のためのネスト交差検証）
 
