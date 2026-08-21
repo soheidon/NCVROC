@@ -8,6 +8,18 @@
 
 ---
 
+## NCVROC 0.12.0 の主要変更点
+
+- **チャンク単位の網羅探索並列化 (`parallel = "chunks"`)**: 数百万通りの組み合わせ探索空間（$O(\binom{M}{K})$）をチャンク単位で複数の CPU ソケットワーカー（`parallel::makePSOCKcluster`）に分散して並列評価。
+- **並列化レベルの明確な分離**: 外側交差検証フォールド並列化（`"outer"`）とチャンク並列化（`"chunks"`）を明確に分離し、二重並列化（nested parallelism）による CPU・メモリの過負荷を防止。
+- **C++ オンデマンド組み合わせ生成（Unranking）とストリーミング Top-$N$**: 100万件超の巨大な R list メモリ確保を完全に排除し、C++ 内部で数学的 unranking により候補を逐次評価。局所 Top-$N$ 抽出により省メモリで高速な探索を実現。
+- **PSOCK クラスタの永続再利用**: `nested_sum_roc(..., parallel = "chunks")` では、outer fold ループの開始時にクラスタを1回作成して全フォールドで再利用し、プロセス起動と DLL ロードのオーバーヘッドを排除。
+- **アトミック RDS 保存とキャッシュ検証**: チャンクファイルは一時ファイル（`.tmp`）に書き込んだ後、同一ディレクトリ内でアトミックにリネーム。不完全なファイルがキャッシュとして認識されることを防止。
+- **厳密な解の同一性（近似なし）**: 候補選抜や足切りを行わない完全な総当たり探索（exact exhaustive search）であり、1-based の `.global_combo_index` によりシリアル実行と完全に同一の順位・モデル選抜・統計数値を保証。
+- **後方互換性の維持**: `parallel = TRUE` はネスト交差検証系では `"outer"`、全探索系では `"chunks"` として文脈に応じて解釈され、既存コードとの 100% 互換性を維持（デフォルトは `parallel = FALSE`）。
+
+---
+
 ## インストール
 
 ```r
@@ -175,7 +187,9 @@ ncvroc_results(result, top_n = NULL, allow_full_load = TRUE)
 
 ### キャッシュ（v0.10.0の新機能）
 
-大規模な全探索は時間がかかる場合があります。`ncvroc()` と `roc_bruteforce()` は結果のキャッシュをサポートし、再計算を回避します：
+### キャッシュとアトミックストレージ
+
+大規模な全探索は時間がかかる場合があります。`ncvroc()` と `roc_bruteforce()` は結果のキャッシュとディスクへのアトミックなチャンク保存をサポートしています：
 
 ```r
 result <- ncvroc(
@@ -192,14 +206,16 @@ result <- ncvroc(
 | `cache` | 動作 |
 |---|---|
 | `"off"`（デフォルト） | キャッシュなし。 |
-| `"reuse"` | 利用可能な場合はキャッシュされた結果を使用（同じデータ+同じパラメータ）。それ以外は計算してキャッシュ。 |
+| `"reuse"` | 利用可能な場合はキャッシュされた結果を使用（データ、項目、探索指標、パラメータの完全ハッシュシグネチャで検証）。それ以外は計算してキャッシュ。 |
 | `"refresh"` | 常に再計算し、キャッシュを上書き。 |
 
 `cache_dir` でキャッシュされた結果の保存先を制御します（デフォルト：`tempdir()`）。
 
+**アトミックなRDS保存保証**: チャンクRDSファイルは一時ファイル（`.tmp`）に書き込まれた後、同一ディレクトリ内でアトミックにリネーム（`.rds`）されます。処理中断時の不完全な書き込みが有効なキャッシュとして認識されることはなく、残存した `.tmp` ファイルはチャンク一覧から自動的に除外されます。
+
 ### チャンクサイズ
 
-`chunk_size` パラメータ（デフォルト `200000`）は、大規模な全探索で1チャンクに評価される組み合わせ数を制御します。通常は変更する必要はありません。
+`chunk_size` パラメータ（デフォルト `200000`）は、大規模な全探索で1チャンクに評価される組み合わせ数を制御します。通常はデフォルト値を変更する必要はありません。
 
 ### 最終候補の出力
 
@@ -316,8 +332,10 @@ ncvroc(
 
 - `selection_criterion`: ネストCV中にどの候補が選択されるかを制御します。
 - `final_rank_by`: 最終全データ候補テーブルのランク付け方法を制御します。
-- `parallel`: `TRUE` の場合、外側交差検証（outer CV）フォールドを PSOCK ソケットワーカーを用いて並列実行します（デフォルト `FALSE`）。
-- `n_workers`: 並列実行時のワーカープロセス数。`NULL`（デフォルト）の場合は利用可能な物理CPUコア数から自動決定されます。ワーカー数はフォールド数・コア数・CRANコア制限（`_R_CHECK_LIMIT_CORES_`）で自動的に上限キャップされます。
+- `parallel`: 並列実行モード。`FALSE` または `"none"`（逐次実行、デフォルト）、`"outer"`（外側交差検証フォールドを並列化）、`"chunks"`（外側ループは逐次で、各フォールド内の事前選択チャンク探索を並列化）。`TRUE` を指定した場合は後方互換性のため `"outer"` として解釈されます。
+- `n_workers`: 並列実行時のワーカープロセス数。`NULL`（デフォルト）の場合は利用可能な物理CPUコア数から自動決定されます。ワーカー数はフォールド数・チャンク数・物理コア数・CRANコア制限（`_R_CHECK_LIMIT_CORES_`）で自動的に上限キャップされます。
+- `chunk_size`: 大規模な全探索で1チャンクに評価される組み合わせ数（デフォルト `200000L`）。
+- `cache`: 結果キャッシュモード。`"off"`（デフォルト）、`"reuse"`（パラメータハッシュが一致するキャッシュを再利用）、`"refresh"`（常に再計算して上書き）。
 
 **戻り値:** クラス`"ncvroc_analysis"`のS3オブジェクト。`print()`, `summary()`, `plot()`のS3メソッドが利用可能です。臨床的制約で最終候補テーブルを絞り込むには`ncvroc_results()`を使用してください。
 
@@ -360,7 +378,7 @@ ncvroc_results(
 
 ### `roc_bruteforce()`
 
-NSEによる列解決を用いた、全データでの項目組み合わせROC分析。
+NSEによる列解決を用いた、全データでの項目組み合わせROC全探索。
 
 ```r
 roc_bruteforce(
@@ -381,12 +399,19 @@ roc_bruteforce(
   results_storage  = c("auto", "memory", "rds", "none"),
   results_name     = NULL,
   results_dir      = NULL,
+  parallel         = FALSE,
+  n_workers        = NULL,
   item_count       = NULL,
   chunk_size       = 200000L,
   cache            = c("off", "reuse", "refresh"),
   cache_dir        = NULL
 )
 ```
+
+- `parallel`: 並列実行モード。`FALSE` または `"none"`（逐次実行、デフォルト）、`"chunks"`（候補組み合わせチャンクを PSOCK ワーカーで並列評価）。`TRUE` を指定した場合は `"chunks"` として解釈されます。
+- `n_workers`: 並列実行ワーカー数（デフォルト `NULL` で自動検出）。
+- `chunk_size`: 1チャンクあたりの組み合わせ評価数（デフォルト `200000L`）。
+- `cache`: キャッシュモード（`"off"`, `"reuse"`, `"refresh"`）。
 
 **戻り値:** クラス `"roc_bruteforce_result"` のS3オブジェクト。`$candidates`（上位N件）、`$best_model`（先頭行）、`$results_storage`、`$results_file`、`$n_combinations` を含みます。デフォルトでは `$results` は `NULL` です（RDSに保存されます）。`print()` はパフォーマンスが楽観的である可能性の警告付きで整形されたサマリーを表示します。臨床的制約での絞り込みには `ncvroc_results()` を使用してください。
 
@@ -493,7 +518,7 @@ nested_sum_roc(
 )
 ```
 
-- `parallel`: `TRUE` の場合、外側交差検証フォールドを PSOCK ソケットワーカーを用いて並列実行します（デフォルト `FALSE`）。
+- `parallel`: 並列実行モード。`FALSE` または `"none"`（逐次実行、デフォルト）、`"outer"`（外側交差検証フォールドを並列化）、`"chunks"`（外側ループは逐次で、各フォールド内の事前選択チャンク探索を並列化）。`TRUE` を指定した場合は後方互換性のため `"outer"` として解釈されます。`parallel = "chunks"` では、外側ループ開始時に PSOCK クラスタが1回作成され、全フォールド間で永続的に再利用されます。
 - `n_workers`: 並列実行ワーカー数。`NULL` の場合は利用可能コア数から自動決定されます。
 
 **戻り値:** クラス`"ncvroc_result"`のS3オブジェクト。以下の要素を含みます：
@@ -513,7 +538,7 @@ nested_sum_roc(
 
 ### `exhaustive_sum_roc()`
 
-すべての項目の組み合わせを列挙し、単純合計得点を計算し、ROCで評価します。
+すべての項目の組み合わせを列挙・評価し、単純合計得点を計算してROCで評価します。
 
 ```r
 exhaustive_sum_roc(
@@ -529,9 +554,19 @@ exhaustive_sum_roc(
   top_n             = NULL,
   prefer_fewer_items = TRUE,
   engine            = c("R", "Rcpp"),
-  progress          = TRUE
+  progress          = TRUE,
+  parallel          = FALSE,
+  n_workers         = NULL,
+  chunk_size        = 200000L,
+  cache             = c("off", "reuse", "refresh"),
+  cache_dir         = NULL
 )
 ```
+
+- `parallel`: 並列実行モード。`FALSE` または `"none"`（逐次実行、デフォルト）、`"chunks"`（候補組み合わせチャンクを PSOCK ワーカーで並列評価）。`TRUE` を指定した場合は `"chunks"` として解釈されます。
+- `n_workers`: 並列実行ワーカー数（デフォルト `NULL` で自動検出）。
+- `chunk_size`: 1チャンクあたりの組み合わせ評価数（デフォルト `200000L`）。
+- `cache`: キャッシュモード（`"off"`, `"reuse"`, `"refresh"`）。
 
 **戻り値:** `rank`, `items`, `n_items`, `auc`, `cutoff`, `sensitivity`, `specificity`, `youden`, `accuracy`, `ppv`, `npv`, `n_positive`, `n_negative`の列を持つdata.frame。`rank_by`の降順でソートされます。
 
@@ -719,21 +754,54 @@ Sensitivity: 1.000 [0.692, 1.000]
 
 `NCVROC`（>= 0.12.0）は、ソケットクラスタ（`parallel::makePSOCKcluster`）を用いた**外側交差検証フォールド（outer fold）並列化**および**大規模全探索チャンク（chunk）並列化**をサポートしています。Windows、macOS、Linux でシームレスに動作します：
 
-- **`parallel = FALSE`（デフォルト）:** 単一プロセスで逐次実行します。CPU使用率が予測可能で、100%の後方互換性が保たれます。
-- **`parallel = "outer"`（または `ncvroc()` / `nested_sum_roc()` での `parallel = TRUE`）:** 外側交差検証フォールドをワーカー間で並列評価します。フォールド内の事前選択は逐次実行されます。
-- **`parallel = "chunks"`（または `roc_bruteforce()` / `exhaustive_sum_roc()` での `parallel = TRUE`）:** 大規模な組み合わせ探索空間（$O(\binom{M}{K})$ 通り）をチャンク単位でワーカー間に分散して並列評価します。
-- **`n_workers = NULL`（デフォルト）:** 利用可能な物理CPUコア数（`max(1L, parallel::detectCores(logical = FALSE) - 1L)`）からワーカー数を自動決定します。
-- **`n_workers = 4`:** ワーカー数を明示的に指定します。
-- **相互排他ルールの強制（二重並列化の禁止）:** Outer 並列と Chunk 並列は同時にネスト実行されず、CPU の過負荷を防ぎます。
-- **クラスタの永続再利用:** `nested_sum_roc(..., parallel = "chunks")` では、outer fold ループの開始時にクラスタを1回作成して全フォールドで再利用し、プロセス起動とDLLロードのオーバーヘッドを排除します。
-- **自動上限キャップ:** 実際のワーカー数は、タスク数、利用可能な物理コア数、およびCRANコア制限環境変数（`_R_CHECK_LIMIT_CORES_`）によって安全に自動上限調整されます。
-- **統計的再現性の保証:** 1-based の `.global_combo_index` による決定論的タイブレークにより、シリアル実行と**完全に同一のモデル順序および統計結果**が得られます。
+- **外側フォールド並列化 (`parallel = "outer"`)**: 外側交差検証フォールドをワーカー間で並列評価します。フォールド内の事前選択は逐次実行されます。
+- **チャンク単位の並列化 (`parallel = "chunks"`)**: 数百万通りにおよぶ大規模な組み合わせ探索空間（$O(\binom{M}{K})$ 通り）をチャンク単位でワーカー間に分散して並列評価します。
 
-### 使用例 1: 外側フォールド並列化（Outer Fold Parallelization）
+### 並列化モードと文脈による解釈
+
+| 設定値 | ネスト系（`ncvroc`, `nested_sum_roc`） | 全探索系（`roc_bruteforce`, `exhaustive_sum_roc`） |
+|---|---|---|
+| `parallel = FALSE`（デフォルト） | 単一プロセス逐次実行 | 単一プロセス逐次実行 |
+| `parallel = TRUE` | `"outer"` として解釈（外側フォールド並列化） | `"chunks"` として解釈（チャンク並列化） |
+| `parallel = "none"` | 単一プロセス逐次実行 | 単一プロセス逐次実行 |
+| `parallel = "outer"` | 外側交差検証フォールドを並列化 | 未サポート（エラー） |
+| `parallel = "chunks"` | 外側フォールドは逐次、各フォールド内の事前選択チャンク探索を並列化（クラスタ再利用） | 候補組み合わせチャンクを並列化 |
+
+> [!NOTE]
+> `parallel = "auto"` は将来のリリース向けに予約されています。v0.12.0 で `"auto"` を指定すると、`"none"`、`"outer"`、または `"chunks"` のいずれかを明示するよう促すエラーメッセージが表示されます。
+
+### ワーカー数指定 (`n_workers`)
+
+- **`n_workers = NULL`（デフォルト）**: 利用可能な物理 CPU コア数（`max(1L, parallel::detectCores(logical = FALSE) - 1L)`）から自動決定されます。
+- **`n_workers = 4`**: 最大4つのワーカープロセスを使用します。
+- **安全な上限キャップ**: 実際のワーカー数は、タスク数（フォールド数またはチャンク数）、利用可能な物理コア数、および CRAN 環境変数（`_R_CHECK_LIMIT_CORES_`）によって安全に自動上限調整されます。
+
+### 相互排他ルールの強制（二重並列化の禁止）
+
+NCVROC では、外側フォールド並列とチャンク並列を同時にネスト実行すること（例: 4 outer $\times$ 4 chunks = 16 プロセス）は**禁止**されています。CPU oversubscription やソケット枯渇、メモリ複製のオーバーヘッドを防ぎ、1回の実行につき1つの並列化レベルのみをクリーンに適用します。
+
+### ネストCVにおけるクラスタの永続再利用
+
+`nested_sum_roc(..., parallel = "chunks")` の実行時、PSOCK クラスタは外側フォールドループの開始前に**1回だけ生成**され、パッケージ環境や C++ DLL を1回だけエクスポートします。各フォールドではフォールド固有の学習データのみを更新してクラスタを全フォールドで再利用し、処理終了時に安全にシャットダウンされます。
+
+### チャンク／ストリーミング探索エンジンと厳密な解の同一性
+
+v0.12.0 の全探索エンジンは、C++ 内部で数学的 unranking（`evaluate_combos_cpp_chunk()`）を用いてオンデマンドで候補を生成し、局所 Top-$N$ をストリーミング集約します：
+- **完全な網羅探索（Exact Exhaustive Search）**: 候補の足切りや近似を行わず、指定されたすべての組み合わせを完全に評価します。
+- **決定論的タイブレーク**: 各候補はシリアル全列挙時の 1-based な `.global_combo_index` を保持しており、チャンク境界をまたぐ同点（tie）が存在する場合でも、シリアル実行と完全に同一の順位・モデル選抜・統計量（AUC、カットオフ、感度、特異度、Youden指数等）が得られます。
+- **ストリーミング Top-$N$ 不変条件**: $\text{top\_n\_local} \ge \text{global\_top\_n}$ を保証することで、マスター統合時に真の Top-$N$ 候補が脱落しない設計となっています。
+
+### 性能特性とベンチマーク
+
+- **エンジン単体の大幅な高速化**: 1,031,346 通りの組み合わせ探索ベンチマーク（$M=71, K \le 4, N=200$）において、C++ unranking とストリーミング Top-$N$ メモリ最適化により、単一ワーカー（1 worker）の実行時間が従来の全列挙シリアル経路（約 21.3 秒）から **約 4.9 秒**（約 4.4 倍）へ短縮されました。
+- **マルチワーカースケーリングの依存性**: PSOCK マルチワーカーの性能向上はワークロードに依存します（workload-dependent）。C++ 内部での評価が極めて高速なため、小さな探索空間では Windows 上のソケット IPC 初期化オーバーヘッドが相対的に大きくなります。候補数（$M \ge 40, K \ge 5$）やサンプルサイズ $N$ がさらに大きくなるにつれて、並列分散の恩恵が支配的になります。
+
+### 使用例
+
+#### 使用例 1: 外側フォールド並列化（中規模項目数 $M \le 25$ に推奨）
 
 ```r
-# 中規模の項目数（例: M <= 25）で外側交差検証フォールドを並列化
-result <- ncvroc(
+res_outer <- ncvroc(
   data          = analysis_dat,
   outcome       = y,
   items         = Q1:Q14,
@@ -747,17 +815,31 @@ result <- ncvroc(
 )
 ```
 
-### 使用例 2: チャンク単位の網羅探索並列化（Chunk-Level Parallelization）
+#### 使用例 2: チャンク単位の全探索並列化（大規模項目数 $M \ge 40$ に推奨）
 
 ```r
-# 大規模な項目数（例: M >= 40、10万〜数百万通りの組み合わせ探索）でチャンク並列化
-result <- roc_bruteforce(
+res_chunks <- roc_bruteforce(
   data       = analysis_dat,
   outcome    = y,
   items      = Q1:Q40,
   item_count = "<=4",
   parallel   = "chunks",  # または parallel = TRUE
   n_workers  = 4
+)
+```
+
+#### 使用例 3: ネストCV内の事前選択チャンク並列化
+
+```r
+res_nested_chunks <- ncvroc(
+  data       = analysis_dat,
+  outcome    = y,
+  items      = Q1:Q40,
+  item_count = "<=4",
+  mode       = "thorough",
+  parallel   = "chunks",  # 外側フォールドは逐次、各フォールド内の事前選択を並列化
+  n_workers  = 4,
+  seed       = 42
 )
 ```
 

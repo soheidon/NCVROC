@@ -1,12 +1,25 @@
 [English](README.md) | [日本語](https://github.com/soheidon/NCVROC/blob/master/docs/reference-ja.md)
 
-# NCVROC 0.11.1
+# NCVROC 0.12.0
 
 **N**ested **C**ross-**V**alidation for Combinatorial **ROC**-based Selection of Item-set Scores
 
 Develops short item-based screening scales through combinatorial item-set selection, ROC-based evaluation, and nested cross-validation. For psychological/clinical questionnaire data, identifies which small subset of items best predicts a binary outcome using simple sum scores.
 
 Assume higher sum scores indicate higher probability of a positive outcome. Users must reverse-code items beforehand.
+
+---
+
+## What's new in NCVROC 0.12.0
+
+- **Chunk-Level Parallelization (`parallel = "chunks"`)**: Evaluate massive combinatorial candidate search spaces ($O(\binom{M}{K})$ candidate models) across multiple CPU socket workers in parallel.
+- **Clear Separation of Parallelism Levels**: Distinct parallel modes for `"outer"` (cross-validation folds) and `"chunks"` (combinatorial candidate chunks), preventing nested oversubscription.
+- **High-Performance Chunk-Based Streaming Search Engine**: Generates combinations on-the-fly via C++ mathematical unranking (`evaluate_combos_cpp_chunk()`) and performs streaming local Top-$N$ candidate reduction, bypassing large R list allocations in memory.
+- **Persistent PSOCK Cluster Reuse**: In `nested_sum_roc(..., parallel = "chunks")`, a single PSOCK cluster is initialized once and reused across all outer cross-validation folds, eliminating repeated cluster startup/teardown overhead.
+- **Atomic RDS Writing & Robust Cache Validation**: Chunks are saved to temporary files and atomically renamed within the same directory; invalid or stale files are safely ignored.
+- **Exact Acceleration (No Approximation)**: Evaluates the full exhaustive combination space without candidate screening or heuristic pruning.
+- **Deterministic Exact Tie-Breaking**: Enforces 1-based `.global_combo_index` tracking to guarantee exact candidate ordering and numerical equivalence with serial execution even across chunk boundaries.
+- **100% Backward Compatibility**: `parallel = TRUE` resolves contextually to `"outer"` in nested CV (`ncvroc`, `nested_sum_roc`) and `"chunks"` in exhaustive search (`roc_bruteforce`, `exhaustive_sum_roc`); `parallel = FALSE` remains the default.
 
 ---
 
@@ -188,11 +201,11 @@ with `"rds"` when chunked), `top_n = NULL` requires
 ncvroc_results(result, top_n = NULL, allow_full_load = TRUE)
 ```
 
-### Caching (new in v0.10.0)
-
+### Caching & atomic storage
+ 
 Large exhaustive searches can take significant time. `ncvroc()` and
-`roc_bruteforce()` support result caching to avoid recomputation:
-
+`roc_bruteforce()` support result caching and atomic chunked storage to disk:
+ 
 ```r
 result <- ncvroc(
   data    = analysis_dat,
@@ -219,16 +232,18 @@ result2 <- ncvroc(
 | `cache` | Behavior |
 |---|---|
 | `"off"` (default) | No caching. |
-| `"reuse"` | Use cached result if available (same data + same parameters); otherwise compute and cache. |
+| `"reuse"` | Use cached result if available (validated against exact hash of data, items, metric, and search parameters); otherwise compute and cache. |
 | `"refresh"` | Always recompute and overwrite the cache. |
 
 `cache_dir` controls where cached results are stored (default: `tempdir()`).
+
+**Atomic RDS Storage Guarantee**: Chunk RDS files are written to temporary files (`.tmp`) within the target directory and atomically renamed to `.rds`. Incomplete writes from interrupted processes are never treated as valid final chunk files, and stale temporary files are ignored.
 
 ### Chunk size
 
 The `chunk_size` parameter (default `200000`) controls how many combinations are
 evaluated per chunk in large exhaustive searches. You typically do not need to
-change this.
+change this default.
 
 ### Final candidate output
 
@@ -747,23 +762,56 @@ Sensitivity: 1.000 [0.692, 1.000]
 
 ## Parallel execution
 
-`NCVROC` supports multi-core parallelization using socket clusters (`parallel::makePSOCKcluster`) across Windows, macOS, and Linux:
+`NCVROC` supports multi-core parallelization across socket clusters (`parallel::makePSOCKcluster`) on Windows, macOS, and Linux:
 
-- **`parallel = FALSE` (Default):** Executes sequentially in a single process, ensuring predictable CPU usage and 100% backward compatibility.
-- **`parallel = "outer"` (or `parallel = TRUE` in `ncvroc()` / `nested_sum_roc()`):** Evaluates outer cross-validation folds concurrently across workers. Preselection within each fold runs sequentially.
-- **`parallel = "chunks"` (or `parallel = TRUE` in `roc_bruteforce()` / `exhaustive_sum_roc()`):** Evaluates large combinatorial search spaces ($O(\binom{M}{K})$ candidate models) in parallel across chunks.
-- **`n_workers = NULL` (Default):** Automatically detects available physical cores (`max(1L, parallel::detectCores(logical = FALSE) - 1L)`).
-- **`n_workers = 4`:** Uses an explicit worker count.
-- **Strict mutual exclusivity (no nested parallelism):** Outer parallel and Chunk parallel are never combined concurrently.
-- **Persistent cluster reuse:** In `nested_sum_roc(..., parallel = "chunks")`, a single PSOCK cluster is initialized once and reused across all outer CV folds, eliminating repeated cluster startup/teardown overhead.
-- **Automatic capping:** The effective number of workers is safely capped by task count, available CPU cores, and CRAN core limits (`_R_CHECK_LIMIT_CORES_`).
-- **Guaranteed statistical equivalence:** Serial and parallel execution produce identical rankings and metrics via deterministic 1-based `.global_combo_index` tie-breaking.
+- **Outer-fold parallelization (`parallel = "outer"`)**: Evaluates outer cross-validation folds concurrently across workers. Preselection within each fold runs sequentially.
+- **Chunk-level parallelization (`parallel = "chunks"`)**: Evaluates large combinatorial search spaces ($O(\binom{M}{K})$ candidate models) concurrently across chunks.
 
-### Example: Outer Fold Parallelization
+### Parallel modes and contextual resolution
+
+| Setting | Nested Context (`ncvroc`, `nested_sum_roc`) | Exhaustive Context (`roc_bruteforce`, `exhaustive_sum_roc`) |
+|---|---|---|
+| `parallel = FALSE` (Default) | Sequential single-process execution | Sequential single-process execution |
+| `parallel = TRUE` | Resolves to `"outer"` (outer-fold parallelization) | Resolves to `"chunks"` (chunk parallelization) |
+| `parallel = "none"` | Sequential single-process execution | Sequential single-process execution |
+| `parallel = "outer"` | Evaluates outer cross-validation folds in parallel | Unsupported (raises error) |
+| `parallel = "chunks"` | Outer folds run sequentially; within each fold, candidate preselection chunks are evaluated in parallel (reusing a single cluster) | Evaluates candidate combination chunks in parallel |
+
+> [!NOTE]
+> `parallel = "auto"` is reserved for a future release. In v0.12.0, specifying `"auto"` raises an informative error prompting you to choose `"none"`, `"outer"`, or `"chunks"`.
+
+### Worker count (`n_workers`)
+
+- **`n_workers = NULL` (Default)**: Automatically detects available physical CPU cores (`max(1L, parallel::detectCores(logical = FALSE) - 1L)`).
+- **`n_workers = 4`**: Uses up to 4 worker processes.
+- **Automatic Capping**: The effective worker count is safely capped by the number of tasks (outer folds or candidate chunks), available CPU cores, and CRAN environment limits (`_R_CHECK_LIMIT_CORES_`).
+
+### Strict mutual exclusivity (no nested parallelism)
+
+Outer parallelization and chunk parallelization are **never nested concurrently**. For example, `NCVROC` will never create 4 outer workers $\times$ 4 chunk workers (16 processes), avoiding CPU oversubscription, socket exhaustion, and memory duplication. You choose one level of parallelism per analysis.
+
+### Persistent cluster reuse in nested CV
+
+When running nested CV with `parallel = "chunks"`, `nested_sum_roc()` initializes the PSOCK cluster **once** before the outer fold loop, exports package code and DLLs once, and reuses the cluster across all outer folds by updating only fold-specific training matrices. The cluster is cleanly closed on exit.
+
+### High-performance chunk/streaming search engine & exactness
+
+In v0.12.0, the exhaustive search engine generates combinations on-the-fly via C++ mathematical unranking (`evaluate_combos_cpp_chunk()`) and maintains streaming local top-$N$ candidate pools.
+- **Exact exhaustive search**: Evaluates the full exhaustive candidate space without heuristics or screening approximations.
+- **Exact tie-breaking**: Candidates track their 1-based `.global_combo_index` from serial combinatorial enumeration, ensuring identical candidate ordering and numerical metrics between serial and parallel runs.
+- **Streaming Top-$N$ invariant**: Enforces $\text{top\_n\_local} \ge \text{global\_top\_n}$ so no global top-$N$ model is missed during chunk reduction.
+
+### Performance characteristics
+
+- **Engine Acceleration**: In a 1.03M-combination benchmark ($M=71, K \le 4, N=200$), the new single-worker chunk/streaming engine reduced elapsed time from about 21.3 s to 4.9 s versus the legacy full-enumeration serial path due to C++ unranking and memory optimization.
+- **Multi-Worker Scaling**: Multi-worker scaling is workload-dependent. Because C++ evaluation is very fast, socket IPC overhead on small workloads is noticeable; chunk parallelization becomes increasingly advantageous as candidate spaces ($M \ge 40, K \ge 5$) and sample sizes grow.
+
+### Usage examples
+
+#### Example 1: Outer-fold parallelization (recommended for $M \le 25$)
 
 ```r
-# Parallelize outer CV folds (ideal for moderate item counts, e.g. M <= 25)
-result <- ncvroc(
+res_outer <- ncvroc(
   data          = analysis_dat,
   outcome       = y,
   items         = Q1:Q14,
@@ -777,17 +825,31 @@ result <- ncvroc(
 )
 ```
 
-### Example: Chunk-Level Parallel Exhaustive Search
+#### Example 2: Chunk-level parallel exhaustive search (recommended for $M \ge 40$)
 
 ```r
-# Parallelize combinatorial candidate chunks (ideal for large item pools, e.g. M >= 40)
-result <- roc_bruteforce(
+res_chunks <- roc_bruteforce(
   data       = analysis_dat,
   outcome    = y,
   items      = Q1:Q40,
   item_count = "<=4",
   parallel   = "chunks",  # or parallel = TRUE
   n_workers  = 4
+)
+```
+
+#### Example 3: Nested CV with chunk-level preselection
+
+```r
+res_nested_chunks <- ncvroc(
+  data       = analysis_dat,
+  outcome    = y,
+  items      = Q1:Q40,
+  item_count = "<=4",
+  mode       = "thorough",
+  parallel   = "chunks",  # outer folds run sequentially, fold preselection runs in parallel
+  n_workers  = 4,
+  seed       = 42
 )
 ```
 
