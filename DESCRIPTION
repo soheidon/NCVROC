@@ -18,7 +18,7 @@ Description: Develops short item-based screening scales through combinatorial
     analysis are described by Fawcett (2006)
     <doi:10.1016/j.patrec.2005.10.010>, and nested cross-validation for model
     selection by Varma and Simon (2006) <doi:10.1186/1471-2105-7-91>.
-License: MIT + file LICENSE
+License: MIT
 Encoding: UTF-8
 Config/testthat/edition: 3
 Imports:

@@ -847,4 +847,4 @@ exhaustive_sum_roc(d, "y", paste0("Q", 1:5), max_items = 2, engine = "Rcpp")
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+MIT
