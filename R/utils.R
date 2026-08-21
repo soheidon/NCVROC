@@ -292,3 +292,82 @@ CACHE_FORMAT_VERSION <- 1L     # bump when cache storage format changes
     items[indices + 1L]
   })
 }
+
+#' Resolve and validate parallel mode setting
+#'
+#' @param parallel Logical or character indicating parallel mode.
+#' @param context Character, either "nested" (for ncvroc/nested_sum_roc) or
+#'   "exhaustive" (for roc_bruteforce/exhaustive_sum_roc).
+#' @param allowed Character vector of allowed modes. Default c("none", "outer", "chunks").
+#' @return Character: "none", "outer", or "chunks".
+#' @keywords internal
+.resolve_parallel_mode <- function(parallel,
+                                   context = c("nested", "exhaustive"),
+                                   allowed = c("none", "outer", "chunks")) {
+  context <- match.arg(context)
+
+  if (is.logical(parallel)) {
+    if (length(parallel) != 1L || is.na(parallel)) {
+      stop("`parallel` must be TRUE or FALSE.", call. = FALSE)
+    }
+    if (!parallel) {
+      return("none")
+    } else {
+      return(if (context == "nested") "outer" else "chunks")
+    }
+  }
+
+  if (is.character(parallel)) {
+    if (length(parallel) != 1L || is.na(parallel)) {
+      stop("`parallel` must be TRUE or FALSE, or a string ('none', 'outer', 'chunks').", call. = FALSE)
+    }
+    if (identical(parallel, "auto")) {
+      stop("`parallel = 'auto'` is reserved for a future release. Use 'none', 'outer', or 'chunks'.", call. = FALSE)
+    }
+    if (!parallel %in% c("none", "outer", "chunks")) {
+      stop("`parallel` must be TRUE or FALSE, or one of 'none', 'outer', 'chunks'.", call. = FALSE)
+    }
+    if (!parallel %in% allowed) {
+      stop(sprintf("parallel mode '%s' is not supported for context '%s'. Allowed: %s.",
+                   parallel, context, paste(allowed, collapse = ", ")), call. = FALSE)
+    }
+    return(parallel)
+  }
+
+  stop("`parallel` must be TRUE or FALSE, or character ('none', 'outer', 'chunks').", call. = FALSE)
+}
+
+#' Deterministically order and rank candidate models preserving serial tie-breaking
+#'
+#' @param df data.frame of candidate models with at least columns for rank_by and n_items.
+#' @param rank_by Character, primary ranking metric column name.
+#' @param prefer_fewer_items Logical, if TRUE prefer smaller models on ties. Default TRUE.
+#' @param global_combo_index Numeric/integer vector of 1-based combination positions,
+#'   or NULL if already stored in df$.global_combo_index.
+#' @return data.frame ordered deterministically.
+#' @keywords internal
+.order_and_rank_candidates <- function(df, rank_by, prefer_fewer_items = TRUE,
+                                       global_combo_index = NULL) {
+  if (nrow(df) == 0L) return(df)
+
+  sort_col <- df[[rank_by]]
+  if (is.null(sort_col)) {
+    stop("Column '", rank_by, "' not found for ranking.", call. = FALSE)
+  }
+
+  g_idx <- if (!is.null(global_combo_index)) {
+    global_combo_index
+  } else if (!is.null(df$.global_combo_index)) {
+    df$.global_combo_index
+  } else {
+    seq_len(nrow(df))
+  }
+
+  if (prefer_fewer_items) {
+    ord <- order(-sort_col, df$n_items, g_idx)
+  } else {
+    ord <- order(-sort_col, g_idx)
+  }
+
+  df[ord, , drop = FALSE]
+}

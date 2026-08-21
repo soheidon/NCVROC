@@ -1,4 +1,4 @@
-# NCVROC 0.11.1 リファレンス
+# NCVROC 0.12.0 リファレンス
 
 **N**ested **C**ross-**V**alidation for Combinatorial **ROC**-based Selection of Item-set Scores（項目セット得点の組み合わせROC選択のためのネスト交差検証）
 
@@ -715,19 +715,24 @@ Sensitivity: 1.000 [0.692, 1.000]
 
 ---
 
-## 並列実行（Outer Fold Parallelization）
+## 並列実行（Outer Fold & Chunk Parallelization）
 
-`NCVROC`（>= 0.11.1）は、ソケットクラスタ（`parallel::makePSOCKcluster`）を用いた**外側交差検証フォールド（outer fold）のマルチコア並列化**をサポートしています。Windows、macOS、Linux でシームレスに動作します：
+`NCVROC`（>= 0.12.0）は、ソケットクラスタ（`parallel::makePSOCKcluster`）を用いた**外側交差検証フォールド（outer fold）並列化**および**大規模全探索チャンク（chunk）並列化**をサポートしています。Windows、macOS、Linux でシームレスに動作します：
 
 - **`parallel = FALSE`（デフォルト）:** 単一プロセスで逐次実行します。CPU使用率が予測可能で、100%の後方互換性が保たれます。
-- **`parallel = TRUE, n_workers = NULL`（自動検出）:** 利用可能な物理CPUコア数（`max(1L, parallel::detectCores(logical = FALSE) - 1L)`）からワーカー数を自動決定します。
-- **`parallel = TRUE, n_workers = 4`:** ワーカー数を明示的に指定します。
-- **自動上限キャップ:** 実際のワーカー数は、外側フォールド数、利用可能な物理コア数、およびCRANコア制限環境変数（`_R_CHECK_LIMIT_CORES_`）によって安全に自動上限調整されます。
-- **統計的再現性の保証:** 固定した `seed` を指定した場合、シリアル実行と並列実行で**完全に同一の統計結果**（AUC、カットオフ、感度、特異度、モデル選抜結果）が得られます。
+- **`parallel = "outer"`（または `ncvroc()` / `nested_sum_roc()` での `parallel = TRUE`）:** 外側交差検証フォールドをワーカー間で並列評価します。フォールド内の事前選択は逐次実行されます。
+- **`parallel = "chunks"`（または `roc_bruteforce()` / `exhaustive_sum_roc()` での `parallel = TRUE`）:** 大規模な組み合わせ探索空間（$O(\binom{M}{K})$ 通り）をチャンク単位でワーカー間に分散して並列評価します。
+- **`n_workers = NULL`（デフォルト）:** 利用可能な物理CPUコア数（`max(1L, parallel::detectCores(logical = FALSE) - 1L)`）からワーカー数を自動決定します。
+- **`n_workers = 4`:** ワーカー数を明示的に指定します。
+- **相互排他ルールの強制（二重並列化の禁止）:** Outer 並列と Chunk 並列は同時にネスト実行されず、CPU の過負荷を防ぎます。
+- **クラスタの永続再利用:** `nested_sum_roc(..., parallel = "chunks")` では、outer fold ループの開始時にクラスタを1回作成して全フォールドで再利用し、プロセス起動とDLLロードのオーバーヘッドを排除します。
+- **自動上限キャップ:** 実際のワーカー数は、タスク数、利用可能な物理コア数、およびCRANコア制限環境変数（`_R_CHECK_LIMIT_CORES_`）によって安全に自動上限調整されます。
+- **統計的再現性の保証:** 1-based の `.global_combo_index` による決定論的タイブレークにより、シリアル実行と**完全に同一のモデル順序および統計結果**が得られます。
 
-### 使用例
+### 使用例 1: 外側フォールド並列化（Outer Fold Parallelization）
 
 ```r
+# 中規模の項目数（例: M <= 25）で外側交差検証フォールドを並列化
 result <- ncvroc(
   data          = analysis_dat,
   outcome       = y,
@@ -736,9 +741,23 @@ result <- ncvroc(
   outer_k       = 5,
   inner_k       = 4,
   outer_repeats = 5,
-  parallel      = TRUE,
+  parallel      = "outer",   # または parallel = TRUE
   n_workers     = 4,
   seed          = 42
+)
+```
+
+### 使用例 2: チャンク単位の網羅探索並列化（Chunk-Level Parallelization）
+
+```r
+# 大規模な項目数（例: M >= 40、10万〜数百万通りの組み合わせ探索）でチャンク並列化
+result <- roc_bruteforce(
+  data       = analysis_dat,
+  outcome    = y,
+  items      = Q1:Q40,
+  item_count = "<=4",
+  parallel   = "chunks",  # または parallel = TRUE
+  n_workers  = 4
 )
 ```
 

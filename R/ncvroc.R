@@ -285,7 +285,9 @@
                                         chunk_size,
                                         cache, cache_dir, building_dir,
                                         resolved_item_count,
-                                        function_name = "ncvroc") {
+                                        function_name = "ncvroc",
+                                        parallel = "none",
+                                        n_workers = NULL) {
   total_combos <- .count_total_combos(length(item_names), min_items, max_items)
   is_large <- total_combos > AUTO_MEMORY_LIMIT
 
@@ -499,33 +501,55 @@
       chunk_dir <- .make_chunk_dir(chunk_base_dir)
     }
 
-    chunk_start <- 0.0
-    chunk_index <- 0L
-    first_chunk <- NULL
-
-    while (chunk_start < total_combos) {
-      chunk <- exhaustive_sum_roc(
-        data              = analysis_dat,
-        outcome           = outcome_name,
-        items             = item_names,
-        min_items         = min_items,
-        max_items         = max_items,
-        positive_label    = positive_label,
-        negative_label    = negative_label,
-        cutoff_method     = cutoff_method,
-        rank_by           = final_rank_by,
-        top_n             = NULL,
+    if (parallel == "chunks") {
+      y_bin <- ifelse(analysis_dat[[outcome_name]] == positive_label, 1L, 0L)
+      res_top <- .parallel_chunk_exhaustive(
+        x                  = analysis_dat,
+        y                  = y_bin,
+        items              = item_names,
+        min_items          = min_items,
+        max_items          = max_items,
+        cutoff_method      = cutoff_method,
+        rank_by            = final_rank_by,
+        top_n              = 100L,
         prefer_fewer_items = TRUE,
-        engine            = engine,
-        progress          = FALSE,
-        chunk_start       = chunk_start,
-        chunk_size        = chunk_size
+        engine             = engine,
+        chunk_size         = chunk_size,
+        n_workers          = n_workers,
+        save_rds           = TRUE,
+        chunk_dir          = chunk_dir,
+        cl                 = NULL
       )
-      .write_chunk_rds(chunk, chunk_dir, chunk_index)
-      if (is.null(first_chunk)) first_chunk <- chunk
+      first_chunk <- res_top
+    } else {
+      chunk_start <- 0.0
+      chunk_index <- 0L
+      first_chunk <- NULL
 
-      chunk_start <- chunk_start + chunk_size
-      chunk_index <- chunk_index + 1L
+      while (chunk_start < total_combos) {
+        chunk <- exhaustive_sum_roc(
+          data              = analysis_dat,
+          outcome           = outcome_name,
+          items             = item_names,
+          min_items         = min_items,
+          max_items         = max_items,
+          positive_label    = positive_label,
+          negative_label    = negative_label,
+          cutoff_method     = cutoff_method,
+          rank_by           = final_rank_by,
+          top_n             = NULL,
+          prefer_fewer_items = TRUE,
+          engine            = engine,
+          progress          = FALSE,
+          chunk_start       = chunk_start,
+          chunk_size        = chunk_size
+        )
+        .write_chunk_rds(chunk, chunk_dir, chunk_index)
+        if (is.null(first_chunk)) first_chunk <- chunk
+
+        chunk_start <- chunk_start + chunk_size
+        chunk_index <- chunk_index + 1L
+      }
     }
 
     return(list(
@@ -724,9 +748,11 @@ ncvroc <- function(data,
     stop("`conf_level` must be a single numeric value in (0, 1).", call. = FALSE)
   }
 
-  if (!is.logical(parallel) || length(parallel) != 1L || is.na(parallel)) {
-    stop("`parallel` must be TRUE or FALSE.", call. = FALSE)
-  }
+  parallel_mode <- .resolve_parallel_mode(
+    parallel,
+    context = "nested",
+    allowed = c("none", "outer", "chunks")
+  )
 
   if (!is.null(n_workers)) {
     if (!is.numeric(n_workers) || length(n_workers) != 1L ||
@@ -877,6 +903,8 @@ ncvroc <- function(data,
       dir.create(building_dir, recursive = TRUE, showWarnings = FALSE)
     }
 
+    final_parallel <- if (parallel_mode == "chunks") "chunks" else "none"
+
     eval_result <- .evaluate_final_exhaustive(
       analysis_dat       = analysis_dat,
       outcome_name       = outcome_name,
@@ -896,7 +924,10 @@ ncvroc <- function(data,
       cache              = cache,
       cache_dir          = cache_dir,
       building_dir       = building_dir,
-      resolved_item_count = resolved_item_count
+      resolved_item_count = resolved_item_count,
+      function_name       = "ncvroc",
+      parallel            = final_parallel,
+      n_workers           = n_workers
     )
 
     final_exhaustive_ranked <- eval_result$final_exhaustive_ranked

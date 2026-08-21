@@ -2,7 +2,7 @@
 % Please edit documentation in R/chunked_storage.R
 \name{.write_chunk_rds}
 \alias{.write_chunk_rds}
-\title{Write a single chunk as an RDS file}
+\title{Write a single chunk as an RDS file atomically}
 \usage{
 .write_chunk_rds(chunk, chunk_dir, chunk_index)
 }
@@ -14,9 +14,9 @@
 \item{chunk_index}{Integer, zero-based chunk index.}
 }
 \value{
-Invisible NULL.
+Character, path to the written RDS file.
 }
 \description{
-Write a single chunk as an RDS file
+Write a single chunk as an RDS file atomically
 }
 \keyword{internal}

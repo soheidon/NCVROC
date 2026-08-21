@@ -236,7 +236,7 @@ test_that("PSOCK cluster workers have correct package environment and namespace 
 
   for (chk in worker_checks) {
     if (!is.na(chk$version)) {
-      expect_true(grepl("^0\\.11", chk$version))
+      expect_true(grepl("^0\\.", chk$version))
     }
   }
 

@@ -388,7 +388,8 @@
                                         engine,
                                         seed,
                                         progress,
-                                        verbose) {
+                                        verbose,
+                                        cl_chunk = NULL) {
   test_idx  <- outer_folds[[i]]
   train_idx <- setdiff(seq_len(n_total), test_idx)
   fold_name <- names(outer_folds)[i]
@@ -399,7 +400,23 @@
   }
 
   # Step 1: exhaustive search on outer train ONLY
-  if (use_streaming_ncv) {
+  if (!is.null(cl_chunk)) {
+    candidates <- .parallel_chunk_exhaustive(
+      x                  = full_data[train_idx, items, drop = FALSE],
+      y                  = y[train_idx],
+      items              = items,
+      min_items          = min_items,
+      max_items          = max_items,
+      cutoff_method      = cutoff_method,
+      rank_by            = preselect_by,
+      top_n              = preselect_top_n,
+      prefer_fewer_items = TRUE,
+      engine             = engine,
+      save_rds           = FALSE,
+      chunk_dir          = NULL,
+      cl                 = cl_chunk
+    )
+  } else if (use_streaming_ncv) {
     candidates <- .streaming_top_n_exhaustive(
       data             = full_data[train_idx, , drop = FALSE],
       outcome          = outcome_col,
@@ -540,20 +557,23 @@
   as.integer(max_cores)
 }
 
-#' Resolve worker count for nested CV parallelization
+#' Resolve worker count for parallelization
 #'
 #' @noRd
-.resolve_n_workers <- function(parallel, n_workers, n_folds) {
-  if (!isTRUE(parallel)) {
+.resolve_n_workers <- function(parallel = TRUE, n_workers = NULL, n_folds = NULL, max_tasks = NULL) {
+  if (isFALSE(parallel) || identical(parallel, "none")) {
     return(1L)
   }
 
+  tasks <- if (!is.null(n_folds)) n_folds else max_tasks
   max_cores <- .get_max_workers()
 
   if (is.null(n_workers)) {
-    workers <- max(1L, min(as.integer(max_cores) - 1L, as.integer(n_folds)))
+    limit <- if (!is.null(tasks)) min(as.integer(max_cores) - 1L, as.integer(tasks)) else as.integer(max_cores) - 1L
+    workers <- max(1L, limit)
   } else {
-    workers <- min(as.integer(n_workers), as.integer(n_folds), as.integer(max_cores))
+    limit <- if (!is.null(tasks)) min(as.integer(n_workers), as.integer(tasks), as.integer(max_cores)) else min(as.integer(n_workers), as.integer(max_cores))
+    workers <- max(1L, limit)
   }
 
   max(1L, as.integer(workers))
@@ -715,10 +735,12 @@ nested_sum_roc <- function(data,
             call. = FALSE)
   }
 
-  # ---- Parallel Argument Validation ----
-  if (!is.logical(parallel) || length(parallel) != 1 || is.na(parallel)) {
-    stop("`parallel` must be TRUE or FALSE.", call. = FALSE)
-  }
+  # ---- Parallel Mode Resolution ----
+  parallel_mode <- .resolve_parallel_mode(
+    parallel,
+    context = "nested",
+    allowed = c("none", "outer", "chunks")
+  )
 
   if (!is.null(n_workers)) {
     if (!is.numeric(n_workers) || length(n_workers) != 1 ||
@@ -744,8 +766,13 @@ nested_sum_roc <- function(data,
   n_folds <- length(outer_folds)
 
   # ---- Resolve parallel execution ----
-  actual_workers <- .resolve_n_workers(parallel, n_workers, n_folds)
-  run_parallel <- isTRUE(parallel) && actual_workers > 1L
+  actual_workers <- if (parallel_mode == "outer") {
+    .resolve_n_workers(n_workers, max_tasks = n_folds)
+  } else if (parallel_mode == "chunks") {
+    .resolve_n_workers(n_workers)
+  } else {
+    1L
+  }
 
   # ---- Determine if nested CV needs streaming ----
   total_ncv_combos <- .count_total_combos(length(items), min_items, max_items)
@@ -763,14 +790,14 @@ nested_sum_roc <- function(data,
       "Nested CV: ", outer_k, "-fold outer CV x ", outer_repeats, " repeat(s), ",
       inner_k, "-fold inner CV"
     )
-    if (run_parallel) {
-      msg <- paste0(msg, " (parallel: ", actual_workers, " workers)")
+    if (parallel_mode != "none" && actual_workers > 1L) {
+      msg <- paste0(msg, " (parallel: ", parallel_mode, ", ", actual_workers, " workers)")
     }
     message(msg)
   }
 
-  # ---- Main loop over outer folds (Serial or Parallel) ----
-  if (run_parallel) {
+  # ---- Main loop over outer folds (Serial, Outer-Parallel, or Chunks-Parallel) ----
+  if (parallel_mode == "outer" && actual_workers > 1L) {
     cl <- parallel::makePSOCKcluster(actual_workers)
     on.exit(parallel::stopCluster(cl), add = TRUE)
 
@@ -813,11 +840,63 @@ nested_sum_roc <- function(data,
         engine              = engine,
         seed                = seed,
         progress            = FALSE,
-        verbose             = FALSE
+        verbose             = FALSE,
+        cl_chunk            = NULL
       )
     }
 
     per_fold <- parallel::parLapply(cl, seq_len(n_folds), fold_worker)
+
+  } else if (parallel_mode == "chunks" && actual_workers > 1L) {
+    # Persistent chunk cluster reused across all outer folds
+    cl_chunk <- parallel::makePSOCKcluster(actual_workers)
+    on.exit(parallel::stopCluster(cl_chunk), add = TRUE)
+
+    lib_paths <- .libPaths()
+    parallel::clusterExport(cl_chunk, "lib_paths", envir = environment())
+    parallel::clusterEvalQ(cl_chunk, {
+      .libPaths(lib_paths)
+      if (requireNamespace("NCVROC", quietly = TRUE)) {
+        try(library(NCVROC), silent = TRUE)
+      }
+      NULL
+    })
+
+    ns <- asNamespace("NCVROC")
+    available_chunk_syms <- intersect(.CHUNK_WORKER_EXPORT_SYMBOLS, ls(ns, all.names = TRUE))
+    if (length(available_chunk_syms) > 0) {
+      parallel::clusterExport(cl_chunk, varlist = available_chunk_syms, envir = ns)
+    }
+
+    per_fold <- vector("list", n_folds)
+    for (i in seq_len(n_folds)) {
+      per_fold[[i]] <- .evaluate_single_outer_fold(
+        i                   = i,
+        outer_folds         = outer_folds,
+        full_data           = full_data,
+        y                   = y,
+        n_total             = n_total,
+        items               = items,
+        outcome_col         = outcome_col,
+        min_items           = min_items,
+        max_items           = max_items,
+        positive_label      = positive_label,
+        negative_label      = negative_label,
+        cutoff_method       = cutoff_method,
+        preselect_top_n     = preselect_top_n,
+        preselect_by        = preselect_by,
+        selection_criterion = selection_criterion,
+        inner_k             = inner_k,
+        inner_repeats       = inner_repeats,
+        use_streaming_ncv   = use_streaming_ncv,
+        engine              = engine,
+        seed                = seed,
+        progress            = progress && verbose,
+        verbose             = verbose,
+        cl_chunk            = cl_chunk
+      )
+    }
+
   } else {
     per_fold <- vector("list", n_folds)
     for (i in seq_len(n_folds)) {
@@ -843,7 +922,8 @@ nested_sum_roc <- function(data,
         engine              = engine,
         seed                = seed,
         progress            = progress && verbose,
-        verbose             = verbose
+        verbose             = verbose,
+        cl_chunk            = NULL
       )
     }
   }

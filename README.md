@@ -747,17 +747,22 @@ Sensitivity: 1.000 [0.692, 1.000]
 
 ## Parallel execution
 
-`NCVROC` supports **outer-fold parallelization** across multi-core CPUs using socket clusters (`parallel::makePSOCKcluster`), enabling scalable computation across Windows, macOS, and Linux:
+`NCVROC` supports multi-core parallelization using socket clusters (`parallel::makePSOCKcluster`) across Windows, macOS, and Linux:
 
 - **`parallel = FALSE` (Default):** Executes sequentially in a single process, ensuring predictable CPU usage and 100% backward compatibility.
-- **`parallel = TRUE, n_workers = NULL` (Auto-detection):** Automatically uses available physical cores (`max(1L, parallel::detectCores(logical = FALSE) - 1L)`).
-- **`parallel = TRUE, n_workers = 4`:** Uses an explicit worker count.
-- **Automatic capping:** The effective number of workers is safely capped by the outer fold count, available CPU cores, and CRAN core limits (`_R_CHECK_LIMIT_CORES_`).
-- **Guaranteed statistical equivalence:** Serial and parallel execution produce identical statistical results when using a fixed `seed`.
+- **`parallel = "outer"` (or `parallel = TRUE` in `ncvroc()` / `nested_sum_roc()`):** Evaluates outer cross-validation folds concurrently across workers. Preselection within each fold runs sequentially.
+- **`parallel = "chunks"` (or `parallel = TRUE` in `roc_bruteforce()` / `exhaustive_sum_roc()`):** Evaluates large combinatorial search spaces ($O(\binom{M}{K})$ candidate models) in parallel across chunks.
+- **`n_workers = NULL` (Default):** Automatically detects available physical cores (`max(1L, parallel::detectCores(logical = FALSE) - 1L)`).
+- **`n_workers = 4`:** Uses an explicit worker count.
+- **Strict mutual exclusivity (no nested parallelism):** Outer parallel and Chunk parallel are never combined concurrently.
+- **Persistent cluster reuse:** In `nested_sum_roc(..., parallel = "chunks")`, a single PSOCK cluster is initialized once and reused across all outer CV folds, eliminating repeated cluster startup/teardown overhead.
+- **Automatic capping:** The effective number of workers is safely capped by task count, available CPU cores, and CRAN core limits (`_R_CHECK_LIMIT_CORES_`).
+- **Guaranteed statistical equivalence:** Serial and parallel execution produce identical rankings and metrics via deterministic 1-based `.global_combo_index` tie-breaking.
 
-### Example
+### Example: Outer Fold Parallelization
 
 ```r
+# Parallelize outer CV folds (ideal for moderate item counts, e.g. M <= 25)
 result <- ncvroc(
   data          = analysis_dat,
   outcome       = y,
@@ -766,9 +771,23 @@ result <- ncvroc(
   outer_k       = 5,
   inner_k       = 4,
   outer_repeats = 5,
-  parallel      = TRUE,
+  parallel      = "outer",   # or parallel = TRUE
   n_workers     = 4,
   seed          = 42
+)
+```
+
+### Example: Chunk-Level Parallel Exhaustive Search
+
+```r
+# Parallelize combinatorial candidate chunks (ideal for large item pools, e.g. M >= 40)
+result <- roc_bruteforce(
+  data       = analysis_dat,
+  outcome    = y,
+  items      = Q1:Q40,
+  item_count = "<=4",
+  parallel   = "chunks",  # or parallel = TRUE
+  n_workers  = 4
 )
 ```
 

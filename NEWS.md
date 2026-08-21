@@ -1,3 +1,18 @@
+# NCVROC 0.12.0
+
+## New features
+
+- **Chunk-level parallelization for combinatorial exhaustive search**:
+  - Added support for `parallel = "chunks"` across `exhaustive_sum_roc()`, `roc_bruteforce()`, `roc_bf()`, `ncvroc()`, `nested_sum_roc()`, `ncvroc_config()`, and `run_ncvroc()`.
+  - Enables evaluating large combinatorial spaces ($O(\binom{M}{K})$ candidate models) in parallel across socket workers (`parallel::makePSOCKcluster`).
+  - **Persistent cluster reuse**: In `nested_sum_roc(..., parallel = "chunks")`, a single PSOCK cluster is created once outside the outer CV loop and reused across all outer folds, eliminating repeated cluster startup/teardown overhead.
+  - **One-time per-worker serialization**: Large immutable datasets and search parameters are exported to workers once during cluster setup rather than re-serialized on every chunk task.
+  - **Deterministic exact tie-breaking**: Candidates track their 1-based global combination enumeration index (`.global_combo_index`), guaranteeing identical ranking and selection to serial execution even across chunk boundaries.
+  - **Atomic RDS writing**: Chunked RDS files are written to temporary files and atomically renamed within the same directory.
+  - **Context-aware parallel mode resolution**: `parallel = TRUE` resolves to `"outer"` in nested CV functions (`ncvroc`, `nested_sum_roc`) and `"chunks"` in exhaustive search functions (`roc_bruteforce`, `exhaustive_sum_roc`), while `parallel = FALSE` remains the default.
+
+---
+
 # NCVROC 0.11.1
 
 ## New features

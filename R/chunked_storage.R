@@ -32,17 +32,26 @@
   chunk_dir
 }
 
-#' Write a single chunk as an RDS file
+#' Write a single chunk as an RDS file atomically
 #'
 #' @param chunk data.frame, one chunk of candidate results.
 #' @param chunk_dir Character, directory to write into.
 #' @param chunk_index Integer, zero-based chunk index.
-#' @return Invisible NULL.
+#' @return Character, path to the written RDS file.
 #' @keywords internal
 .write_chunk_rds <- function(chunk, chunk_dir, chunk_index) {
   filename <- sprintf("chunk_%05d.rds", chunk_index)
-  saveRDS(chunk, file.path(chunk_dir, filename))
-  invisible(NULL)
+  final_path <- file.path(chunk_dir, filename)
+  temp_path  <- file.path(chunk_dir, sprintf("chunk_%05d.rds.tmp-%d-%d", chunk_index, Sys.getpid(), as.integer(stats::runif(1, 1000, 9999))))
+
+  saveRDS(chunk, temp_path)
+  success <- file.rename(temp_path, final_path)
+  if (!success) {
+    # Fallback if rename fails across locked files
+    saveRDS(chunk, final_path)
+    unlink(temp_path)
+  }
+  invisible(final_path)
 }
 
 #' Read a single chunk RDS file
