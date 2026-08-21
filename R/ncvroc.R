@@ -602,8 +602,16 @@
 #'   sampling uncertainty for the fixed model on the full dataset, not
 #'   cross-validated uncertainty.
 #' @param conf_level Numeric confidence level in (0, 1), default 0.95.
+#' @param parallel Logical. If `TRUE`, evaluate outer cross-validation folds in
+#'   parallel using socket workers (\code{\link[parallel]{makePSOCKcluster}}).
+#'   Default `FALSE`.
+#' @param n_workers Integer, number of worker processes for parallel execution,
+#'   or `NULL` (default) for automatic detection. Ignored when `parallel = FALSE`.
+#'   The effective worker count is capped by outer fold count, available CPU
+#'   cores, and CRAN core limits (\code{_R_CHECK_LIMIT_CORES_}).
 #' @param item_count Concise model-size specification: `"==4"` (exactly 4
 #'   items), `"<=4"` (up to 4 items), or `"2:4"` (2 through 4 items).
+#'   Cannot be combined with `min_items` or `max_items`. Default NULL.
 #' @details
 #' When `final_search = TRUE` and `ci = TRUE`, confidence intervals are
 #' attached to `final_model` and `final_candidates`:
@@ -693,6 +701,8 @@ ncvroc <- function(data,
                    return = "full",
                    ci = TRUE,
                    conf_level = 0.95,
+                   parallel = FALSE,
+                   n_workers = NULL,
                    item_count = NULL) {
 
   # ---- 1. Capture & resolve ----
@@ -714,6 +724,18 @@ ncvroc <- function(data,
     stop("`conf_level` must be a single numeric value in (0, 1).", call. = FALSE)
   }
 
+  if (!is.logical(parallel) || length(parallel) != 1L || is.na(parallel)) {
+    stop("`parallel` must be TRUE or FALSE.", call. = FALSE)
+  }
+
+  if (!is.null(n_workers)) {
+    if (!is.numeric(n_workers) || length(n_workers) != 1L ||
+        is.na(n_workers) || n_workers <= 0 || n_workers != as.integer(n_workers)) {
+      stop("`n_workers` must be a positive integer or NULL.", call. = FALSE)
+    }
+    n_workers <- as.integer(n_workers)
+  }
+
   if (!is.null(results_name) &&
       (length(results_name) != 1L || !is.character(results_name) ||
        is.na(results_name) || !nzchar(trimws(results_name)))) {
@@ -728,22 +750,13 @@ ncvroc <- function(data,
          call. = FALSE)
   }
 
-  if (!is.numeric(chunk_size) || length(chunk_size) != 1L || chunk_size <= 0L ||
-      chunk_size != floor(chunk_size)) {
+  if (chunk_size <= 0 || chunk_size != as.integer(chunk_size)) {
     stop("chunk_size must be a positive integer.", call. = FALSE)
   }
   chunk_size <- as.integer(chunk_size)
 
-  # ---- 1b. Cache validation ----
-  if (cache != "off" && is.null(cache_dir)) {
-    stop("cache_dir must be set when cache = \"", cache, "\".", call. = FALSE)
-  }
-
-  if (!is.null(cache_dir)) {
-    if (length(cache_dir) != 1L || !is.character(cache_dir) ||
-        is.na(cache_dir) || !nzchar(trimws(cache_dir))) {
-      stop("cache_dir must be a single non-empty path.", call. = FALSE)
-    }
+  if (cache != "off" && (is.null(cache_dir) || !nzchar(trimws(cache_dir)))) {
+    stop("cache_dir must be specified when cache is not 'off'.", call. = FALSE)
   }
 
   # ---- 1c. item_count validation and resolution ----
@@ -789,6 +802,8 @@ ncvroc <- function(data,
     negative_label      = negative_label,
     stratified          = stratified,
     engine              = engine,
+    parallel            = parallel,
+    n_workers           = n_workers,
     chunk_size          = chunk_size,
     cache               = cache,
     cache_dir           = cache_dir

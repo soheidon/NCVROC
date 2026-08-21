@@ -1,3 +1,15 @@
+# NCVROC 0.11.1
+
+## New features
+
+- **Outer fold parallelization**:
+  - Added `parallel` and `n_workers` arguments to `nested_sum_roc()`, `ncvroc()`, `ncvroc_config()`, and `run_ncvroc()`.
+  - Enables concurrent evaluation of outer cross-validation folds across multi-core CPUs using socket clusters (`parallel::makePSOCKcluster`).
+  - Automatic core detection (`n_workers = NULL`) respecting system cores, outer fold count, and CRAN check limits (`_R_CHECK_LIMIT_CORES_`).
+  - Strict statistical equivalence to serial execution guaranteed by stratified fold generation and deterministic per-fold seed offsetting.
+
+---
+
 # NCVROC 0.11.0
 
 ## New features

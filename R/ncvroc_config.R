@@ -27,7 +27,14 @@
 #' @param positive_label Value for positive class (default 1).
 #' @param negative_label Value for negative class (default 0).
 #' @param stratified Logical, use stratified CV folds (default TRUE).
-#' @param engine Computation engine: `"R"` or `"Rcpp"` (default `"Rcpp"`).
+#' @param engine Computation engine: `"Rcpp"` or `"R"` (default `"Rcpp"`).
+#' @param parallel Logical. If `TRUE`, evaluate outer CV folds in parallel
+#'   using socket workers (\code{\link[parallel]{makePSOCKcluster}}).
+#'   Default `FALSE`.
+#' @param n_workers Integer, number of worker processes for parallel execution,
+#'   or `NULL` (default) for automatic detection. Ignored when `parallel = FALSE`.
+#'   The effective worker count is capped by outer fold count, available CPU
+#'   cores, and CRAN core limits (\code{_R_CHECK_LIMIT_CORES_}).
 #' @param chunk_size Integer, combinations per chunk (default 200000).
 #' @param cache One of `"off"`, `"reuse"`, or `"refresh"` (default `"off"`).
 #' @param cache_dir Directory for caching, or NULL.
@@ -35,7 +42,8 @@
 #'   items), `"<=4"` (up to 4 items), or `"2:4"` (2 through 4 items).
 #'   Cannot be combined with `min_items` or `max_items`. Default NULL.
 #'
-#' @return A list of class `"ncvroc_config"`.
+#' @return A list of class `"ncvroc_config"`, containing all configuration settings
+#'   including `parallel` and `n_workers`.
 #' @export
 #'
 #' @examples
@@ -58,6 +66,8 @@ ncvroc_config <- function(outcome,
                           negative_label = 0,
                           stratified = TRUE,
                           engine = c("Rcpp", "R"),
+                          parallel = FALSE,
+                          n_workers = NULL,
                           chunk_size = 200000L,
                           cache = c("off", "reuse", "refresh"),
                           cache_dir = NULL,
@@ -129,6 +139,8 @@ ncvroc_config <- function(outcome,
     negative_label      = negative_label,
     stratified          = stratified,
     engine              = engine,
+    parallel            = parallel,
+    n_workers           = n_workers,
     chunk_size          = chunk_size,
     cache               = cache,
     cache_dir           = cache_dir
@@ -187,6 +199,10 @@ print.ncvroc_config <- function(x, ...) {
       "| negative =", x$negative_label, "\n")
   cat("Stratified:      ", x$stratified, "\n")
   cat("Engine:          ", x$engine, "\n")
+  if (isTRUE(x$parallel)) {
+    workers_str <- if (is.null(x$n_workers)) "auto" else as.character(x$n_workers)
+    cat("Parallel:         TRUE (workers: ", workers_str, ")\n", sep = "")
+  }
   cat("Chunk size:      ", format(x$chunk_size, big.mark = ",", scientific = FALSE), "\n")
   cat("Cache:           ", x$cache, "\n")
   if (!is.null(x$cache_dir)) {

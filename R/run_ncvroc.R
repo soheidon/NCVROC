@@ -6,7 +6,8 @@
 #' Run nested CV analysis from an NCVROC configuration
 #'
 #' Thin wrapper around `nested_sum_roc()` that reads all parameters from
-#' a configuration object created by `ncvroc_config()`.
+#' a configuration object created by `ncvroc_config()`, including parallel
+#' execution options (`parallel`, `n_workers`).
 #'
 #' @param data A data.frame containing outcome and item columns.
 #' @param items Character vector of candidate item names.
@@ -79,6 +80,8 @@ run_ncvroc <- function(data,
     stratified          = config$stratified,
     seed                = seed,
     engine              = config$engine,
+    parallel            = isTRUE(config$parallel),
+    n_workers           = config$n_workers,
     progress            = progress,
     verbose             = verbose,
     return              = return
