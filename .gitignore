@@ -37,3 +37,4 @@ NCVROC_*.pdf
 # directory
 Release/
 .Release/
+.lib/

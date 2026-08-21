@@ -1,7 +1,7 @@
 Package: NCVROC
 Type: Package
 Title: Nested Cross-Validation for Combinatorial ROC-Based Selection of Item-Set Scores
-Version: 0.12.0
+Version: 0.13.0
 Authors@R:
     person(
         given = "Sohei",
@@ -27,9 +27,12 @@ Imports:
     utils,
     graphics,
     tools,
-    parallel
+    parallel,
+    RcppParallel
 LinkingTo:
-    Rcpp
+    Rcpp,
+    RcppParallel
+SystemRequirements: GNU make
 Suggests:
     testthat (>= 3.0.0),
     knitr,

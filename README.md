@@ -1,12 +1,22 @@
 [English](README.md) | [日本語](https://github.com/soheidon/NCVROC/blob/master/docs/reference-ja.md)
 
-# NCVROC 0.12.0
+# NCVROC 0.13.0
 
 **N**ested **C**ross-**V**alidation for Combinatorial **ROC**-based Selection of Item-set Scores
 
 Develops short item-based screening scales through combinatorial item-set selection, ROC-based evaluation, and nested cross-validation. For psychological/clinical questionnaire data, identifies which small subset of items best predicts a binary outcome using simple sum scores.
 
 Assume higher sum scores indicate higher probability of a positive outcome. Users must reverse-code items beforehand.
+
+---
+
+## What's new in NCVROC 0.13.0
+
+- **C++ Shared-Memory Multi-Threading (`parallel = "threads"`)**: Evaluates combinatorial candidate search spaces in parallel directly within the main R process using native C++ threads via `RcppParallel`.
+- **Zero Socket Startup Overhead**: Avoids socket process initialization, IPC serialization, and process-level data duplication.
+- **Deterministic Exact Results**: Produces identical results and rankings to single-threaded serial execution across all evaluation metrics and cutoff selection methods.
+- **Single-Level Concurrency Guarantees**: Nested cross-validation executes outer folds serially while accelerating inner search with C++ threads, completely preventing nested thread explosion or CPU oversubscription.
+- **Cross-Platform Portability**: Built on `RcppParallel` and verified with clean compilation and full test suites under Windows.
 
 ---
 
@@ -239,6 +249,40 @@ result2 <- ncvroc(
 
 **Atomic RDS Storage Guarantee**: Chunk RDS files are written to temporary files (`.tmp`) within the target directory and atomically renamed to `.rds`. Incomplete writes from interrupted processes are never treated as valid final chunk files, and stale temporary files are ignored.
 
+### Parallel computing
+
+NCVROC provides three distinct parallelization modes to suit different analysis scales and workflows:
+
+| Mode | `parallel` | Description | Best For |
+|---|---|---|---|
+| **C++ Multi-Threading** | `"threads"` | Evaluates combinations in parallel within the main R process using native C++ threads via RcppParallel (shared memory, zero socket startup). | High-speed in-memory exhaustive search (`roc_bruteforce()`, `exhaustive_sum_roc()`, or `ncvroc()` with thorough/exhaustive search). |
+| **Outer Fold Parallel** | `"outer"` (or `TRUE` in nested CV) | Evaluates outer cross-validation folds in parallel using PSOCK socket worker processes. | Standard nested CV workflows across multiple folds (`ncvroc()`, `nested_sum_roc()`). |
+| **Chunk Process Parallel** | `"chunks"` (or `TRUE` in exhaustive search) | Evaluates combination chunks across persistent PSOCK socket worker processes. | Massive searches using disk-backed chunked storage, caching, and process isolation. |
+
+```r
+# High-speed in-memory C++ multi-threading:
+result <- roc_bruteforce(
+  data       = d,
+  outcome    = y,
+  items      = Q1:Q10,
+  max_items  = 4,
+  parallel   = "threads",
+  n_workers  = 4
+)
+
+# Parallel outer cross-validation folds:
+result <- ncvroc(
+  data       = d,
+  outcome    = y,
+  items      = Q1:Q10,
+  max_items  = 3,
+  parallel   = "outer",
+  n_workers  = 4
+)
+```
+
+**Backward Compatibility**: Specifying `parallel = TRUE` automatically maps to `"outer"` in nested cross-validation functions (`ncvroc()`, `nested_sum_roc()`) and to `"chunks"` in exhaustive search functions (`roc_bruteforce()`, `exhaustive_sum_roc()`).
+
 ### Chunk size
 
 The `chunk_size` parameter (default `200000`) controls how many combinations are
@@ -343,15 +387,13 @@ ncvroc(
   results_storage   = c("auto", "memory", "rds", "none"),
   results_name      = NULL,
   results_dir       = NULL,
-  save_results      = FALSE,
-  output_dir        = ".",
-  progress          = TRUE,
-  verbose           = TRUE,
   return            = "full",
   item_count        = NULL,
   chunk_size        = 200000L,
   cache             = c("off", "reuse", "refresh"),
-  cache_dir         = NULL
+  cache_dir         = NULL,
+  parallel          = FALSE,
+  n_workers         = NULL
 )
 ```
 
@@ -427,7 +469,9 @@ roc_bruteforce(
   item_count       = NULL,
   chunk_size       = 200000L,
   cache            = c("off", "reuse", "refresh"),
-  cache_dir        = NULL
+  cache_dir        = NULL,
+  parallel         = FALSE,
+  n_workers        = NULL
 )
 ```
 

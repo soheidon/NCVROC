@@ -18,6 +18,8 @@ fit_final_sum_scale(
   ci = TRUE,
   conf_level = 0.95,
   engine = c("R", "Rcpp"),
+  parallel = FALSE,
+  n_workers = NULL,
   progress = TRUE
 )
 }
@@ -50,6 +52,13 @@ AUC (DeLong) and classification metrics (Clopper-Pearson exact binomial).}
 \item{conf_level}{Numeric confidence level in (0, 1), default 0.95.}
 
 \item{engine}{Character, computation engine. `"R"` (default) or `"Rcpp"`.}
+
+\item{parallel}{Logical or character. If `TRUE` or `"chunks"`, evaluate chunks in
+parallel across socket workers. If `"threads"`, evaluate in parallel using
+C++ multi-threading within the current R process via RcppParallel. Default `FALSE`.}
+
+\item{n_workers}{Integer, number of worker processes or threads, or `NULL` (default)
+for automatic detection. Ignored when `parallel = FALSE`.}
 
 \item{progress}{Logical, show progress bar? Default `TRUE`.}
 }

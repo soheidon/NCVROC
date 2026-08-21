@@ -55,7 +55,7 @@
   parallel_mode <- .resolve_parallel_mode(
     parallel,
     context = "exhaustive",
-    allowed = c("none", "chunks")
+    allowed = c("none", "chunks", "threads")
   )
 
   if (!is.null(n_workers)) {
@@ -280,9 +280,12 @@
 #'   `"specificity"`, or `"accuracy"`.
 #' @param top_n Number of top candidates to return (NULL for all, 0 for none).
 #' @param parallel Logical or character. If `TRUE` or `"chunks"`, evaluate
-#'   combination chunks in parallel across socket workers. Default `FALSE`.
-#' @param n_workers Integer, number of worker processes for parallel execution,
-#'   or `NULL` (default) for automatic detection. Ignored when `parallel = FALSE`.
+#'   combination chunks in parallel across socket workers. If `"threads"`,
+#'   evaluate combinations in parallel using C++ multi-threading within
+#'   the current R process via RcppParallel. Default `FALSE`.
+#' @param n_workers Integer, number of worker processes (for `"chunks"`) or
+#'   threads (for `"threads"`), or `NULL` (default) for automatic detection.
+#'   Ignored when `parallel = FALSE` or `"none"`.
 #' @param progress Logical, show progress bar (default `interactive()`).
 #' @param save_results Logical, write CSV outputs (default FALSE).
 #' @param output_dir Directory for saved CSVs (default `"."`).

@@ -9,3 +9,7 @@ evaluate_combos_cpp_chunk <- function(x, y, min_items, max_items, cutoff_method,
     .Call(`_NCVROC_evaluate_combos_cpp_chunk`, x, y, min_items, max_items, cutoff_method, chunk_start, chunk_size)
 }
 
+evaluate_combos_cpp_chunk_parallel <- function(x, y, min_items, max_items, cutoff_method, chunk_start, chunk_size, num_threads = -1L, grain_size = 1000L) {
+    .Call(`_NCVROC_evaluate_combos_cpp_chunk_parallel`, x, y, min_items, max_items, cutoff_method, chunk_start, chunk_size, num_threads, grain_size)
+}
+

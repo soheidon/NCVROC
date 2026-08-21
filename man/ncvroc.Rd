@@ -131,14 +131,19 @@ cross-validated uncertainty.}
 
 \item{conf_level}{Numeric confidence level in (0, 1), default 0.95.}
 
-\item{parallel}{Logical. If `TRUE`, evaluate outer cross-validation folds in
-parallel using socket workers (\code{\link[parallel]{makePSOCKcluster}}).
+\item{parallel}{Logical or character. If `TRUE` or `"outer"`, outer cross-validation
+folds are evaluated in parallel using socket workers (\code{\link[parallel]{makePSOCKcluster}}).
+If `"chunks"`, inner exhaustive searches are evaluated across persistent chunk socket
+workers. If `"threads"`, outer folds are evaluated serially while inner and final exhaustive
+searches use C++ multi-threading within the main R process via RcppParallel.
 Default `FALSE`.}
 
-\item{n_workers}{Integer, number of worker processes for parallel execution,
-or `NULL` (default) for automatic detection. Ignored when `parallel = FALSE`.
-The effective worker count is capped by outer fold count, available CPU
-cores, and CRAN core limits (\code{_R_CHECK_LIMIT_CORES_}).}
+\item{n_workers}{Integer, number of worker processes (for `"outer"` or `"chunks"`)
+or threads (for `"threads"`), or `NULL` (default) for automatic detection.
+Ignored when `parallel = FALSE` or `"none"`.
+The effective worker count is capped by available CPU cores and CRAN core limits
+(\code{_R_CHECK_LIMIT_CORES_}). For `"outer"`, it is additionally capped by the
+number of outer folds.}
 
 \item{item_count}{Concise model-size specification: `"==4"` (exactly 4
 items), `"<=4"` (up to 4 items), or `"2:4"` (2 through 4 items).

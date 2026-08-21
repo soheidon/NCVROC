@@ -28,13 +28,18 @@
 #' @param negative_label Value for negative class (default 0).
 #' @param stratified Logical, use stratified CV folds (default TRUE).
 #' @param engine Computation engine: `"Rcpp"` or `"R"` (default `"Rcpp"`).
-#' @param parallel Logical. If `TRUE`, evaluate outer CV folds in parallel
-#'   using socket workers (\code{\link[parallel]{makePSOCKcluster}}).
+#' @param parallel Logical or character. If `TRUE` or `"outer"`, evaluate outer CV
+#'   folds in parallel using socket workers (\code{\link[parallel]{makePSOCKcluster}}).
+#'   If `"chunks"`, inner exhaustive searches are evaluated across persistent chunk socket
+#'   workers. If `"threads"`, outer folds are evaluated serially while inner and final exhaustive
+#'   searches use C++ multi-threading within the main R process via RcppParallel.
 #'   Default `FALSE`.
-#' @param n_workers Integer, number of worker processes for parallel execution,
-#'   or `NULL` (default) for automatic detection. Ignored when `parallel = FALSE`.
-#'   The effective worker count is capped by outer fold count, available CPU
-#'   cores, and CRAN core limits (\code{_R_CHECK_LIMIT_CORES_}).
+#' @param n_workers Integer, number of worker processes (for `"outer"` or `"chunks"`)
+#'   or threads (for `"threads"`), or `NULL` (default) for automatic detection.
+#'   Ignored when `parallel = FALSE` or `"none"`.
+#'   The effective worker count is capped by available CPU cores and CRAN core limits
+#'   (\code{_R_CHECK_LIMIT_CORES_}). For `"outer"`, it is additionally capped by the
+#'   number of outer folds.
 #' @param chunk_size Integer, combinations per chunk (default 200000).
 #' @param cache One of `"off"`, `"reuse"`, or `"refresh"` (default `"off"`).
 #' @param cache_dir Directory for caching, or NULL.
@@ -76,6 +81,20 @@ ncvroc_config <- function(outcome,
   cutoff_method <- match.arg(cutoff_method)
   engine <- match.arg(engine)
   cache <- match.arg(cache)
+
+  parallel_mode <- .resolve_parallel_mode(
+    parallel,
+    context = "nested",
+    allowed = c("none", "outer", "chunks", "threads")
+  )
+
+  if (!is.null(n_workers)) {
+    if (!is.numeric(n_workers) || length(n_workers) != 1L ||
+        is.na(n_workers) || n_workers <= 0 || n_workers != as.integer(n_workers)) {
+      stop("`n_workers` must be a positive integer or NULL.", call. = FALSE)
+    }
+    n_workers <- as.integer(n_workers)
+  }
 
   if (!is.numeric(chunk_size) || length(chunk_size) != 1L || chunk_size <= 0L ||
       chunk_size != floor(chunk_size)) {
