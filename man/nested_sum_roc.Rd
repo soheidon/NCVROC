@@ -23,6 +23,8 @@ nested_sum_roc(
   stratified = TRUE,
   seed = NULL,
   engine = "R",
+  parallel = FALSE,
+  n_workers = NULL,
   progress = TRUE,
   verbose = TRUE,
   return = c("full", "summary"),
@@ -72,6 +74,17 @@ v0.1; values > 1 warn and are reset to 1.}
 \item{seed}{Integer, seed for reproducibility (default `NULL`).}
 
 \item{engine}{Character, computation engine. `"R"` (default) or `"Rcpp"`.}
+
+\item{parallel}{Logical. If `TRUE`, outer cross-validation folds are evaluated
+in parallel using socket workers (\code{\link[parallel]{makePSOCKcluster}}).
+Default `FALSE`.}
+
+\item{n_workers}{Integer, number of worker processes for parallel execution,
+or `NULL` (default) for automatic detection. Ignored when `parallel = FALSE`.
+When `parallel = TRUE` and `n_workers = NULL`, worker count defaults to
+\code{max(1L, parallel::detectCores(logical = FALSE) - 1L)}. The effective
+worker count is automatically capped by the number of outer folds, available
+CPU cores, and CRAN core limits (\code{_R_CHECK_LIMIT_CORES_}).}
 
 \item{progress}{Logical, show progress bars? Default `TRUE`.}
 

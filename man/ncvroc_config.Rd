@@ -22,6 +22,8 @@ ncvroc_config(
   negative_label = 0,
   stratified = TRUE,
   engine = c("Rcpp", "R"),
+  parallel = FALSE,
+  n_workers = NULL,
   chunk_size = 200000L,
   cache = c("off", "reuse", "refresh"),
   cache_dir = NULL,
@@ -63,7 +65,16 @@ to auto-set based on `mode`.}
 
 \item{stratified}{Logical, use stratified CV folds (default TRUE).}
 
-\item{engine}{Computation engine: `"R"` or `"Rcpp"` (default `"Rcpp"`).}
+\item{engine}{Computation engine: `"Rcpp"` or `"R"` (default `"Rcpp"`).}
+
+\item{parallel}{Logical. If `TRUE`, evaluate outer CV folds in parallel
+using socket workers (\code{\link[parallel]{makePSOCKcluster}}).
+Default `FALSE`.}
+
+\item{n_workers}{Integer, number of worker processes for parallel execution,
+or `NULL` (default) for automatic detection. Ignored when `parallel = FALSE`.
+The effective worker count is capped by outer fold count, available CPU
+cores, and CRAN core limits (\code{_R_CHECK_LIMIT_CORES_}).}
 
 \item{chunk_size}{Integer, combinations per chunk (default 200000).}
 
@@ -76,7 +87,8 @@ items), `"<=4"` (up to 4 items), or `"2:4"` (2 through 4 items).
 Cannot be combined with `min_items` or `max_items`. Default NULL.}
 }
 \value{
-A list of class `"ncvroc_config"`.
+A list of class `"ncvroc_config"`, containing all configuration settings
+  including `parallel` and `n_workers`.
 }
 \description{
 Bundles all analysis parameters into a single configuration object.

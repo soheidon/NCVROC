@@ -364,6 +364,201 @@
   best_so_far
 }
 
+#' Evaluate a single outer fold
+#'
+#' @noRd
+.evaluate_single_outer_fold <- function(i,
+                                        outer_folds,
+                                        full_data,
+                                        y,
+                                        n_total,
+                                        items,
+                                        outcome_col,
+                                        min_items,
+                                        max_items,
+                                        positive_label,
+                                        negative_label,
+                                        cutoff_method,
+                                        preselect_top_n,
+                                        preselect_by,
+                                        selection_criterion,
+                                        inner_k,
+                                        inner_repeats,
+                                        use_streaming_ncv,
+                                        engine,
+                                        seed,
+                                        progress,
+                                        verbose) {
+  test_idx  <- outer_folds[[i]]
+  train_idx <- setdiff(seq_len(n_total), test_idx)
+  fold_name <- names(outer_folds)[i]
+
+  if (verbose) {
+    message("Outer fold ", i, "/", length(outer_folds), " (", fold_name, "): ",
+            length(train_idx), " train, ", length(test_idx), " test")
+  }
+
+  # Step 1: exhaustive search on outer train ONLY
+  if (use_streaming_ncv) {
+    candidates <- .streaming_top_n_exhaustive(
+      data             = full_data[train_idx, , drop = FALSE],
+      outcome          = outcome_col,
+      items            = items,
+      min_items        = min_items,
+      max_items        = max_items,
+      positive_label   = positive_label,
+      negative_label   = negative_label,
+      cutoff_method    = cutoff_method,
+      rank_by          = preselect_by,
+      top_n            = preselect_top_n,
+      engine           = engine
+    )
+  } else {
+    candidates <- exhaustive_sum_roc(
+      data             = full_data[train_idx, , drop = FALSE],
+      outcome          = outcome_col,
+      items            = items,
+      min_items        = min_items,
+      max_items        = max_items,
+      positive_label   = positive_label,
+      negative_label   = negative_label,
+      cutoff_method    = cutoff_method,
+      rank_by          = preselect_by,
+      top_n            = NULL,
+      prefer_fewer_items = TRUE,
+      engine           = engine,
+      progress         = FALSE
+    )
+  }
+
+  # Step 2: pre-select top candidates
+  top_candidates <- .select_top_candidates(candidates, preselect_top_n, preselect_by)
+
+  if (verbose) {
+    message("  Pre-selected ", nrow(top_candidates), " candidate(s) for inner CV")
+  }
+
+  # Step 3: inner CV for each candidate
+  inner_seed <- if (!is.null(seed)) seed + i else NULL
+  inner_results <- .evaluate_candidates_inner_cv(
+    candidates_df  = top_candidates,
+    data           = full_data[train_idx, , drop = FALSE],
+    y              = y[train_idx],
+    inner_k        = inner_k,
+    inner_repeats  = as.integer(inner_repeats),
+    cutoff_method  = cutoff_method,
+    seed_offset    = inner_seed,
+    progress       = progress && verbose
+  )
+
+  # Step 4: select best model by inner CV criterion
+  criterion_col <- paste0("mean_", selection_criterion)
+  best_idx <- which.max(inner_results[[criterion_col]])
+  # Tie-break: highest mean_youden, then fewest items
+  if (length(best_idx) > 1) {
+    tie_scores <- inner_results$mean_youden[best_idx] -
+      inner_results$n_items[best_idx] * 0.001
+    best_idx <- best_idx[which.max(tie_scores)]
+  }
+  best_row <- inner_results[best_idx, ]
+
+  # Step 5: apply best model to outer test
+  test_result <- .apply_model_to_test(
+    itemset       = best_row$items,
+    data_train    = full_data[train_idx, , drop = FALSE],
+    y_train       = y[train_idx],
+    data_test     = full_data[test_idx, , drop = FALSE],
+    y_test        = y[test_idx],
+    cutoff_method = cutoff_method
+  )
+
+  # Map predictions row_index back to original row numbers
+  test_result$predictions$row_index <- test_idx
+
+  list(
+    outer_fold         = fold_name,
+    selected_items     = best_row$items,
+    n_items            = best_row$n_items,
+    inner_mean_auc     = best_row$mean_auc,
+    inner_mean_youden  = best_row$mean_youden,
+    auc                = test_result$auc,
+    sensitivity        = test_result$sensitivity,
+    specificity        = test_result$specificity,
+    youden             = test_result$youden,
+    accuracy           = test_result$accuracy,
+    ppv                = test_result$ppv,
+    npv                = test_result$npv,
+    cutoff             = test_result$cutoff,
+    predictions        = test_result$predictions
+  )
+}
+
+#' Symbols required by worker processes during outer-fold parallel execution
+#' @noRd
+.OUTER_WORKER_EXPORT_SYMBOLS <- c(
+  ".evaluate_single_outer_fold",
+  ".streaming_top_n_exhaustive",
+  ".select_top_candidates",
+  ".evaluate_candidates_inner_cv",
+  ".apply_model_to_test",
+  ".count_total_combos",
+  ".parse_itemset_string",
+  "exhaustive_sum_roc",
+  "validate_inputs",
+  "make_stratified_folds",
+  "roc_calc",
+  "compute_delong_auc_ci",
+  "compute_clopper_pearson_ci",
+  "fit_final_sum_scale",
+  "AUTO_MEMORY_LIMIT",
+  "DEFAULT_CHUNK_SIZE"
+)
+
+#' Get maximum allowable workers considering CRAN limits
+#'
+#' @noRd
+.get_max_workers <- function() {
+  max_cores <- parallel::detectCores(logical = FALSE)
+  if (is.na(max_cores) || max_cores < 1L) {
+    max_cores <- parallel::detectCores()
+    if (is.na(max_cores) || max_cores < 1L) max_cores <- 1L
+  }
+
+  cran_limit_raw <- Sys.getenv("_R_CHECK_LIMIT_CORES_", "")
+  if (nzchar(cran_limit_raw)) {
+    cran_limit_lower <- tolower(trimws(cran_limit_raw))
+    if (cran_limit_lower %in% c("true", "t", "warn")) {
+      max_cores <- min(max_cores, 2L)
+    } else {
+      parsed_num <- suppressWarnings(as.integer(cran_limit_lower))
+      if (!is.na(parsed_num) && parsed_num >= 1L) {
+        max_cores <- min(max_cores, parsed_num)
+      }
+    }
+  }
+
+  as.integer(max_cores)
+}
+
+#' Resolve worker count for nested CV parallelization
+#'
+#' @noRd
+.resolve_n_workers <- function(parallel, n_workers, n_folds) {
+  if (!isTRUE(parallel)) {
+    return(1L)
+  }
+
+  max_cores <- .get_max_workers()
+
+  if (is.null(n_workers)) {
+    workers <- max(1L, min(as.integer(max_cores) - 1L, as.integer(n_folds)))
+  } else {
+    workers <- min(as.integer(n_workers), as.integer(n_folds), as.integer(max_cores))
+  }
+
+  max(1L, as.integer(workers))
+}
+
 # ---- Main exported function ----
 
 #' Nested cross-validation for item-set score selection
@@ -402,6 +597,15 @@
 #' @param stratified Logical, use stratified folds? Must be `TRUE` in v0.1.
 #' @param seed Integer, seed for reproducibility (default `NULL`).
 #' @param engine Character, computation engine. `"R"` (default) or `"Rcpp"`.
+#' @param parallel Logical. If `TRUE`, outer cross-validation folds are evaluated
+#'   in parallel using socket workers (\code{\link[parallel]{makePSOCKcluster}}).
+#'   Default `FALSE`.
+#' @param n_workers Integer, number of worker processes for parallel execution,
+#'   or `NULL` (default) for automatic detection. Ignored when `parallel = FALSE`.
+#'   When `parallel = TRUE` and `n_workers = NULL`, worker count defaults to
+#'   \code{max(1L, parallel::detectCores(logical = FALSE) - 1L)}. The effective
+#'   worker count is automatically capped by the number of outer folds, available
+#'   CPU cores, and CRAN core limits (\code{_R_CHECK_LIMIT_CORES_}).
 #' @param progress Logical, show progress bars? Default `TRUE`.
 #' @param verbose Logical, print progress messages? Default `TRUE`.
 #' @param return Character, `"full"` (all details) or `"summary"` (summary
@@ -450,6 +654,8 @@ nested_sum_roc <- function(data,
                            stratified = TRUE,
                            seed = NULL,
                            engine = "R",
+                           parallel = FALSE,
+                           n_workers = NULL,
                            progress = TRUE,
                            verbose = TRUE,
                            return = c("full", "summary"),
@@ -509,6 +715,19 @@ nested_sum_roc <- function(data,
             call. = FALSE)
   }
 
+  # ---- Parallel Argument Validation ----
+  if (!is.logical(parallel) || length(parallel) != 1 || is.na(parallel)) {
+    stop("`parallel` must be TRUE or FALSE.", call. = FALSE)
+  }
+
+  if (!is.null(n_workers)) {
+    if (!is.numeric(n_workers) || length(n_workers) != 1 ||
+        is.na(n_workers) || n_workers <= 0 || n_workers != as.integer(n_workers)) {
+      stop("`n_workers` must be a positive integer or NULL.", call. = FALSE)
+    }
+    n_workers <- as.integer(n_workers)
+  }
+
   # ---- Validate inputs ----
   validated    <- validate_inputs(data, outcome, items, positive_label, negative_label)
   full_data    <- validated$data
@@ -524,6 +743,10 @@ nested_sum_roc <- function(data,
   )
   n_folds <- length(outer_folds)
 
+  # ---- Resolve parallel execution ----
+  actual_workers <- .resolve_n_workers(parallel, n_workers, n_folds)
+  run_parallel <- isTRUE(parallel) && actual_workers > 1L
+
   # ---- Determine if nested CV needs streaming ----
   total_ncv_combos <- .count_total_combos(length(items), min_items, max_items)
   use_streaming_ncv <- total_ncv_combos > AUTO_MEMORY_LIMIT
@@ -536,119 +759,93 @@ nested_sum_roc <- function(data,
   }
 
   if (verbose) {
-    message(
+    msg <- paste0(
       "Nested CV: ", outer_k, "-fold outer CV x ", outer_repeats, " repeat(s), ",
       inner_k, "-fold inner CV"
     )
+    if (run_parallel) {
+      msg <- paste0(msg, " (parallel: ", actual_workers, " workers)")
+    }
+    message(msg)
   }
 
-  # ---- Main loop over outer folds ----
-  per_fold <- vector("list", n_folds)
+  # ---- Main loop over outer folds (Serial or Parallel) ----
+  if (run_parallel) {
+    cl <- parallel::makePSOCKcluster(actual_workers)
+    on.exit(parallel::stopCluster(cl), add = TRUE)
 
-  for (i in seq_len(n_folds)) {
-    test_idx  <- outer_folds[[i]]
-    train_idx <- setdiff(seq_len(n_total), test_idx)
-    fold_name <- names(outer_folds)[i]
+    # Sync .libPaths and load NCVROC on workers
+    lib_paths <- .libPaths()
+    parallel::clusterExport(cl, "lib_paths", envir = environment())
+    parallel::clusterEvalQ(cl, {
+      .libPaths(lib_paths)
+      if (requireNamespace("NCVROC", quietly = TRUE)) {
+        try(library(NCVROC), silent = TRUE)
+      }
+      NULL
+    })
 
-    if (verbose) {
-      message("Outer fold ", i, "/", n_folds, " (", fold_name, "): ",
-              length(train_idx), " train, ", length(test_idx), " test")
-    }
+    # Export required namespace functions and internal helpers to workers
+    ns <- asNamespace("NCVROC")
+    available_symbols <- intersect(.OUTER_WORKER_EXPORT_SYMBOLS, ls(ns, all.names = TRUE))
+    parallel::clusterExport(cl, varlist = available_symbols, envir = ns)
 
-    # Step 1: exhaustive search on outer train ONLY
-    if (use_streaming_ncv) {
-      candidates <- .streaming_top_n_exhaustive(
-        data             = full_data[train_idx, , drop = FALSE],
-        outcome          = outcome_col,
-        items            = items,
-        min_items        = min_items,
-        max_items        = max_items,
-        positive_label   = positive_label,
-        negative_label   = negative_label,
-        cutoff_method    = cutoff_method,
-        rank_by          = preselect_by,
-        top_n            = preselect_top_n,
-        engine           = engine
+    fold_worker <- function(i) {
+      .evaluate_single_outer_fold(
+        i                   = i,
+        outer_folds         = outer_folds,
+        full_data           = full_data,
+        y                   = y,
+        n_total             = n_total,
+        items               = items,
+        outcome_col         = outcome_col,
+        min_items           = min_items,
+        max_items           = max_items,
+        positive_label      = positive_label,
+        negative_label      = negative_label,
+        cutoff_method       = cutoff_method,
+        preselect_top_n     = preselect_top_n,
+        preselect_by        = preselect_by,
+        selection_criterion = selection_criterion,
+        inner_k             = inner_k,
+        inner_repeats       = inner_repeats,
+        use_streaming_ncv   = use_streaming_ncv,
+        engine              = engine,
+        seed                = seed,
+        progress            = FALSE,
+        verbose             = FALSE
       )
-    } else {
-      candidates <- exhaustive_sum_roc(
-        data             = full_data[train_idx, , drop = FALSE],
-        outcome          = outcome_col,
-        items            = items,
-        min_items        = min_items,
-        max_items        = max_items,
-        positive_label   = positive_label,
-        negative_label   = negative_label,
-        cutoff_method    = cutoff_method,
-        rank_by          = preselect_by,
-        top_n            = NULL,
-        prefer_fewer_items = TRUE,
-        engine           = engine,
-        progress         = FALSE
+    }
+
+    per_fold <- parallel::parLapply(cl, seq_len(n_folds), fold_worker)
+  } else {
+    per_fold <- vector("list", n_folds)
+    for (i in seq_len(n_folds)) {
+      per_fold[[i]] <- .evaluate_single_outer_fold(
+        i                   = i,
+        outer_folds         = outer_folds,
+        full_data           = full_data,
+        y                   = y,
+        n_total             = n_total,
+        items               = items,
+        outcome_col         = outcome_col,
+        min_items           = min_items,
+        max_items           = max_items,
+        positive_label      = positive_label,
+        negative_label      = negative_label,
+        cutoff_method       = cutoff_method,
+        preselect_top_n     = preselect_top_n,
+        preselect_by        = preselect_by,
+        selection_criterion = selection_criterion,
+        inner_k             = inner_k,
+        inner_repeats       = inner_repeats,
+        use_streaming_ncv   = use_streaming_ncv,
+        engine              = engine,
+        seed                = seed,
+        progress            = progress && verbose,
+        verbose             = verbose
       )
     }
-
-    # Step 2: pre-select top candidates
-    top_candidates <- .select_top_candidates(candidates, preselect_top_n, preselect_by)
-
-    if (verbose) {
-      message("  Pre-selected ", nrow(top_candidates), " candidate(s) for inner CV")
-    }
-
-    # Step 3: inner CV for each candidate
-    inner_seed <- if (!is.null(seed)) seed + i else NULL
-    inner_results <- .evaluate_candidates_inner_cv(
-      candidates_df  = top_candidates,
-      data           = full_data[train_idx, , drop = FALSE],
-      y              = y[train_idx],
-      inner_k        = inner_k,
-      inner_repeats  = as.integer(inner_repeats),
-      cutoff_method  = cutoff_method,
-      seed_offset    = inner_seed,
-      progress       = progress && verbose
-    )
-
-    # Step 4: select best model by inner CV criterion
-    criterion_col <- paste0("mean_", selection_criterion)
-    best_idx <- which.max(inner_results[[criterion_col]])
-    # Tie-break: highest mean_youden, then fewest items
-    if (length(best_idx) > 1) {
-      tie_scores <- inner_results$mean_youden[best_idx] -
-        inner_results$n_items[best_idx] * 0.001
-      best_idx <- best_idx[which.max(tie_scores)]
-    }
-    best_row <- inner_results[best_idx, ]
-
-    # Step 5: apply best model to outer test
-    test_result <- .apply_model_to_test(
-      itemset       = best_row$items,
-      data_train    = full_data[train_idx, , drop = FALSE],
-      y_train       = y[train_idx],
-      data_test     = full_data[test_idx, , drop = FALSE],
-      y_test        = y[test_idx],
-      cutoff_method = cutoff_method
-    )
-
-    # Map predictions row_index back to original row numbers
-    test_result$predictions$row_index <- test_idx
-
-    # Record
-    per_fold[[i]] <- list(
-      outer_fold         = fold_name,
-      selected_items     = best_row$items,
-      n_items            = best_row$n_items,
-      inner_mean_auc     = best_row$mean_auc,
-      inner_mean_youden  = best_row$mean_youden,
-      auc                = test_result$auc,
-      sensitivity        = test_result$sensitivity,
-      specificity        = test_result$specificity,
-      youden             = test_result$youden,
-      accuracy           = test_result$accuracy,
-      ppv                = test_result$ppv,
-      npv                = test_result$npv,
-      cutoff             = test_result$cutoff,
-      predictions        = test_result$predictions
-    )
   }
 
   # ---- Aggregate results ----

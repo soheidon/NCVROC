@@ -40,6 +40,8 @@ ncvroc(
   return = "full",
   ci = TRUE,
   conf_level = 0.95,
+  parallel = FALSE,
+  n_workers = NULL,
   item_count = NULL
 )
 }
@@ -129,8 +131,18 @@ cross-validated uncertainty.}
 
 \item{conf_level}{Numeric confidence level in (0, 1), default 0.95.}
 
+\item{parallel}{Logical. If `TRUE`, evaluate outer cross-validation folds in
+parallel using socket workers (\code{\link[parallel]{makePSOCKcluster}}).
+Default `FALSE`.}
+
+\item{n_workers}{Integer, number of worker processes for parallel execution,
+or `NULL` (default) for automatic detection. Ignored when `parallel = FALSE`.
+The effective worker count is capped by outer fold count, available CPU
+cores, and CRAN core limits (\code{_R_CHECK_LIMIT_CORES_}).}
+
 \item{item_count}{Concise model-size specification: `"==4"` (exactly 4
-items), `"<=4"` (up to 4 items), or `"2:4"` (2 through 4 items).}
+items), `"<=4"` (up to 4 items), or `"2:4"` (2 through 4 items).
+Cannot be combined with `min_items` or `max_items`. Default NULL.}
 }
 \value{
 An object of class `"ncvroc_analysis"`.
