@@ -19,6 +19,8 @@ exhaustive_sum_roc(
   ci = FALSE,
   conf_level = 0.95,
   engine = c("R", "Rcpp"),
+  parallel = FALSE,
+  n_workers = NULL,
   progress = TRUE,
   chunk_start = NULL,
   chunk_size = NULL
@@ -60,26 +62,24 @@ models. Default `FALSE`.}
 
 \item{engine}{Character, computation engine. `"R"` (default) or `"Rcpp"`.}
 
+\item{parallel}{Logical or character. If `TRUE` or `"chunks"`, evaluate
+combination chunks in parallel across socket workers. Default `FALSE`.}
+
+\item{n_workers}{Integer, number of worker processes for parallel execution,
+or `NULL` (default) for automatic detection. Ignored when `parallel = FALSE`.}
+
 \item{progress}{Logical, show progress bar? Default `TRUE`.}
 
 \item{chunk_start}{Internal: zero-based global combination index to start
 from. When set together with `chunk_size`, only that range is evaluated.}
 
-\item{chunk_size}{Internal: number of combinations to evaluate in this chunk.}
+\item{chunk_size}{Combinations per chunk (default 200000 when chunking).}
 }
 \value{
 A data.frame with columns: `rank`, `items` (comma-separated string),
   `n_items`, `auc`, `cutoff`, `sensitivity`, `specificity`, `youden`,
   `accuracy`, `ppv`, `npv`, `n_positive`, `n_negative`.
-  If `ci = TRUE`, includes:
-  \itemize{
-    \item \code{auc_lower}, \code{auc_upper}: DeLong confidence limits for AUC.
-    \item \code{sensitivity_lower}, \code{sensitivity_upper}: Clopper-Pearson exact limits for sensitivity.
-    \item \code{specificity_lower}, \code{specificity_upper}: Clopper-Pearson exact limits for specificity.
-    \item \code{accuracy_lower}, \code{accuracy_upper}: Clopper-Pearson exact limits for accuracy.
-    \item \code{ppv_lower}, \code{ppv_upper}: Clopper-Pearson exact limits for positive predictive value.
-    \item \code{npv_lower}, \code{npv_upper}: Clopper-Pearson exact limits for negative predictive value.
-  }
+  If `ci = TRUE`, includes confidence bounds (`auc_lower`, `auc_upper`, etc.).
   Sorted by the chosen `rank_by` metric in descending order.
 }
 \description{

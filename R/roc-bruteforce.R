@@ -15,6 +15,8 @@
                                  cutoff_method,
                                  positive_label, negative_label,
                                  engine, rank_by, top_n,
+                                 parallel = FALSE,
+                                 n_workers = NULL,
                                  progress,
                                  save_results, output_dir,
                                  results_storage, results_name, results_dir,
@@ -49,6 +51,20 @@
   rank_by         <- match.arg(rank_by,         c("auc", "youden", "sensitivity", "specificity", "accuracy"))
   results_storage <- match.arg(results_storage, c("auto", "memory", "rds", "none"))
   cache           <- match.arg(cache,           c("off", "reuse", "refresh"))
+
+  parallel_mode <- .resolve_parallel_mode(
+    parallel,
+    context = "exhaustive",
+    allowed = c("none", "chunks")
+  )
+
+  if (!is.null(n_workers)) {
+    if (!is.numeric(n_workers) || length(n_workers) != 1 ||
+        is.na(n_workers) || n_workers <= 0 || n_workers != as.integer(n_workers)) {
+      stop("`n_workers` must be a positive integer or NULL.", call. = FALSE)
+    }
+    n_workers <- as.integer(n_workers)
+  }
 
   if (!is.null(top_n)) {
     if (length(top_n) != 1 || !is.numeric(top_n) || is.na(top_n) ||
@@ -121,7 +137,9 @@
     cache_dir          = cache_dir,
     building_dir       = building_dir,
     resolved_item_count = resolved_item_count,
-    function_name       = "roc_bruteforce"
+    function_name       = "roc_bruteforce",
+    parallel            = parallel_mode,
+    n_workers           = n_workers
   )
 
   full_table_for_slicing <- eval_result$full_table_for_slicing
@@ -261,6 +279,10 @@
 #' @param rank_by Metric for ranking: `"auc"`, `"youden"`, `"sensitivity"`,
 #'   `"specificity"`, or `"accuracy"`.
 #' @param top_n Number of top candidates to return (NULL for all, 0 for none).
+#' @param parallel Logical or character. If `TRUE` or `"chunks"`, evaluate
+#'   combination chunks in parallel across socket workers. Default `FALSE`.
+#' @param n_workers Integer, number of worker processes for parallel execution,
+#'   or `NULL` (default) for automatic detection. Ignored when `parallel = FALSE`.
 #' @param progress Logical, show progress bar (default `interactive()`).
 #' @param save_results Logical, write CSV outputs (default FALSE).
 #' @param output_dir Directory for saved CSVs (default `"."`).
@@ -312,6 +334,8 @@ roc_bruteforce <- function(data,
                            chunk_size      = 200000L,
                            cache           = c("off", "reuse", "refresh"),
                            cache_dir       = NULL,
+                           parallel        = FALSE,
+                           n_workers       = NULL,
                            item_count      = NULL) {
 
   caller_env   <- parent.frame()
@@ -378,6 +402,8 @@ roc_bruteforce <- function(data,
     chunk_size         = chunk_size,
     cache              = cache,
     cache_dir          = cache_dir,
+    parallel           = parallel,
+    n_workers          = n_workers,
     item_count         = item_count,
     min_items_missing  = min_items_missing,
     max_items_missing  = max_items_missing
@@ -406,6 +432,8 @@ roc_bf <- function(data,
                    chunk_size      = 200000L,
                    cache           = c("off", "reuse", "refresh"),
                    cache_dir       = NULL,
+                   parallel        = FALSE,
+                   n_workers       = NULL,
                    item_count      = NULL) {
 
   caller_env   <- parent.frame()
@@ -472,6 +500,8 @@ roc_bf <- function(data,
     chunk_size         = chunk_size,
     cache              = cache,
     cache_dir          = cache_dir,
+    parallel           = parallel,
+    n_workers          = n_workers,
     item_count         = item_count,
     min_items_missing  = min_items_missing,
     max_items_missing  = max_items_missing

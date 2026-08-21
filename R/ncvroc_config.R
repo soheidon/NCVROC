@@ -202,6 +202,9 @@ print.ncvroc_config <- function(x, ...) {
   if (isTRUE(x$parallel)) {
     workers_str <- if (is.null(x$n_workers)) "auto" else as.character(x$n_workers)
     cat("Parallel:         TRUE (workers: ", workers_str, ")\n", sep = "")
+  } else if (!identical(x$parallel, FALSE) && !identical(x$parallel, "none")) {
+    workers_str <- if (is.null(x$n_workers)) "auto" else as.character(x$n_workers)
+    cat("Parallel:         ", as.character(x$parallel), " (workers: ", workers_str, ")\n", sep = "")
   }
   cat("Chunk size:      ", format(x$chunk_size, big.mark = ",", scientific = FALSE), "\n")
   cat("Cache:           ", x$cache, "\n")

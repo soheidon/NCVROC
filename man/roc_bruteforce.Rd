@@ -26,6 +26,8 @@ roc_bruteforce(
   chunk_size = 200000L,
   cache = c("off", "reuse", "refresh"),
   cache_dir = NULL,
+  parallel = FALSE,
+  n_workers = NULL,
   item_count = NULL
 )
 
@@ -50,6 +52,8 @@ roc_bf(
   chunk_size = 200000L,
   cache = c("off", "reuse", "refresh"),
   cache_dir = NULL,
+  parallel = FALSE,
+  n_workers = NULL,
   item_count = NULL
 )
 }
@@ -97,6 +101,12 @@ roc_bf(
 \item{cache}{One of `"off"` (default), `"reuse"`, or `"refresh"`.}
 
 \item{cache_dir}{Directory for caching, or NULL.}
+
+\item{parallel}{Logical or character. If `TRUE` or `"chunks"`, evaluate
+combination chunks in parallel across socket workers. Default `FALSE`.}
+
+\item{n_workers}{Integer, number of worker processes for parallel execution,
+or `NULL` (default) for automatic detection. Ignored when `parallel = FALSE`.}
 
 \item{item_count}{Concise model-size specification: `"==4"` (exactly 4
 items), `"<=4"` (up to 4 items), or `"2:4"` (2 through 4 items).
