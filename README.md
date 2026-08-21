@@ -14,7 +14,7 @@ Assume higher sum scores indicate higher probability of a positive outcome. User
 
 - **Chunk-Level Parallelization (`parallel = "chunks"`)**: Evaluate massive combinatorial candidate search spaces ($O(\binom{M}{K})$ candidate models) across multiple CPU socket workers in parallel.
 - **Clear Separation of Parallelism Levels**: Distinct parallel modes for `"outer"` (cross-validation folds) and `"chunks"` (combinatorial candidate chunks), preventing nested oversubscription.
-- **High-Performance Chunk-Based Streaming Search Engine**: Generates combinations on-the-fly via C++ mathematical unranking (`evaluate_combos_cpp_chunk()`) and performs streaming local Top-$N$ candidate reduction, bypassing large R list allocations in memory.
+- **High-Performance Chunk-Based Streaming Search Engine**: Generates combinations on-the-fly via C++ mathematical unranking (`evaluate_combos_cpp_chunk()`) and performs streaming local Top-N candidate reduction, bypassing large R list allocations in memory.
 - **Persistent PSOCK Cluster Reuse**: In `nested_sum_roc(..., parallel = "chunks")`, a single PSOCK cluster is initialized once and reused across all outer cross-validation folds, eliminating repeated cluster startup/teardown overhead.
 - **Atomic RDS Writing & Robust Cache Validation**: Chunks are saved to temporary files and atomically renamed within the same directory; invalid or stale files are safely ignored.
 - **Exact Acceleration (No Approximation)**: Evaluates the full exhaustive combination space without candidate screening or heuristic pruning.
@@ -725,7 +725,7 @@ summary(result)
 - **Confidence level:** Specified via `conf_level` (default `0.95` for 95% CIs).
 - **Default behavior:**
   - `fit_final_sum_scale()` and `ncvroc()` compute CIs for final models/candidates by default (`ci = TRUE`).
-  - `exhaustive_sum_roc()` defaults to `ci = FALSE` to maintain high combinatorial search speed, computing CIs only after ranking and top-$N$ candidate selection when `ci = TRUE`.
+  - `exhaustive_sum_roc()` defaults to `ci = FALSE` to maintain high combinatorial search speed, computing CIs only after ranking and top-N candidate selection when `ci = TRUE`.
 
 ### Example
 
@@ -788,7 +788,7 @@ Sensitivity: 1.000 [0.692, 1.000]
 
 ### Strict mutual exclusivity (no nested parallelism)
 
-Outer parallelization and chunk parallelization are **never nested concurrently**. For example, `NCVROC` will never create 4 outer workers $\times$ 4 chunk workers (16 processes), avoiding CPU oversubscription, socket exhaustion, and memory duplication. You choose one level of parallelism per analysis.
+Outer parallelization and chunk parallelization are **never nested concurrently**. For example, `NCVROC` will never create 4 outer workers × 4 chunk workers (16 processes), avoiding CPU oversubscription, socket exhaustion, and memory duplication. You choose one level of parallelism per analysis.
 
 ### Persistent cluster reuse in nested CV
 
@@ -796,19 +796,19 @@ When running nested CV with `parallel = "chunks"`, `nested_sum_roc()` initialize
 
 ### High-performance chunk/streaming search engine & exactness
 
-In v0.12.0, the exhaustive search engine generates combinations on-the-fly via C++ mathematical unranking (`evaluate_combos_cpp_chunk()`) and maintains streaming local top-$N$ candidate pools.
+In v0.12.0, the exhaustive search engine generates combinations on-the-fly via C++ mathematical unranking (`evaluate_combos_cpp_chunk()`) and maintains streaming local Top-N candidate pools.
 - **Exact exhaustive search**: Evaluates the full exhaustive candidate space without heuristics or screening approximations.
 - **Exact tie-breaking**: Candidates track their 1-based `.global_combo_index` from serial combinatorial enumeration, ensuring identical candidate ordering and numerical metrics between serial and parallel runs.
-- **Streaming Top-$N$ invariant**: Enforces $\text{top\_n\_local} \ge \text{global\_top\_n}$ so no global top-$N$ model is missed during chunk reduction.
+- **Streaming Top-N invariant**: Each chunk retains at least as many candidates as required for the final global Top-N (`top_n_local >= global_top_n`), so no candidate belonging to the global Top-N can be lost during chunk reduction.
 
 ### Performance characteristics
 
-- **Engine Acceleration**: In a 1.03M-combination benchmark ($M=71, K \le 4, N=200$), the new single-worker chunk/streaming engine reduced elapsed time from about 21.3 s to 4.9 s versus the legacy full-enumeration serial path due to C++ unranking and memory optimization.
-- **Multi-Worker Scaling**: Multi-worker scaling is workload-dependent. Because C++ evaluation is very fast, socket IPC overhead on small workloads is noticeable; chunk parallelization becomes increasingly advantageous as candidate spaces ($M \ge 40, K \ge 5$) and sample sizes grow.
+- **Engine Acceleration**: In a 1.03M-combination benchmark (`M = 71`, `K <= 4`, `N = 200`), the new single-worker chunk/streaming engine reduced elapsed time from about 21.3 s to 4.9 s versus the legacy full-enumeration serial path due to C++ unranking and memory optimization.
+- **Multi-Worker Scaling**: Multi-worker scaling is workload-dependent. Because C++ evaluation is very fast, socket IPC overhead on small workloads is noticeable; chunk parallelization becomes increasingly advantageous as candidate spaces (`M >= 40`, `K >= 5`) and sample sizes grow.
 
 ### Usage examples
 
-#### Example 1: Outer-fold parallelization (recommended for $M \le 25$)
+#### Example 1: Outer-fold parallelization (recommended for `M <= 25`)
 
 ```r
 res_outer <- ncvroc(
@@ -825,7 +825,7 @@ res_outer <- ncvroc(
 )
 ```
 
-#### Example 2: Chunk-level parallel exhaustive search (recommended for $M \ge 40$)
+#### Example 2: Chunk-level parallel exhaustive search (recommended for `M >= 40`)
 
 ```r
 res_chunks <- roc_bruteforce(
