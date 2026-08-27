@@ -1,4 +1,30 @@
-# NCVROC 0.14.0 (development)
+# NCVROC 0.15.0
+
+## New features
+
+- **Unified cross-validation & model selection framework**:
+  - Added `cv_sum_roc()` for fixed-model k-fold and repeated k-fold cross-validation.
+  - Added `loocv_sum_roc()` for fixed-model leave-one-out cross-validation (LOOCV).
+  - Added `cross_size_cv()` for ordinary cross-validation model selection across multiple model sizes.
+  - Added `cross_size_nested_cv()` for cross-size nested cross-validation evaluating the generalization performance of the model-selection procedure.
+  - Added `compare_cv_selection()` for comparing non-nested selected-model performance with nested selection-procedure performance, quantifying empirical `selection_optimism = ordinary - nested`.
+
+- **Exact AUC mathematical identity optimization**:
+  - Leverages the exact mathematical identity for fixed unweighted sum scores: the pooled out-of-fold score vector is identical to the full-data score vector, hence pooled OOF AUC equals full-data apparent AUC.
+  - Uses this exact identity to avoid redundant fold-wise AUC recomputation across combinations, while strictly evaluating fold-dependent classification metrics with training-derived cutoffs.
+
+- **Universal logical block streams & external merge architecture**:
+  - Implemented bounded block streams and hierarchical $K$-way external merge sort (`fan_in = 16L`, `block_size = 2000L`) for constrained AUC search (`sensitivity_min` / `specificity_min`).
+  - Guarantees strict $O(\text{block\_size})$ memory bound across any number of candidate models or merge passes, with zero full-space R memory materialization.
+
+- **Comprehensive parallel routing**:
+  - `cross_size_cv()` supports `parallel = "none"`, `"threads"`, and `"chunks"`.
+  - `cross_size_nested_cv()` supports `parallel = "none"`, `"outer"`, `"threads"`, `"chunks"`, and `"hybrid"`.
+  - `compare_cv_selection()` automatically maps parallel modes safely between ordinary and nested CV without nested cluster oversubscription.
+
+---
+
+# NCVROC 0.14.0
 
 ## New features
 

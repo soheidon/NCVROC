@@ -1,7 +1,7 @@
 Package: NCVROC
 Type: Package
 Title: Nested Cross-Validation for Combinatorial ROC-Based Selection of Item-Set Scores
-Version: 0.14.0
+Version: 0.15.0
 Authors@R:
     person(
         given = "Sohei",
@@ -11,13 +11,15 @@ Authors@R:
     )
 Description: Develops short item-based screening scales through combinatorial
     item-set selection, receiver operating characteristic (ROC) curve
-    evaluation, and nested cross-validation. For psychological/clinical
-    questionnaire data, identifies which small subset of items best predicts
-    a binary outcome using simple sum scores. Assumes higher sum scores
-    indicate higher probability of a positive outcome. Methods for ROC
-    analysis are described by Fawcett (2006)
-    <doi:10.1016/j.patrec.2005.10.010>, and nested cross-validation for model
-    selection by Varma and Simon (2006) <doi:10.1186/1471-2105-7-91>.
+    evaluation, ordinary and nested cross-validation, and selection optimism
+    assessment. For questionnaire data, identifies which subset of items best
+    predicts a binary outcome using unweighted sum scores. Supports fixed-model
+    k-fold and leave-one-out cross-validation, cross-size combinatorial search,
+    nested cross-validation for selection procedure generalization assessment,
+    and comparison of non-nested and nested model selection performance.
+    Methods for ROC analysis are described by Fawcett (2006)
+    <doi:10.1016/j.patrec.2005.10.010>, and nested cross-validation by
+    Varma and Simon (2006) <doi:10.1186/1471-2105-7-91>.
 License: MIT + file LICENSE
 Encoding: UTF-8
 Config/testthat/edition: 3

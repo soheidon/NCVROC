@@ -1,12 +1,31 @@
 [English README](README.md) | [日本語詳細リファレンス](docs/reference-ja.md)
 
-# NCVROC 0.14.0
+# NCVROC 0.15.0
 
 **N**ested **C**ross-**V**alidation for Combinatorial **ROC**-based Selection of Item-set Scores（項目セット得点の組み合わせROC選択のためのネスト交差検証）
 
-項目の組み合わせ選択、ROCに基づく評価、ネスト交差検証を通じて、短い項目ベースのスクリーニング尺度を開発します。心理・臨床質問紙データにおいて、単純な合計得点を用いて二値アウトカムを最もよく予測する項目の小サブセットを特定します。
+項目の組み合わせ選択、ROCに基づく評価、通常・ネスト交差検証、およびモデル選択に伴う楽観度（Selection Optimism）の評価を通じて、短い項目ベースのスクリーニング尺度を開発します。心理・臨床質問紙データにおいて、単純な合計得点を用いて二値アウトカムを最もよく予測する項目の小サブセットを特定します。
 
 合計得点が高いほど陽性アウトカムの確率が高いと仮定します。必要に応じて事前に項目を逆転処理してください。
+
+---
+
+## NCVROC 0.15.0 の主要新機能
+
+- **統合交差検証・モデル選択フレームワーク**:
+  - `cv_sum_roc()`: 指定した固定尺度（単一項目セット）の $K$ 分割交差検証・繰り返し $K$ 分割交差検証を実行。
+  - `loocv_sum_roc()`: 指定した固定尺度の厳密な 1 例抜き交差検証（LOOCV）を実行。
+  - `cross_size_cv()`: 複数の項目数（例: 1〜5項目）にわたる組み合わせ空間全体から、通常の交差検証（non-nested CV）により最良モデルを探索・選抜。
+  - `cross_size_nested_cv()`: 複数項目数にわたる組み合わせ探索・モデル選抜手続き全体の汎化性能を、独立した outer test で評価するネスト交差検証を実行。
+  - `compare_cv_selection()`: 通常 CV で選抜されたモデルの見かけの性能と、ネスト CV による選抜手続き全体の汎化性能を直接比較し、モデル選抜に伴う楽観度（$\text{selection\_optimism} = \text{ordinary} - \text{nested}$）を定量化。
+- **固定合計得点における AUC 数学的同一性の活用**:
+  - 単純加算スコアの数学的性質（集約 OOF スコアベクトルと全データスコアベクトルが一致し、pooled OOF AUC = 全データ AUC となる性質）を活用し、フォールドごとの重複した AUC 再計算を完全に省略して厳密な AUC 最適化と順位付けを実現。
+- **ユニバーサル論理ブロックストリームと外部マージソート**:
+  - OOF 制約付き AUC 探索（`sensitivity_min` / `specificity_min`）において、固定ブロック単位（2,000行）のストリーミング処理と $K$-way 外部マージソート（`fan_in = 16L`）を導入。候補数や探索深度に依存しない $O(\text{block\_size})$ の厳密な有界メモリ保証を実現。
+- **包括的な並列バックエンド統合**:
+  - `cross_size_cv()` は `none`, `threads`, `chunks` をサポート。
+  - `cross_size_nested_cv()` は `none`, `outer`, `threads`, `chunks`, `hybrid` をサポート。
+  - `compare_cv_selection()` は安全な並列マッピングを行い、過剰並列化（nested cluster oversubscription）を完全に防止。
 
 ---
 
@@ -47,6 +66,110 @@ remotes::install_github("soheidon/NCVROC")
 3. **タイ（同点）を含む場合の AUC 計算:** `AUC = P(pos > neg) + 0.5 * P(pos == neg)`。
 4. **欠損値の扱い:** 空文字列および空白のみの値は欠損値として扱われます。アウトカムまたは選択項目に欠損値を含む行は解析前に除去されます。
 5. **厳密な二値アウトカム:** アウトカム列には `positive_label` と `negative_label` の値のみが含まれている必要があります。
+
+---
+
+## 交差検証ワークフロー（v0.15.0）
+
+NCVROC は、固定モデルの交差検証、複数項目数にわたるモデル選択、およびネスト交差検証によるモデル選択楽観度（Selection Optimism）の厳密な評価のための専用関数を提供します：
+
+### A. 固定モデルの $K$ 分割交差検証 (`cv_sum_roc`)
+
+事前に決定した項目セットの単純加算スコアについて、$K$ 分割または繰り返し $K$ 分割交差検証を実行します：
+
+```r
+library(NCVROC)
+
+# 固定尺度 Q1 + Q2 + Q3 の 5 分割 CV
+cv_fit <- cv_sum_roc(
+  data          = analysis_dat,
+  outcome       = y,
+  items         = c("Q1", "Q2", "Q3"),
+  folds         = 5,
+  repeats       = 1,
+  cutoff_method = "youden",
+  seed          = 42
+)
+print(cv_fit)
+```
+
+### B. 固定モデルの 1 例抜き交差検証 (`loocv_sum_roc`)
+
+固定加算尺度について、決定論的な 1 例抜き交差検証（LOOCV）を実行します：
+
+```r
+# 固定尺度の厳密な LOOCV
+loo_fit <- loocv_sum_roc(
+  data          = analysis_dat,
+  outcome       = y,
+  items         = c("Q1", "Q2", "Q3"),
+  cutoff_method = "youden"
+)
+print(loo_fit)
+```
+
+### C. 複数項目数にわたる通常モデル選択 (`cross_size_cv`)
+
+複数の項目数（例: 1〜4項目）にわたる組み合わせ空間全体から、通常の交差検証（non-nested CV）により最良モデルを探索・選抜します：
+
+```r
+# 1〜4項目の全組み合わせから最良モデルを選抜
+ord_selection <- cross_size_cv(
+  data             = analysis_dat,
+  outcome          = y,
+  items            = Q1:Q10,
+  model_sizes      = 1:4,
+  selection_metric = "auc",
+  folds            = 5,
+  seed             = 42
+)
+print(ord_selection)
+```
+
+### D. 複数項目数にわたるネスト交差検証 (`cross_size_nested_cv`)
+
+モデル選択手続き全体の汎化性能を、独立した outer test で厳密に評価します：
+
+```r
+# 1〜4項目のモデル選択手続き全体をネスト交差検証
+nested_val <- cross_size_nested_cv(
+  data             = analysis_dat,
+  outcome          = y,
+  items            = Q1:Q10,
+  model_sizes      = 1:4,
+  selection_metric = "auc",
+  outer_folds      = 5,
+  inner_folds      = 4,
+  outer_repeats    = 5,
+  parallel         = "threads",
+  seed             = 42
+)
+print(nested_val)
+```
+
+### E. 通常選択とネスト検証の比較 (`compare_cv_selection`)
+
+通常 CV で選抜されたモデルの見かけの性能と、ネスト CV による選択手続き全体の汎化性能を直接比較し、モデル選抜に伴う楽観度（$\text{selection\_optimism} = \text{ordinary} - \text{nested}$）を定量化します：
+
+```r
+# 通常選択性能とネスト選択手続き汎化性能の比較
+comp <- compare_cv_selection(
+  data             = analysis_dat,
+  outcome          = y,
+  items            = Q1:Q10,
+  model_sizes      = 1:4,
+  selection_metric = "auc",
+  folds            = 5,
+  outer_folds      = 5,
+  inner_folds      = 4,
+  outer_repeats    = 5,
+  seed             = 42
+)
+print(comp)
+```
+
+> [!NOTE]
+> **統計的解釈の重要性:** `selection_optimism` は「最終モデル自体のバイアス」ではなく、「非ネスト選択手続きの下で生じるモデル選抜に伴う見かけの楽観度」を意味します。固定単純加算スコアでは、集約 OOF AUC は全データ AUC と一致します。ネスト交差検証が評価するのは、固定された単一モデルではなく「モデル選択手続き全体の汎化性能」です。
 
 ---
 

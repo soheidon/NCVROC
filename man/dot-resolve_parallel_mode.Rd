@@ -6,15 +6,14 @@
 \usage{
 .resolve_parallel_mode(
   parallel,
-  context = c("nested", "exhaustive"),
+  context = c("nested", "exhaustive", "ordinary_cv"),
   allowed = NULL
 )
 }
 \arguments{
 \item{parallel}{Logical or character indicating parallel mode.}
 
-\item{context}{Character, either "nested" (for ncvroc/nested_sum_roc) or
-"exhaustive" (for roc_bruteforce/exhaustive_sum_roc).}
+\item{context}{Character, "nested" (default), "exhaustive", or "ordinary_cv".}
 
 \item{allowed}{Character vector of allowed modes. Default NULL (auto-resolved per context).}
 }

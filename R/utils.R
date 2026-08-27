@@ -146,6 +146,70 @@ CACHE_FORMAT_VERSION <- 1L     # bump when cache storage format changes
   sum(choose(n, k))
 }
 
+#' Count total combinations across arbitrary model sizes
+#'
+#' @param n Integer, total number of predictors available.
+#' @param model_sizes Integer vector of model sizes.
+#' @return Numeric/integer total combinations.
+#' @keywords internal
+.count_total_combos_cross_size <- function(n, model_sizes) {
+  valid_sizes <- model_sizes[model_sizes >= 1 & model_sizes <= n]
+  if (length(valid_sizes) == 0) return(0L)
+  sum(choose(n, valid_sizes))
+}
+
+#' Resolve model sizes specification
+#'
+#' Supports explicit model_sizes vector (e.g. 1:5 or c(1, 3, 5)),
+#' item_count string (e.g. "==4", "<=3", "2:4"), or min_items:max_items range.
+#'
+#' @param model_sizes Vector of integer model sizes or NULL.
+#' @param min_items Integer, minimum model size (used when model_sizes is NULL).
+#' @param max_items Integer, maximum model size (used when model_sizes is NULL).
+#' @param item_count Character string or NULL (used when model_sizes is NULL).
+#' @param n_available Integer, total number of available predictors.
+#' @return Sorted, unique integer vector of valid model sizes.
+#' @keywords internal
+.resolve_model_sizes <- function(model_sizes = NULL,
+                                 min_items = 1,
+                                 max_items = 4,
+                                 item_count = NULL,
+                                 n_available = NULL) {
+  if (!is.null(model_sizes)) {
+    if (!is.numeric(model_sizes) || length(model_sizes) == 0 || anyNA(model_sizes)) {
+      stop("`model_sizes` must be a non-empty numeric/integer vector without NA.", call. = FALSE)
+    }
+    sizes <- sort(unique(as.integer(model_sizes)))
+    if (any(sizes < 1)) {
+      stop("All values in `model_sizes` must be >= 1.", call. = FALSE)
+    }
+    if (!is.null(n_available) && any(sizes > n_available)) {
+      stop(sprintf("Values in `model_sizes` (%s) exceed number of available items (%d).",
+                   paste(sizes[sizes > n_available], collapse = ", "), n_available),
+           call. = FALSE)
+    }
+    return(sizes)
+  }
+
+  if (!is.null(item_count)) {
+    parsed <- .parse_item_count(item_count, n_available)
+    return(seq.int(parsed$min_items, parsed$max_items))
+  }
+
+  if (!is.numeric(min_items) || length(min_items) != 1 || min_items < 1) {
+    stop("`min_items` must be an integer >= 1.", call. = FALSE)
+  }
+  if (!is.numeric(max_items) || length(max_items) != 1 || max_items < min_items) {
+    stop("`max_items` must be an integer >= min_items.", call. = FALSE)
+  }
+  if (!is.null(n_available) && max_items > n_available) {
+    stop(sprintf("`max_items` (%d) exceeds available items (%d).", as.integer(max_items), n_available),
+         call. = FALSE)
+  }
+
+  seq.int(as.integer(min_items), as.integer(max_items))
+}
+
 #' Decide whether a search is large enough to need chunked evaluation
 #'
 #' @param n Integer, number of items.
@@ -296,18 +360,19 @@ CACHE_FORMAT_VERSION <- 1L     # bump when cache storage format changes
 #' Resolve and validate parallel mode setting
 #'
 #' @param parallel Logical or character indicating parallel mode.
-#' @param context Character, either "nested" (for ncvroc/nested_sum_roc) or
-#'   "exhaustive" (for roc_bruteforce/exhaustive_sum_roc).
+#' @param context Character, "nested" (default), "exhaustive", or "ordinary_cv".
 #' @param allowed Character vector of allowed modes. Default NULL (auto-resolved per context).
 #' @return Character: "none", "outer", "chunks", "threads", or "hybrid".
 #' @keywords internal
 .resolve_parallel_mode <- function(parallel,
-                                   context = c("nested", "exhaustive"),
+                                   context = c("nested", "exhaustive", "ordinary_cv"),
                                    allowed = NULL) {
   context <- match.arg(context)
   if (is.null(allowed)) {
     allowed <- if (context == "nested") {
       c("none", "outer", "chunks", "threads", "hybrid")
+    } else if (context == "ordinary_cv") {
+      c("none", "threads", "chunks")
     } else {
       c("none", "chunks", "threads")
     }
@@ -320,7 +385,7 @@ CACHE_FORMAT_VERSION <- 1L     # bump when cache storage format changes
     if (!parallel) {
       return("none")
     } else {
-      return(if (context == "nested") "outer" else "chunks")
+      return(if (context == "nested") "outer" else if (context == "ordinary_cv") "threads" else "chunks")
     }
   }
 

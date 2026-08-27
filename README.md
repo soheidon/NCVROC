@@ -1,12 +1,29 @@
 [English](README.md) | [日本語 README](README-ja.md) | [日本語詳細リファレンス](docs/reference-ja.md)
 
-# NCVROC 0.14.0
+# NCVROC 0.15.0
 
 **N**ested **C**ross-**V**alidation for Combinatorial **ROC**-based Selection of Item-set Scores
 
-Develops short item-based screening scales through combinatorial item-set selection, ROC-based evaluation, and nested cross-validation. For psychological/clinical questionnaire data, identifies which small subset of items best predicts a binary outcome using simple sum scores.
+Develops short item-based screening scales through combinatorial item-set selection, Receiver Operating Characteristic (ROC) curve evaluation, ordinary and nested cross-validation, and selection optimism assessment. For psychological/clinical questionnaire data, identifies which small subset of items best predicts a binary outcome using simple sum scores.
 
 Assume higher sum scores indicate higher probability of a positive outcome. Users must reverse-code items beforehand.
+
+---
+
+## What's new in NCVROC 0.15.0
+
+- **Unified Cross-Validation & Model Selection Framework**:
+  - `cv_sum_roc()`: Evaluates a fixed unweighted sum score model using $K$-fold or repeated $K$-fold cross-validation.
+  - `loocv_sum_roc()`: Evaluates a fixed unweighted sum score model using leave-one-out cross-validation (LOOCV).
+  - `cross_size_cv()`: Performs ordinary (non-nested) cross-validation model selection across multiple candidate model sizes (e.g. 1 to 5 items).
+  - `cross_size_nested_cv()`: Performs cross-size nested cross-validation to assess the generalization performance of the model-selection procedure on independent outer test folds.
+  - `compare_cv_selection()`: Directly compares ordinary selected-model performance against nested selection-procedure performance to estimate empirical `selection_optimism = ordinary - nested`.
+- **Exact AUC Mathematical Identity Optimization**:
+  - Leverages the mathematical property of fixed unweighted sum scores: the pooled out-of-fold score vector equals the full-data score vector, hence pooled OOF AUC equals full-data apparent AUC, avoiding redundant fold-wise AUC recomputation during combinatorial model selection.
+- **Universal Logical Block Streams & External Merge Architecture**:
+  - Guaranteed $O(\text{block\_size})$ bounded memory traversal for constrained AUC searches (`sensitivity_min` / `specificity_min`).
+- **Comprehensive Parallel Routing**:
+  - Full support for `none`, `threads` (C++ multi-threading), `chunks` (PSOCK clusters), `outer` (outer folds), and `hybrid` (outer PSOCK $\times$ inner threads).
 
 ---
 
@@ -50,6 +67,110 @@ remotes::install_github("soheidon/NCVROC")
    missing. Rows with missing values in the outcome or selected item columns are
    removed before analysis.
 5. **Strict binary outcome.** Outcome column must contain only `positive_label` and `negative_label` values.
+
+---
+
+## Validation Workflows (v0.15.0)
+
+NCVROC provides dedicated functions for validating fixed sum-score models, performing cross-size model selection, and rigorously estimating model-selection optimism via nested cross-validation:
+
+### A. Fixed-Model Cross-Validation (`cv_sum_roc`)
+
+Evaluate an unweighted sum score of a predetermined item set using $K$-fold or repeated $K$-fold cross-validation:
+
+```r
+library(NCVROC)
+
+# Evaluate 5-fold CV for fixed scale Q1 + Q2 + Q3
+cv_fit <- cv_sum_roc(
+  data          = analysis_dat,
+  outcome       = y,
+  items         = c("Q1", "Q2", "Q3"),
+  folds         = 5,
+  repeats       = 1,
+  cutoff_method = "youden",
+  seed          = 42
+)
+print(cv_fit)
+```
+
+### B. Fixed-Model Leave-One-Out Cross-Validation (`loocv_sum_roc`)
+
+Evaluate a fixed sum score model with deterministic leave-one-out cross-validation:
+
+```r
+# Exact LOOCV for fixed scale
+loo_fit <- loocv_sum_roc(
+  data          = analysis_dat,
+  outcome       = y,
+  items         = c("Q1", "Q2", "Q3"),
+  cutoff_method = "youden"
+)
+print(loo_fit)
+```
+
+### C. Cross-Size Ordinary Model Selection (`cross_size_cv`)
+
+Search the full combinatorial model space across multiple candidate sizes (e.g. 1 to 4 items) and select the single best model via ordinary (non-nested) cross-validation:
+
+```r
+# Select the best model across 1 to 4 items
+ord_selection <- cross_size_cv(
+  data             = analysis_dat,
+  outcome          = y,
+  items            = Q1:Q10,
+  model_sizes      = 1:4,
+  selection_metric = "auc",
+  folds            = 5,
+  seed             = 42
+)
+print(ord_selection)
+```
+
+### D. Cross-Size Nested Cross-Validation (`cross_size_nested_cv`)
+
+Assess the out-of-sample generalization performance of the entire model-selection procedure on independent outer test folds:
+
+```r
+# Evaluate model-selection procedure across 1 to 4 items
+nested_val <- cross_size_nested_cv(
+  data             = analysis_dat,
+  outcome          = y,
+  items            = Q1:Q10,
+  model_sizes      = 1:4,
+  selection_metric = "auc",
+  outer_folds      = 5,
+  inner_folds      = 4,
+  outer_repeats    = 5,
+  parallel         = "threads",
+  seed             = 42
+)
+print(nested_val)
+```
+
+### E. Comparing Non-Nested Selection with Nested Validation (`compare_cv_selection`)
+
+Compare the apparent / ordinary cross-validation performance of the selected model against the generalization performance of the selection procedure, directly quantifying `selection_optimism = ordinary - nested`:
+
+```r
+# Compare ordinary selection performance vs nested procedure generalization
+comp <- compare_cv_selection(
+  data             = analysis_dat,
+  outcome          = y,
+  items            = Q1:Q10,
+  model_sizes      = 1:4,
+  selection_metric = "auc",
+  folds            = 5,
+  outer_folds      = 5,
+  inner_folds      = 4,
+  outer_repeats    = 5,
+  seed             = 42
+)
+print(comp)
+```
+
+> [!NOTE]
+> **Statistical interpretation:** `selection_optimism` reflects empirical optimism associated with model selection under the non-nested procedure, not the bias of a specific fixed final model. In fixed unweighted sum scores, pooled out-of-fold AUC equals full-data apparent AUC; nested CV estimates the out-of-sample generalization performance of the selection procedure.
 
 ---
 
