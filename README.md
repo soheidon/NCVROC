@@ -21,7 +21,7 @@ Assume higher sum scores indicate higher probability of a positive outcome. User
 - **Exact AUC Mathematical Identity Optimization**:
   - Leverages the mathematical property of fixed unweighted sum scores: the pooled out-of-fold score vector equals the full-data score vector, hence pooled OOF AUC equals full-data apparent AUC, avoiding redundant fold-wise AUC recomputation during combinatorial model selection.
 - **Universal Logical Block Streams & External Merge Architecture**:
-  - Guaranteed $O(\text{block\_size})$ bounded memory traversal for constrained AUC searches (`sensitivity_min` / `specificity_min`).
+  - Guaranteed bounded memory traversal (proportional to block size) for constrained AUC searches (`sensitivity_min` / `specificity_min`).
 - **Comprehensive Parallel Routing**:
   - Full support for `none`, `threads` (C++ multi-threading), `chunks` (PSOCK clusters), `outer` (outer folds), and `hybrid` (outer PSOCK $\times$ inner threads).
 

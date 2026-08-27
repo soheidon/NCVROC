@@ -15,7 +15,7 @@
 
 - **Universal logical block streams & external merge architecture**:
   - Implemented bounded block streams and hierarchical $K$-way external merge sort (`fan_in = 16L`, `block_size = 2000L`) for constrained AUC search (`sensitivity_min` / `specificity_min`).
-  - Guarantees strict $O(\text{block\_size})$ memory bound across any number of candidate models or merge passes, with zero full-space R memory materialization.
+  - Guarantees strict bounded memory (proportional to block size) across any number of candidate models or merge passes, with zero full-space R memory materialization.
 
 - **Comprehensive parallel routing**:
   - `cross_size_cv()` supports `parallel = "none"`, `"threads"`, and `"chunks"`.

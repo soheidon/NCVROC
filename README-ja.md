@@ -17,11 +17,11 @@
   - `loocv_sum_roc()`: 指定した固定尺度の厳密な 1 例抜き交差検証（LOOCV）を実行。
   - `cross_size_cv()`: 複数の項目数（例: 1〜5項目）にわたる組み合わせ空間全体から、通常の交差検証（non-nested CV）により最良モデルを探索・選抜。
   - `cross_size_nested_cv()`: 複数項目数にわたる組み合わせ探索・モデル選抜手続き全体の汎化性能を、独立した outer test で評価するネスト交差検証を実行。
-  - `compare_cv_selection()`: 通常 CV で選抜されたモデルの見かけの性能と、ネスト CV による選抜手続き全体の汎化性能を直接比較し、モデル選抜に伴う楽観度（$\text{selection\_optimism} = \text{ordinary} - \text{nested}$）を定量化。
+  - `compare_cv_selection()`: 通常 CV で選抜されたモデルの見かけの性能と、ネスト CV による選抜手続き全体の汎化性能を直接比較し、モデル選抜に伴う楽観度（`selection_optimism = ordinary - nested`）を定量化。
 - **固定合計得点における AUC 数学的同一性の活用**:
   - 単純加算スコアの数学的性質（集約 OOF スコアベクトルと全データスコアベクトルが一致し、pooled OOF AUC = 全データ AUC となる性質）を活用し、フォールドごとの重複した AUC 再計算を完全に省略して厳密な AUC 最適化と順位付けを実現。
 - **ユニバーサル論理ブロックストリームと外部マージソート**:
-  - OOF 制約付き AUC 探索（`sensitivity_min` / `specificity_min`）において、固定ブロック単位（2,000行）のストリーミング処理と $K$-way 外部マージソート（`fan_in = 16L`）を導入。候補数や探索深度に依存しない $O(\text{block\_size})$ の厳密な有界メモリ保証を実現。
+  - OOF 制約付き AUC 探索（`sensitivity_min` / `specificity_min`）において、固定ブロック単位（2,000行）のストリーミング処理と $K$-way 外部マージソート（`fan_in = 16L`）を導入。候補数や探索深度に依存しない厳密な有界メモリ保証（ブロックサイズに比例）を実現。
 - **包括的な並列バックエンド統合**:
   - `cross_size_cv()` は `none`, `threads`, `chunks` をサポート。
   - `cross_size_nested_cv()` は `none`, `outer`, `threads`, `chunks`, `hybrid` をサポート。
@@ -149,7 +149,7 @@ print(nested_val)
 
 ### E. 通常選択とネスト検証の比較 (`compare_cv_selection`)
 
-通常 CV で選抜されたモデルの見かけの性能と、ネスト CV による選択手続き全体の汎化性能を直接比較し、モデル選抜に伴う楽観度（$\text{selection\_optimism} = \text{ordinary} - \text{nested}$）を定量化します：
+通常 CV で選抜されたモデルの見かけの性能と、ネスト CV による選択手続き全体の汎化性能を直接比較し、モデル選抜に伴う楽観度（`selection_optimism = ordinary - nested`）を定量化します：
 
 ```r
 # 通常選択性能とネスト選択手続き汎化性能の比較
