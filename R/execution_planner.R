@@ -821,21 +821,34 @@
     manual_parallel_mode, manual_n_workers, workload$total_candidates, effective_chunk_size
   )
   metadata <- list(
-    planner_version = .PLANNER_VERSION, tuning_mode = tuning, tuning_performed = TRUE,
-    backend_benchmark_performed = FALSE, total_candidates = workload$total_candidates,
-    candidate_count_by_size = workload$candidate_count_by_size,
-    micro_pilot_candidates = list(total = 0L, by_size = integer()),
-    micro_pilot_elapsed = NA_real_, estimated_serial_runtime = NA_real_,
-    auto_runtime_threshold = threshold, benchmark_table = data.frame(),
-    selected_parallel = manual_plan$parallel[[1L]], selected_n_workers = manual_plan$n_workers[[1L]],
-    selected_resource_count = manual_plan$resource_count[[1L]], estimated_runtime = NA_real_,
-    runtime_estimation_method = "size_stratified_candidate_cost",
-    selection_tolerance = .PLANNER_SELECTION_TOLERANCE, decision_reason = NA_character_,
-    fallback_reason = NA_character_, planner_elapsed = NA_real_, benchmark_repeat_count = integer(),
-    warmup_performed = FALSE, manual_parallel_requested = manual_parallel_mode,
-    manual_n_workers_requested = manual_n_workers,
-    environment_summary = .planner_environment_summary(), tuning_budget_seconds = NA_real_,
-    tuning_budget_exhausted = FALSE
+    planner_version             = .PLANNER_VERSION,
+    target_api                  = "exhaustive_sum_roc",
+    tuning_mode                 = tuning,
+    tuning_performed            = TRUE,
+    backend_benchmark_performed = FALSE,
+    total_candidates            = workload$total_candidates,
+    candidate_count_by_size     = workload$candidate_count_by_size,
+    micro_pilot_candidates      = list(total = 0L, by_size = integer()),
+    micro_pilot_elapsed         = NA_real_,
+    estimated_serial_runtime    = NA_real_,
+    auto_runtime_threshold      = threshold,
+    benchmark_table             = data.frame(),
+    selected_parallel           = manual_plan$parallel[[1L]],
+    selected_n_workers          = manual_plan$n_workers[[1L]],
+    selected_resource_count     = manual_plan$resource_count[[1L]],
+    estimated_runtime           = NA_real_,
+    runtime_estimation_method   = "size_stratified_candidate_cost",
+    selection_tolerance         = .PLANNER_SELECTION_TOLERANCE,
+    decision_reason             = NA_character_,
+    fallback_reason             = NA_character_,
+    planner_elapsed             = NA_real_,
+    benchmark_repeat_count      = integer(),
+    warmup_performed            = FALSE,
+    manual_parallel_requested   = manual_parallel_mode,
+    manual_n_workers_requested  = manual_n_workers,
+    environment_summary         = .planner_environment_summary(),
+    tuning_budget_seconds       = NA_real_,
+    tuning_budget_exhausted     = FALSE
   )
   started <- clock()
   outcome <- tryCatch(.planner_with_preserved_rng({
@@ -1366,4 +1379,58 @@
 
   outcome$metadata$planner_elapsed <- clock() - started
   outcome
+}
+
+#' Format automatic execution plan metadata as human-readable text
+#'
+#' @param x An execution plan metadata list or an S3 object containing one.
+#' @return A character string summarizing the execution plan.
+#' @keywords internal
+#' @noRd
+.planner_format_execution_plan <- function(x) {
+  metadata <- if (is.list(x) && is.list(x$settings) && !is.null(x$settings$execution_plan)) {
+    x$settings$execution_plan
+  } else if (is.list(x) && !is.null(x$execution_plan)) {
+    x$execution_plan
+  } else if (!is.null(attr(x, "execution_plan", exact = TRUE))) {
+    attr(x, "execution_plan", exact = TRUE)
+  } else if (is.list(x) && !is.null(x$planner_version)) {
+    x
+  } else {
+    stop("`x` does not contain execution_plan metadata.", call. = FALSE)
+  }
+
+  target_api <- if (!is.null(metadata$target_api)) metadata$target_api else "unknown"
+  tuning_mode <- if (!is.null(metadata$tuning_mode)) metadata$tuning_mode else "off"
+  decision <- if (!is.null(metadata$decision_reason)) metadata$decision_reason else "none"
+  n_workers <- if (!is.null(metadata$selected_n_workers)) as.integer(metadata$selected_n_workers) else 1L
+  worker_str <- if (n_workers > 1L) sprintf(" (%d workers)", n_workers) else ""
+  backend_str <- sprintf("%s%s", metadata$selected_parallel, worker_str)
+
+  lines <- c(
+    "=== Automatic Execution Plan ===",
+    sprintf("Target API:               %s", target_api),
+    sprintf("Tuning Mode:              %s", tuning_mode),
+    sprintf("Total Candidates:         %s", format(metadata$total_candidates, big.mark = ",")),
+    sprintf("Decision Reason:          %s", decision),
+    sprintf("Selected Backend:         %s", backend_str)
+  )
+
+  if (is.numeric(metadata$estimated_serial_runtime) && is.finite(metadata$estimated_serial_runtime)) {
+    lines <- c(lines, sprintf("Estimated Serial Runtime: ~%.2f s (approximate estimate)", metadata$estimated_serial_runtime))
+  }
+  if (is.numeric(metadata$estimated_runtime) && is.finite(metadata$estimated_runtime)) {
+    lines <- c(lines, sprintf("Estimated Plan Runtime:   ~%.2f s (approximate estimate)", metadata$estimated_runtime))
+  }
+  if (isTRUE(metadata$backend_benchmark_performed)) {
+    n_bench <- if (is.data.frame(metadata$benchmark_table)) nrow(metadata$benchmark_table) else 0L
+    lines <- c(lines, sprintf("Backend Benchmarking:     Performed across %d candidate configurations", n_bench))
+  } else {
+    lines <- c(lines, "Backend Benchmarking:     Skipped (workload below threshold or degenerate)")
+  }
+  if (!is.null(metadata$cv_method)) {
+    lines <- c(lines, sprintf("Cross-Validation Method:  %s (k = %d, repeats = %d)",
+                            metadata$cv_method, metadata$k, metadata$repeats))
+  }
+  paste(lines, collapse = "\n")
 }

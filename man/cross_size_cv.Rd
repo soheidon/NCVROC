@@ -111,7 +111,9 @@ An S3 object of class `"cross_size_cv_result"`, containing:
   \item{model_sizes}{Evaluated model sizes vector.}
   \item{total_combinations}{Total number of evaluated candidate models.}
   \item{cv_method}{Cross-validation method used (\code{"kfold"} or \code{"loocv"}).}
-  \item{settings}{List of execution settings and parameters.}
+  \item{settings}{List of execution settings and parameters. When \code{tuning = "auto"} or
+    \code{"always"}, includes \code{execution_plan} metadata detailing the selected execution backend
+    and approximate runtime estimates. \code{tuning = "off"} attaches no execution plan metadata.}
 }
 }
 \description{
