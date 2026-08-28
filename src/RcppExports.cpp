@@ -78,8 +78,8 @@ BEGIN_RCPP
 END_RCPP
 }
 // evaluate_combos_cv_cpp
-DataFrame evaluate_combos_cv_cpp(NumericMatrix x, IntegerVector y, List combo_indices, List test_indices, int n_folds, int repeats, std::string cutoff_method, double sensitivity_min, double specificity_min, int num_threads);
-RcppExport SEXP _NCVROC_evaluate_combos_cv_cpp(SEXP xSEXP, SEXP ySEXP, SEXP combo_indicesSEXP, SEXP test_indicesSEXP, SEXP n_foldsSEXP, SEXP repeatsSEXP, SEXP cutoff_methodSEXP, SEXP sensitivity_minSEXP, SEXP specificity_minSEXP, SEXP num_threadsSEXP) {
+DataFrame evaluate_combos_cv_cpp(NumericMatrix x, IntegerVector y, List combo_indices, List test_indices, int n_folds, int repeats, std::string cutoff_method, double sensitivity_min, double specificity_min, int num_threads, std::size_t grain_size);
+RcppExport SEXP _NCVROC_evaluate_combos_cv_cpp(SEXP xSEXP, SEXP ySEXP, SEXP combo_indicesSEXP, SEXP test_indicesSEXP, SEXP n_foldsSEXP, SEXP repeatsSEXP, SEXP cutoff_methodSEXP, SEXP sensitivity_minSEXP, SEXP specificity_minSEXP, SEXP num_threadsSEXP, SEXP grain_sizeSEXP) {
 BEGIN_RCPP
     Rcpp::RObject rcpp_result_gen;
     Rcpp::RNGScope rcpp_rngScope_gen;
@@ -93,7 +93,8 @@ BEGIN_RCPP
     Rcpp::traits::input_parameter< double >::type sensitivity_min(sensitivity_minSEXP);
     Rcpp::traits::input_parameter< double >::type specificity_min(specificity_minSEXP);
     Rcpp::traits::input_parameter< int >::type num_threads(num_threadsSEXP);
-    rcpp_result_gen = Rcpp::wrap(evaluate_combos_cv_cpp(x, y, combo_indices, test_indices, n_folds, repeats, cutoff_method, sensitivity_min, specificity_min, num_threads));
+    Rcpp::traits::input_parameter< std::size_t >::type grain_size(grain_sizeSEXP);
+    rcpp_result_gen = Rcpp::wrap(evaluate_combos_cv_cpp(x, y, combo_indices, test_indices, n_folds, repeats, cutoff_method, sensitivity_min, specificity_min, num_threads, grain_size));
     return rcpp_result_gen;
 END_RCPP
 }
@@ -140,7 +141,7 @@ static const R_CallMethodDef CallEntries[] = {
     {"_NCVROC_evaluate_combos_cpp_chunk", (DL_FUNC) &_NCVROC_evaluate_combos_cpp_chunk, 7},
     {"_NCVROC_evaluate_combos_cpp_chunk_parallel", (DL_FUNC) &_NCVROC_evaluate_combos_cpp_chunk_parallel, 9},
     {"_NCVROC_evaluate_combos_cpp_sparse_parallel", (DL_FUNC) &_NCVROC_evaluate_combos_cpp_sparse_parallel, 7},
-    {"_NCVROC_evaluate_combos_cv_cpp", (DL_FUNC) &_NCVROC_evaluate_combos_cv_cpp, 10},
+    {"_NCVROC_evaluate_combos_cv_cpp", (DL_FUNC) &_NCVROC_evaluate_combos_cv_cpp, 11},
     {"_NCVROC_evaluate_candidate_stability_cv_cpp", (DL_FUNC) &_NCVROC_evaluate_candidate_stability_cv_cpp, 8},
     {"_NCVROC_evaluate_candidate_stability_bootstrap_cpp", (DL_FUNC) &_NCVROC_evaluate_candidate_stability_bootstrap_cpp, 9},
     {NULL, NULL, 0}

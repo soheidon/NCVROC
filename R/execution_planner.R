@@ -961,3 +961,409 @@
   outcome$metadata$planner_elapsed <- clock() - started
   outcome
 }
+
+# ============================================================================
+# cross_size_cv Execution Planner Primitives (Phase 1.2)
+# ============================================================================
+
+.PLANNER_CROSS_SIZE_CV_PILOT_BUDGET <- 96L
+
+.planner_manual_cross_size_cv_plan <- function(parallel_mode, n_workers) {
+  if (identical(parallel_mode, "none")) {
+    return(data.frame(parallel = "none", n_workers = 1L,
+                      resource_count = 1L, stringsAsFactors = FALSE))
+  }
+  if (identical(parallel_mode, "threads")) {
+    workers <- .resolve_n_workers(parallel = "threads", n_workers = n_workers)
+  } else {
+    workers <- .resolve_n_workers(parallel = "chunks", n_workers = n_workers)
+  }
+  data.frame(parallel = parallel_mode, n_workers = as.integer(workers),
+             resource_count = as.integer(workers), stringsAsFactors = FALSE)
+}
+
+.planner_evaluate_cv_pilot_combos <- function(x_mat, y, combo_indices_list,
+                                              test_indices_0based, n_folds_total,
+                                              repeats, cutoff_method,
+                                              sens_min, spec_min, engine,
+                                              parallel = "none", n_workers = 1L) {
+  if (!length(combo_indices_list)) return(invisible(NULL))
+  if (identical(engine, "Rcpp")) {
+    if (identical(parallel, "threads") && n_workers > 1L) {
+      pilot_grain <- max(1L, as.integer(floor(length(combo_indices_list) / (n_workers * 2L))))
+      invisible(evaluate_combos_cv_cpp(
+        x               = x_mat,
+        y               = y,
+        combo_indices   = combo_indices_list,
+        test_indices    = test_indices_0based,
+        n_folds         = n_folds_total,
+        repeats         = repeats,
+        cutoff_method   = cutoff_method,
+        sensitivity_min = sens_min,
+        specificity_min = spec_min,
+        num_threads     = as.integer(n_workers),
+        grain_size      = pilot_grain
+      ))
+    } else {
+      invisible(evaluate_combos_cv_cpp(
+        x               = x_mat,
+        y               = y,
+        combo_indices   = combo_indices_list,
+        test_indices    = test_indices_0based,
+        n_folds         = n_folds_total,
+        repeats         = repeats,
+        cutoff_method   = cutoff_method,
+        sensitivity_min = sens_min,
+        specificity_min = spec_min,
+        num_threads     = 1L,
+        grain_size      = 64L
+      ))
+    }
+    return(invisible(NULL))
+  }
+  # Engine = "R"
+  for (idx in combo_indices_list) {
+    .eval_single_combo_cv(
+      x_mat         = x_mat,
+      y             = y,
+      items_0based  = idx,
+      folds         = test_indices_0based,
+      repeats       = repeats,
+      cutoff_method = cutoff_method,
+      sens_min      = sens_min,
+      spec_min      = spec_min
+    )
+  }
+  invisible(NULL)
+}
+
+.planner_benchmark_cv_candidates <- function(x_mat, y, combo_indices_list,
+                                             test_indices_0based, n_folds_total,
+                                             repeats, cutoff_method,
+                                             sens_min, spec_min, engine,
+                                             plan,
+                                             timer = .planner_default_timer,
+                                             lifecycle = .planner_with_chunk_benchmark_lifecycle) {
+  plan <- .planner_validate_fallback_plan(plan)
+  run_once <- function() {
+    if (!identical(plan$parallel[[1L]], "chunks")) {
+      return(timer(.planner_evaluate_cv_pilot_combos(
+        x_mat               = x_mat,
+        y                   = y,
+        combo_indices_list  = combo_indices_list,
+        test_indices_0based = test_indices_0based,
+        n_folds_total       = n_folds_total,
+        repeats             = repeats,
+        cutoff_method       = cutoff_method,
+        sens_min            = sens_min,
+        spec_min            = spec_min,
+        engine              = engine,
+        parallel            = plan$parallel[[1L]],
+        n_workers           = plan$n_workers[[1L]]
+      )))
+    }
+    data_env <- new.env(parent = emptyenv())
+    data_env$.PLANNER_X <- x_mat
+    data_env$.PLANNER_Y <- y
+    data_env$.PLANNER_TEST_IDX <- test_indices_0based
+    data_env$.PLANNER_NFOLDS <- n_folds_total
+    data_env$.PLANNER_REPEATS <- repeats
+    data_env$.PLANNER_CUTOFF <- cutoff_method
+    data_env$.PLANNER_SENS_MIN <- sens_min
+    data_env$.PLANNER_SPEC_MIN <- spec_min
+    data_env$.PLANNER_ENGINE <- engine
+
+    splits <- split(
+      combo_indices_list,
+      rep(seq_len(plan$n_workers[[1L]]), length.out = length(combo_indices_list))
+    )
+
+    # The timed expression owns startup, exports, evaluation, and shutdown.
+    timer(lifecycle(
+      plan,
+      setup = function(cl) {
+        lib_paths <- .libPaths()
+        parallel::clusterExport(cl, "lib_paths", envir = environment())
+        parallel::clusterEvalQ(cl, {
+          .libPaths(lib_paths)
+          if (requireNamespace("NCVROC", quietly = TRUE)) library(NCVROC)
+          NULL
+        })
+        ns <- asNamespace("NCVROC")
+        helpers <- c(".planner_evaluate_cv_pilot_combos", ".eval_single_combo_cv",
+                     "evaluate_combos_cv_cpp", "compute_score_frequencies",
+                     "compute_roc_metrics_from_table", "find_optimal_cutoff")
+        helpers <- intersect(helpers, ls(ns, all.names = TRUE))
+        if (length(helpers)) parallel::clusterExport(cl, helpers, envir = ns)
+        parallel::clusterExport(cl, ls(data_env, all.names = TRUE), envir = data_env)
+      },
+      evaluate = function(cl) parallel::parLapply(cl, splits, function(sub_combos) {
+        .planner_evaluate_cv_pilot_combos(
+          x_mat               = .PLANNER_X,
+          y                   = .PLANNER_Y,
+          combo_indices_list  = sub_combos,
+          test_indices_0based = .PLANNER_TEST_IDX,
+          n_folds_total       = .PLANNER_NFOLDS,
+          repeats             = .PLANNER_REPEATS,
+          cutoff_method       = .PLANNER_CUTOFF,
+          sens_min            = .PLANNER_SENS_MIN,
+          spec_min            = .PLANNER_SPEC_MIN,
+          engine              = .PLANNER_ENGINE,
+          parallel            = "none",
+          n_workers           = 1L
+        )
+      })
+    ))
+  }
+  tryCatch(
+    list(elapsed = as.double(run_once()), success = TRUE, failure_reason = NA_character_),
+    error = function(e) list(elapsed = NA_real_, success = FALSE, failure_reason = conditionMessage(e))
+  )
+}
+
+.planner_cross_size_cv_controller <- function(data_matrix,
+                                              y,
+                                              item_names,
+                                              sizes,
+                                              cv_folds,
+                                              folds,
+                                              repeats,
+                                              stratified,
+                                              cv_method,
+                                              selection_metric,
+                                              cutoff_method,
+                                              sensitivity_min,
+                                              specificity_min,
+                                              engine,
+                                              tuning,
+                                              manual_parallel_mode,
+                                              manual_n_workers,
+                                              dependencies = list()) {
+  timer <- .planner_or(dependencies$timer, .planner_default_timer)
+  resource_detector <- .planner_or(dependencies$resource_detector, .get_max_workers)
+  benchmark_executor <- .planner_or(dependencies$benchmark_executor, .planner_benchmark_cv_candidates)
+  threshold <- .planner_or(dependencies$auto_runtime_threshold, .PLANNER_AUTO_RUNTIME_THRESHOLD)
+  clock <- .planner_or(dependencies$clock, .planner_default_clock)
+
+  n_items_total <- length(item_names)
+  workload <- .planner_count_workload(n_items_total, sizes)
+  manual_plan <- .planner_manual_cross_size_cv_plan(manual_parallel_mode, manual_n_workers)
+
+  n_folds_total <- length(cv_folds)
+  test_indices_0based <- lapply(cv_folds, function(f_idx) as.integer(f_idx - 1L))
+  sens_min <- if (is.null(sensitivity_min)) -1.0 else as.numeric(sensitivity_min)
+  spec_min <- if (is.null(specificity_min)) -1.0 else as.numeric(specificity_min)
+  x_mat <- as.matrix(data_matrix[, item_names, drop = FALSE])
+  mode(x_mat) <- "double"
+  y_int <- as.integer(y)
+
+  metadata <- list(
+    planner_version             = .PLANNER_VERSION,
+    target_api                  = "cross_size_cv",
+    tuning_mode                 = tuning,
+    tuning_performed            = TRUE,
+    backend_benchmark_performed = FALSE,
+    total_candidates            = workload$total_candidates,
+    candidate_count_by_size     = workload$candidate_count_by_size,
+    micro_pilot_candidates      = list(total = 0L, by_size = integer()),
+    micro_pilot_elapsed         = NA_real_,
+    estimated_serial_runtime    = NA_real_,
+    auto_runtime_threshold      = threshold,
+    benchmark_table             = data.frame(),
+    selected_parallel           = manual_plan$parallel[[1L]],
+    selected_n_workers          = manual_plan$n_workers[[1L]],
+    selected_resource_count     = manual_plan$resource_count[[1L]],
+    estimated_runtime           = NA_real_,
+    runtime_estimation_method   = "size_stratified_candidate_cost",
+    selection_tolerance         = .PLANNER_SELECTION_TOLERANCE,
+    decision_reason             = NA_character_,
+    fallback_reason             = NA_character_,
+    planner_elapsed             = NA_real_,
+    benchmark_repeat_count      = integer(),
+    warmup_performed            = FALSE,
+    manual_parallel_requested   = manual_parallel_mode,
+    manual_n_workers_requested  = manual_n_workers,
+    environment_summary         = .planner_environment_summary(),
+    tuning_budget_seconds       = NA_real_,
+    tuning_budget_exhausted     = FALSE,
+    cv_method                   = cv_method,
+    k                           = as.integer(folds),
+    repeats                     = as.integer(repeats),
+    n_folds_total               = as.integer(n_folds_total)
+  )
+
+  started <- clock()
+  outcome <- tryCatch(.planner_with_preserved_rng({
+    pilot <- .planner_make_pilot_candidates(
+      n_items_total, sizes, .PLANNER_CROSS_SIZE_CV_PILOT_BUDGET
+    )
+    metadata$micro_pilot_candidates <- list(
+      total   = as.integer(nrow(pilot)),
+      by_size = as.integer(table(factor(pilot$model_size, levels = sizes)))
+    )
+    names(metadata$micro_pilot_candidates$by_size) <- as.character(sizes)
+
+    # Convert pilot unranked combinations to 0-based column indices
+    pilot_combos <- pilot$combination
+
+    # Untimed serial warm-up uses a small deterministic subset
+    warmup_combos <- pilot_combos[seq_len(min(length(pilot_combos), length(sizes)))]
+    .planner_evaluate_cv_pilot_combos(
+      x_mat, y_int, warmup_combos, test_indices_0based, n_folds_total,
+      repeats, cutoff_method, sens_min, spec_min, engine, "none", 1L
+    )
+    metadata$warmup_performed <- list(serial = TRUE, plans = character())
+
+    # Size-stratified serial pilot timing
+    timing_rows <- lapply(sizes, function(s) {
+      s_indices <- which(pilot$model_size == s)
+      s_combos <- pilot_combos[s_indices]
+      result <- benchmark_executor(
+        x_mat, y_int, s_combos, test_indices_0based, n_folds_total,
+        repeats, cutoff_method, sens_min, spec_min, engine,
+        data.frame(parallel = "none", n_workers = 1L, resource_count = 1L, stringsAsFactors = FALSE),
+        timer
+      )
+      data.frame(
+        model_size   = s,
+        n_candidates = length(s_combos),
+        elapsed      = result$elapsed,
+        success      = isTRUE(result$success),
+        stringsAsFactors = FALSE
+      )
+    })
+    pilot_timing <- do.call(rbind, timing_rows)
+    valid_pilot <- pilot_timing[
+      pilot_timing$success & is.finite(pilot_timing$elapsed) & pilot_timing$elapsed >= 0,
+      , drop = FALSE
+    ]
+    metadata$micro_pilot_elapsed <- sum(valid_pilot$elapsed, na.rm = TRUE)
+    estimate <- .planner_estimate_runtime(workload, valid_pilot)
+    metadata$estimated_serial_runtime <- estimate$estimated_serial_runtime
+    metadata$runtime_estimation_method <- estimate$runtime_estimation_method
+
+    if (!is.finite(estimate$estimated_serial_runtime)) {
+      metadata$fallback_reason <- "runtime estimate unavailable; using manual plan"
+      metadata$decision_reason <- metadata$fallback_reason
+      return(list(plan = manual_plan, metadata = metadata, warn = TRUE))
+    }
+
+    detected <- tryCatch(resource_detector(), error = function(e) NA_integer_)
+    if (!.planner_is_integer_valued(detected) || detected < 1L) detected <- .get_max_workers()
+
+    thread_tasks <- max(1L, as.integer(ceiling(workload$total_candidates / 64L)))
+    chunk_tasks  <- max(1L, as.integer(ceiling(workload$total_candidates / 2000L)))
+
+    thread_plans <- .planner_generate_legal_plans(
+      "cross_size_cv", detected, manual_n_workers, thread_tasks, engine
+    )
+    chunk_plans <- .planner_generate_legal_plans(
+      "cross_size_cv", detected, manual_n_workers, chunk_tasks, engine
+    )
+
+    pick_levels <- function(table, backend) {
+      rows <- table[table$parallel == backend & table$n_workers >= 2L, , drop = FALSE]
+      if (!nrow(rows)) return(rows)
+      rows[match(unique(c(min(rows$n_workers), max(rows$n_workers))), rows$n_workers), , drop = FALSE]
+    }
+
+    all_plans <- rbind(
+      thread_plans[thread_plans$parallel == "none", , drop = FALSE],
+      pick_levels(thread_plans, "threads"),
+      pick_levels(chunk_plans, "chunks")
+    )
+    all_plans <- all_plans[!duplicated(paste(all_plans$parallel, all_plans$n_workers)), , drop = FALSE]
+
+    nonserial <- all_plans$parallel != "none"
+    degenerate <- workload$total_candidates < 8 || !any(nonserial)
+    should <- identical(tuning, "always") && !degenerate ||
+      identical(tuning, "auto") && !degenerate &&
+      .planner_should_benchmark(estimate$estimated_serial_runtime, threshold)$backend_benchmark_required
+
+    if (!should) {
+      metadata$decision_reason <- if (degenerate) "degenerate workload; using manual plan" else
+        .planner_should_benchmark(estimate$estimated_serial_runtime, threshold)$reason
+      return(list(plan = manual_plan, metadata = metadata, warn = FALSE))
+    }
+
+    metadata$backend_benchmark_performed <- TRUE
+    metadata$tuning_budget_seconds <- min(10, max(2, estimate$estimated_serial_runtime * 0.10))
+    benchmark_started <- clock()
+    rows <- list(); row_i <- 0L
+
+    for (i in seq_len(nrow(all_plans))) {
+      plan <- all_plans[i, c("parallel", "n_workers", "resource_count"), drop = FALSE]
+      repeats_bm <- if (plan$parallel == "chunks") 2L else 2L
+
+      if (plan$parallel != "chunks") {
+        .planner_evaluate_cv_pilot_combos(
+          x_mat, y_int, warmup_combos, test_indices_0based, n_folds_total,
+          repeats, cutoff_method, sens_min, spec_min, engine,
+          plan$parallel[[1L]], plan$n_workers[[1L]]
+        )
+        metadata$warmup_performed$plans <- c(
+          metadata$warmup_performed$plans, all_plans$plan_id[i]
+        )
+      }
+
+      for (repeat_i in seq_len(repeats_bm)) {
+        if (repeat_i > 1L && clock() - benchmark_started > metadata$tuning_budget_seconds) {
+          metadata$tuning_budget_exhausted <- TRUE
+          next
+        }
+        result <- benchmark_executor(
+          x_mat, y_int, pilot_combos, test_indices_0based, n_folds_total,
+          repeats, cutoff_method, sens_min, spec_min, engine, plan, timer
+        )
+        row_i <- row_i + 1L
+        rows[[row_i]] <- data.frame(
+          plan_id          = all_plans$plan_id[i],
+          parallel         = plan$parallel[[1L]],
+          n_workers        = plan$n_workers[[1L]],
+          resource_count   = plan$resource_count[[1L]],
+          backend_priority = all_plans$backend_priority[i],
+          elapsed          = result$elapsed,
+          success          = result$success,
+          failure_reason   = result$failure_reason,
+          stringsAsFactors = FALSE
+        )
+      }
+    }
+
+    raw <- do.call(rbind, rows)
+    metadata$benchmark_repeat_count <- table(raw$plan_id)
+    metadata$benchmark_table <- .planner_aggregate_timings(raw)
+    selected <- .planner_select_plan(metadata$benchmark_table, fallback_plan = manual_plan)
+
+    metadata$selected_parallel <- selected$selected_parallel
+    metadata$selected_n_workers <- selected$selected_n_workers
+    metadata$selected_resource_count <- selected$selected_resource_count
+    selected_elapsed <- selected$selected_plan$median_elapsed
+    metadata$estimated_runtime <- if (length(selected_elapsed) == 1L &&
+                                      is.finite(selected_elapsed[[1L]])) {
+      selected_elapsed[[1L]] / length(pilot_combos) * workload$total_candidates
+    } else NA_real_
+    metadata$fallback_reason <- selected$fallback_reason
+    metadata$decision_reason <- if (is.na(selected$fallback_reason)) {
+      "selected near-best benchmark plan"
+    } else {
+      selected$fallback_reason
+    }
+
+    list(
+      plan = selected$selected_plan[, c("parallel", "n_workers", "resource_count"), drop = FALSE],
+      metadata = metadata,
+      warn = !is.na(selected$fallback_reason)
+    )
+  }), error = function(e) list(
+    plan = manual_plan,
+    metadata = within(metadata, {
+      fallback_reason <- paste("planner failure; using manual plan:", conditionMessage(e))
+      decision_reason <- fallback_reason
+    }),
+    warn = TRUE
+  ))
+
+  outcome$metadata$planner_elapsed <- clock() - started
+  outcome
+}

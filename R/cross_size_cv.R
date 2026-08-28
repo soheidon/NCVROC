@@ -981,6 +981,9 @@
 #' @param parallel Parallel mode: `FALSE` / `"none"` (default), `"threads"` (multi-threaded C++),
 #'   or `"chunks"` (PSOCK cluster).
 #' @param n_workers Integer, number of workers or threads (default `NULL` = auto).
+#' @param tuning Automatic execution-planning mode: `"off"` (default, manual execution configuration is authoritative),
+#'   `"auto"` (benchmarks legal backends only when predicted runtime exceeds threshold), or
+#'   `"always"` (always benchmarks legal backends for non-degenerate workloads).
 #' @param ci Logical, compute confidence intervals for full-data apparent metrics of final model (default `FALSE`).
 #' @param conf_level Numeric, confidence level (default 0.95).
 #' @param seed Integer, random seed for reproducible fold generation.
@@ -1044,6 +1047,7 @@ cross_size_cv <- function(data,
                           engine             = c("Rcpp", "R"),
                           parallel           = FALSE,
                           n_workers          = NULL,
+                          tuning             = c("off", "auto", "always"),
                           ci                 = FALSE,
                           conf_level         = 0.95,
                           seed               = NULL,
@@ -1057,6 +1061,7 @@ cross_size_cv <- function(data,
   selection_metric <- match.arg(selection_metric)
   cutoff_method    <- match.arg(cutoff_method)
   engine           <- match.arg(engine)
+  tuning           <- match.arg(tuning)
 
   # ---- Validate top_n ----
   if (is.null(top_n) || is.na(top_n) || !is.numeric(top_n) || top_n <= 0 || is.infinite(top_n)) {
@@ -1174,6 +1179,41 @@ cross_size_cv <- function(data,
   # Total combinations
   total_combos <- .count_total_combos_cross_size(n_items_total, sizes)
 
+  # ---- Prepare Data Matrix for Evaluators & Planner ----
+  dat_mat <- as.matrix(dat_prep[, item_names, drop = FALSE])
+  mode(dat_mat) <- "double"
+  y_int <- as.integer(y)
+
+  # ---- Execution Planner (Phase 1.2) ----
+  execution_plan_metadata <- NULL
+  if (tuning != "off") {
+    planner_outcome <- .planner_cross_size_cv_controller(
+      data_matrix          = dat_mat,
+      y                    = y_int,
+      item_names           = item_names,
+      sizes                = sizes,
+      cv_folds             = cv_folds,
+      folds                = effective_folds,
+      repeats              = repeats,
+      stratified           = stratified,
+      cv_method            = cv_method,
+      selection_metric     = selection_metric,
+      cutoff_method        = cutoff_method,
+      sensitivity_min      = sensitivity_min,
+      specificity_min      = specificity_min,
+      engine               = engine,
+      tuning               = tuning,
+      manual_parallel_mode = parallel_mode,
+      manual_n_workers     = n_workers
+    )
+    if (isTRUE(planner_outcome$warn)) {
+      warning("Automatic execution planning failed; falling back to manual execution configuration.", call. = FALSE)
+    }
+    parallel_mode           <- planner_outcome$plan$parallel[[1L]]
+    n_workers_res           <- as.integer(planner_outcome$plan$n_workers[[1L]])
+    execution_plan_metadata <- planner_outcome$metadata
+  }
+
   # =========================================================================
   # STRATEGY 1: Exact AUC Search & Fast Path
   # =========================================================================
@@ -1282,6 +1322,33 @@ cross_size_cv <- function(data,
       }
     }))
 
+    settings_obj <- list(
+      outcome_name       = outcome_name,
+      item_names         = item_names,
+      model_sizes        = sizes,
+      cv_method          = cv_method,
+      selection_metric   = selection_metric,
+      cutoff_method      = cutoff_method,
+      sensitivity_min    = sensitivity_min,
+      specificity_min    = specificity_min,
+      requested_folds    = requested_folds,
+      folds_requested    = requested_folds,
+      effective_folds    = effective_folds,
+      repeats            = repeats,
+      stratified         = stratified,
+      seed               = seed,
+      prefer_fewer_items = prefer_fewer_items,
+      engine             = engine,
+      parallel           = parallel_mode,
+      n_workers          = n_workers_res,
+      threads_per_worker = 1L,
+      ci                 = ci,
+      conf_level         = conf_level
+    )
+    if (!is.null(execution_plan_metadata)) {
+      settings_obj$execution_plan <- execution_plan_metadata
+    }
+
     return(structure(
       list(
         final_selected_model   = final_model_df,
@@ -1296,29 +1363,7 @@ cross_size_cv <- function(data,
         model_sizes            = sizes,
         total_combinations     = total_combos,
         cv_method              = cv_method,
-        settings = list(
-          outcome_name       = outcome_name,
-          item_names         = item_names,
-          model_sizes        = sizes,
-          cv_method          = cv_method,
-          selection_metric   = selection_metric,
-          cutoff_method      = cutoff_method,
-          sensitivity_min    = sensitivity_min,
-          specificity_min    = specificity_min,
-          requested_folds    = requested_folds,
-          folds_requested    = requested_folds,
-          effective_folds    = effective_folds,
-          repeats            = repeats,
-          stratified         = stratified,
-          seed               = seed,
-          prefer_fewer_items = prefer_fewer_items,
-          engine             = engine,
-          parallel           = parallel_mode,
-          n_workers          = n_workers_res,
-          threads_per_worker = 1L,
-          ci                 = ci,
-          conf_level         = conf_level
-        )
+        settings               = settings_obj
       ),
       class = "cross_size_cv_result"
     ))
@@ -1330,9 +1375,6 @@ cross_size_cv <- function(data,
   running_buffer <- NULL
   metric_col <- paste0("cv_", selection_metric)
 
-  # Convert data matrix and inputs for C++
-  dat_mat <- as.matrix(dat_prep[, item_names, drop = FALSE])
-  y_int <- as.integer(y)
   test_indices_0based <- lapply(cv_folds, function(f_idx) as.integer(f_idx - 1L))
   sens_min <- if (is.null(sensitivity_min)) -1.0 else as.numeric(sensitivity_min)
   spec_min <- if (is.null(specificity_min)) -1.0 else as.numeric(specificity_min)
@@ -1634,6 +1676,33 @@ cross_size_cv <- function(data,
     }
   }))
 
+  settings_obj <- list(
+    outcome_name       = outcome_name,
+    item_names         = item_names,
+    model_sizes        = sizes,
+    cv_method          = cv_method,
+    selection_metric   = selection_metric,
+    cutoff_method      = cutoff_method,
+    sensitivity_min    = sensitivity_min,
+    specificity_min    = specificity_min,
+    requested_folds    = requested_folds,
+    folds_requested    = requested_folds,
+    effective_folds    = effective_folds,
+    repeats            = repeats,
+    stratified         = stratified,
+    seed               = seed,
+    prefer_fewer_items = prefer_fewer_items,
+    engine             = engine,
+    parallel           = parallel_mode,
+    n_workers          = n_workers_res,
+    threads_per_worker = 1L,
+    ci                 = ci,
+    conf_level         = conf_level
+  )
+  if (!is.null(execution_plan_metadata)) {
+    settings_obj$execution_plan <- execution_plan_metadata
+  }
+
   structure(
     list(
       final_selected_model   = final_model_df,
@@ -1648,29 +1717,7 @@ cross_size_cv <- function(data,
       model_sizes            = sizes,
       total_combinations     = total_combos,
       cv_method              = cv_method,
-      settings = list(
-        outcome_name       = outcome_name,
-        item_names         = item_names,
-        model_sizes        = sizes,
-        cv_method          = cv_method,
-        selection_metric   = selection_metric,
-        cutoff_method      = cutoff_method,
-        sensitivity_min    = sensitivity_min,
-        specificity_min    = specificity_min,
-        requested_folds    = requested_folds,
-        folds_requested    = requested_folds,
-        effective_folds    = effective_folds,
-        repeats            = repeats,
-        stratified         = stratified,
-        seed               = seed,
-        prefer_fewer_items = prefer_fewer_items,
-        engine             = engine,
-        parallel           = parallel_mode,
-        n_workers          = n_workers_res,
-        threads_per_worker = 1L,
-        ci                 = ci,
-        conf_level         = conf_level
-      )
+      settings               = settings_obj
     ),
     class = "cross_size_cv_result"
   )

@@ -27,6 +27,7 @@ cross_size_cv(
   engine = c("Rcpp", "R"),
   parallel = FALSE,
   n_workers = NULL,
+  tuning = c("off", "auto", "always"),
   ci = FALSE,
   conf_level = 0.95,
   seed = NULL,
@@ -82,6 +83,10 @@ Must be 1 for LOOCV.}
 or `"chunks"` (PSOCK cluster).}
 
 \item{n_workers}{Integer, number of workers or threads (default `NULL` = auto).}
+
+\item{tuning}{Automatic execution-planning mode: `"off"` (default, manual execution configuration is authoritative),
+`"auto"` (benchmarks legal backends only when predicted runtime exceeds threshold), or
+`"always"` (always benchmarks legal backends for non-degenerate workloads).}
 
 \item{ci}{Logical, compute confidence intervals for full-data apparent metrics of final model (default `FALSE`).}
 

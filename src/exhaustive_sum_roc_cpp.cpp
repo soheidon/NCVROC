@@ -1418,7 +1418,8 @@ DataFrame evaluate_combos_cv_cpp(
     std::string cutoff_method,
     double sensitivity_min = -1.0,
     double specificity_min = -1.0,
-    int num_threads = 1
+    int num_threads = 1,
+    std::size_t grain_size = 64
 ) {
   int n = x.nrow();
   int n_cols = x.ncol();
@@ -1478,7 +1479,6 @@ DataFrame evaluate_combos_cv_cpp(
     out_valid
   );
 
-  std::size_t grain_size = 64;
   if (num_threads <= 1) {
     worker(0, n_combos);
   } else {
