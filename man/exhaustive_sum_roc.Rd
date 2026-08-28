@@ -23,7 +23,8 @@ exhaustive_sum_roc(
   n_workers = NULL,
   progress = TRUE,
   chunk_start = NULL,
-  chunk_size = NULL
+  chunk_size = NULL,
+  tuning = "off"
 )
 }
 \arguments{
@@ -77,12 +78,19 @@ Ignored when `parallel = FALSE` or `"none"`.}
 from. When set together with `chunk_size`, only that range is evaluated.}
 
 \item{chunk_size}{Combinations per chunk (default 200000 when chunking).}
+
+\item{tuning}{Execution-planning mode: `"off"` preserves the manual
+execution path, `"auto"` benchmarks only estimated long searches, and
+`"always"` benchmarks meaningful searches. Default `"off"`.}
 }
 \value{
 A data.frame with columns: `rank`, `items` (comma-separated string),
   `n_items`, `auc`, `cutoff`, `sensitivity`, `specificity`, `youden`,
   `accuracy`, `ppv`, `npv`, `n_positive`, `n_negative`.
   If `ci = TRUE`, includes confidence bounds (`auc_lower`, `auc_upper`, etc.).
+  With `tuning = "auto"` or `"always"`, compact execution metadata is
+  attached as the `"execution_plan"` attribute; the returned object remains
+  a data.frame. `tuning = "off"` attaches no execution-plan attribute.
   Sorted by the chosen `rank_by` metric in descending order.
 }
 \description{

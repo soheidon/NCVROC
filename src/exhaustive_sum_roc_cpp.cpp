@@ -653,6 +653,7 @@ struct ChunkEvaluatorWorker : public RcppParallel::Worker {
   int total_n;
   CutoffMethod cutoff_method;
   double chunk_start;
+  const double* explicit_ranks;
 
   // Output vectors accessed thread-safely via RVector
   RcppParallel::RVector<int> out_n_items;
@@ -693,7 +694,7 @@ struct ChunkEvaluatorWorker : public RcppParallel::Worker {
       Rcpp::IntegerVector& out_n_negative
   ) : x_ptr(x_ptr), y_ptr(y_ptr), n(n), n_cols(n_cols), min_items(min_items),
       n_k(n_k), level_starts(level_starts), total_pos(total_pos), total_neg(total_neg),
-      total_n(total_n), cutoff_method(cutoff_method), chunk_start(chunk_start),
+      total_n(total_n), cutoff_method(cutoff_method), chunk_start(chunk_start), explicit_ranks(NULL),
       out_n_items(out_n_items), out_auc(out_auc), out_cutoff(out_cutoff),
       out_sensitivity(out_sensitivity), out_specificity(out_specificity),
       out_youden(out_youden), out_accuracy(out_accuracy), out_ppv(out_ppv),
@@ -702,7 +703,7 @@ struct ChunkEvaluatorWorker : public RcppParallel::Worker {
   void operator()(std::size_t begin, std::size_t end) {
     ThreadLocalBuffer buf(n);
     for (std::size_t gi = begin; gi < end; gi++) {
-      double global_rank = chunk_start + (double)gi;
+      double global_rank = explicit_ranks ? explicit_ranks[gi] : chunk_start + (double)gi;
       int n_items_val = 0;
       double auc_val = 0.0, cutoff_val = 0.0, sens_val = 0.0, spec_val = 0.0;
       double youden_val = 0.0, acc_val = 0.0, ppv_val = 0.0, npv_val = 0.0;
@@ -859,6 +860,62 @@ DataFrame evaluate_combos_cpp_chunk_parallel(
     _["npv"]         = out_npv,
     _["n_positive"]  = out_n_positive,
     _["n_negative"]  = out_n_negative
+  );
+}
+
+// [[Rcpp::export]]
+DataFrame evaluate_combos_cpp_sparse_parallel(
+    NumericMatrix x,
+    IntegerVector y,
+    int min_items,
+    int max_items,
+    std::string cutoff_method,
+    NumericVector global_ranks,
+    int num_threads = -1
+) {
+  int n = x.nrow();
+  int n_cols = x.ncol();
+  CutoffMethod cm;
+  if (cutoff_method == "youden") cm = CUTOFF_YOUDEN;
+  else if (cutoff_method == "closest_topleft") cm = CUTOFF_CLOSEST_TOPLEFT;
+  else stop("Unknown cutoff_method: '%s'", cutoff_method);
+  if (max_items > n_cols) max_items = n_cols;
+  if (min_items > max_items) min_items = max_items;
+  if (min_items < 1) min_items = 1;
+  int n_k = max_items - min_items + 1;
+  std::vector<double> level_starts(n_k);
+  double total = 0.0;
+  for (int ki = 0; ki < n_k; ki++) {
+    level_starts[ki] = total;
+    total += binom(n_cols, min_items + ki);
+  }
+  int actual_size = global_ranks.size();
+  for (int i = 0; i < actual_size; i++) {
+    if (!R_finite(global_ranks[i]) || global_ranks[i] < 0 ||
+        global_ranks[i] >= total || std::floor(global_ranks[i]) != global_ranks[i]) {
+      stop("global_ranks must contain valid integral exhaustive candidate ranks.");
+    }
+  }
+  IntegerVector out_n_items(actual_size), out_n_positive(actual_size), out_n_negative(actual_size);
+  NumericVector out_auc(actual_size), out_cutoff(actual_size), out_sensitivity(actual_size),
+    out_specificity(actual_size), out_youden(actual_size), out_accuracy(actual_size),
+    out_ppv(actual_size), out_npv(actual_size);
+  int total_pos = 0, total_neg = 0;
+  for (int i = 0; i < n; i++) { if (y[i] == 1) total_pos++; else total_neg++; }
+  const double* x_ptr = &x[0];
+  const int* y_ptr = &y[0];
+  ChunkEvaluatorWorker worker(x_ptr, y_ptr, n, n_cols, min_items, n_k, level_starts,
+    total_pos, total_neg, total_pos + total_neg, cm, 0.0, out_n_items, out_auc,
+    out_cutoff, out_sensitivity, out_specificity, out_youden, out_accuracy, out_ppv,
+    out_npv, out_n_positive, out_n_negative);
+  worker.explicit_ranks = &global_ranks[0];
+  RcppParallel::parallelFor(0, (std::size_t)actual_size, worker, 1, num_threads);
+  return DataFrame::create(
+    _["n_items"] = out_n_items, _["auc"] = out_auc, _["cutoff"] = out_cutoff,
+    _["sensitivity"] = out_sensitivity, _["specificity"] = out_specificity,
+    _["youden"] = out_youden, _["accuracy"] = out_accuracy, _["ppv"] = out_ppv,
+    _["npv"] = out_npv, _["n_positive"] = out_n_positive,
+    _["n_negative"] = out_n_negative
   );
 }
 

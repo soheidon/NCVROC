@@ -248,7 +248,11 @@
   }
 
   # Resolve actual workers
-  actual_workers <- .resolve_n_workers(n_workers, n_chunks)
+  actual_workers <- if (isTRUE(attr(n_workers, "planner_resolved"))) {
+    max(1L, min(as.integer(n_workers), as.integer(n_chunks)))
+  } else {
+    .resolve_n_workers(n_workers, n_chunks)
+  }
   created_cl <- FALSE
 
   if (is.null(cl)) {
@@ -384,6 +388,9 @@
 #' @param chunk_start Internal: zero-based global combination index to start
 #'   from. When set together with `chunk_size`, only that range is evaluated.
 #' @param chunk_size Combinations per chunk (default 200000 when chunking).
+#' @param tuning Execution-planning mode: `"off"` preserves the manual
+#'   execution path, `"auto"` benchmarks only estimated long searches, and
+#'   `"always"` benchmarks meaningful searches. Default `"off"`.
 #'
 #' @details
 #' When `ci = TRUE`, confidence intervals are calculated after ranking and
@@ -418,6 +425,9 @@
 #'   `n_items`, `auc`, `cutoff`, `sensitivity`, `specificity`, `youden`,
 #'   `accuracy`, `ppv`, `npv`, `n_positive`, `n_negative`.
 #'   If `ci = TRUE`, includes confidence bounds (`auc_lower`, `auc_upper`, etc.).
+#'   With `tuning = "auto"` or `"always"`, compact execution metadata is
+#'   attached as the `"execution_plan"` attribute; the returned object remains
+#'   a data.frame. `tuning = "off"` attaches no execution-plan attribute.
 #'   Sorted by the chosen `rank_by` metric in descending order.
 #'
 #' @examples
@@ -448,12 +458,14 @@ exhaustive_sum_roc <- function(data,
                                n_workers = NULL,
                                progress = TRUE,
                                chunk_start = NULL,
-                               chunk_size = NULL) {
+                               chunk_size = NULL,
+                               tuning = "off") {
 
   # ---- Argument validation ----
   cutoff_method <- match.arg(cutoff_method)
   rank_by <- match.arg(rank_by)
   engine <- match.arg(engine)
+  tuning <- match.arg(tuning, c("auto", "off", "always"))
 
   parallel_mode <- .resolve_parallel_mode(
     parallel,
@@ -491,6 +503,26 @@ exhaustive_sum_roc <- function(data,
 
   # ---- Determine if we are in single-chunk sub-call mode ----
   is_single_chunk <- !is.null(chunk_start) && !is.null(chunk_size)
+  execution_metadata <- NULL
+  execution_parallel_mode <- parallel_mode
+  execution_n_workers <- n_workers
+
+  if (!is_single_chunk && !identical(tuning, "off")) {
+    x_mat_for_planner <- as.matrix(x[, items, drop = FALSE])
+    planned <- .planner_exhaustive_controller(
+      x_mat = x_mat_for_planner, y = y, items = items,
+      min_items = min_items, max_items = max_items,
+      cutoff_method = cutoff_method, engine = engine, tuning = tuning,
+      manual_parallel_mode = parallel_mode, manual_n_workers = n_workers,
+      chunk_size = if (is.null(chunk_size)) 200000L else chunk_size
+    )
+    execution_metadata <- planned$metadata
+    execution_parallel_mode <- planned$plan$parallel[[1L]]
+    execution_n_workers <- planned$plan$n_workers[[1L]]
+    if (isTRUE(planned$warn)) {
+      warning(execution_metadata$fallback_reason, call. = FALSE)
+    }
+  }
 
   if (is_single_chunk) {
     if (!is.numeric(chunk_start) || length(chunk_start) != 1 || chunk_start < 0) {
@@ -527,9 +559,13 @@ exhaustive_sum_roc <- function(data,
     # Remove internal tracking column for public return
     results$.global_combo_index <- NULL
 
-  } else if (parallel_mode == "threads") {
+  } else if (execution_parallel_mode == "threads") {
     # --- Multi-threaded C++ Evaluation Path ---
-    eff_n_threads <- .resolve_n_workers(parallel = TRUE, n_workers = n_workers)
+    eff_n_threads <- if (!identical(tuning, "off")) {
+      as.integer(execution_n_workers)
+    } else {
+      .resolve_n_workers(parallel = TRUE, n_workers = n_workers)
+    }
     total_combos <- .count_total_combos(n_items, min_items, max_items)
     x_mat <- as.matrix(x[, items, drop = FALSE])
 
@@ -555,7 +591,7 @@ exhaustive_sum_roc <- function(data,
       results <- utils::head(results, top_n)
     }
 
-  } else if (parallel_mode == "chunks") {
+  } else if (execution_parallel_mode == "chunks") {
     # --- Parallel Chunk Execution Path ---
     eff_chunk_size <- if (!is.null(chunk_size) && chunk_size > 0) as.integer(chunk_size) else 200000L
     results <- .parallel_chunk_exhaustive(
@@ -570,7 +606,8 @@ exhaustive_sum_roc <- function(data,
       prefer_fewer_items = prefer_fewer_items,
       engine             = engine,
       chunk_size         = eff_chunk_size,
-      n_workers          = n_workers,
+      n_workers          = if (identical(tuning, "off")) n_workers else
+        structure(execution_n_workers, planner_resolved = TRUE),
       save_rds           = FALSE,
       chunk_dir          = NULL,
       cl                 = NULL
@@ -665,5 +702,8 @@ exhaustive_sum_roc <- function(data,
   results <- results[, col_order, drop = FALSE]
 
   rownames(results) <- NULL
+  if (!is_single_chunk && !identical(tuning, "off")) {
+    attr(results, "execution_plan") <- execution_metadata
+  }
   results
 }

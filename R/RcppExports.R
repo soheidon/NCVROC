@@ -13,6 +13,10 @@ evaluate_combos_cpp_chunk_parallel <- function(x, y, min_items, max_items, cutof
     .Call(`_NCVROC_evaluate_combos_cpp_chunk_parallel`, x, y, min_items, max_items, cutoff_method, chunk_start, chunk_size, num_threads, grain_size)
 }
 
+evaluate_combos_cpp_sparse_parallel <- function(x, y, min_items, max_items, cutoff_method, global_ranks, num_threads = -1L) {
+    .Call(`_NCVROC_evaluate_combos_cpp_sparse_parallel`, x, y, min_items, max_items, cutoff_method, global_ranks, num_threads)
+}
+
 evaluate_combos_cv_cpp <- function(x, y, combo_indices, test_indices, n_folds, repeats, cutoff_method, sensitivity_min = -1.0, specificity_min = -1.0, num_threads = 1L) {
     .Call(`_NCVROC_evaluate_combos_cv_cpp`, x, y, combo_indices, test_indices, n_folds, repeats, cutoff_method, sensitivity_min, specificity_min, num_threads)
 }
