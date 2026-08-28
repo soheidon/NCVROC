@@ -85,9 +85,9 @@ NCVROC は、項目の組み合わせ選択、ROCに基づく評価、通常・�
 - `"always"`: ワークロードの規模にかかわらず、常に候補並列構成を測定。
 
 ### 2. 決定論的選抜ルール
-1. **実測最速時間**: 中央値実行時間が最小の構成を特定（$T_{\text{min}}$）。
-2. **5% 近傍枠**: $\text{median\_elapsed} \le T_{\text{min}} \times 1.05$ を満たす構成を抽出。
-3. **リソース節約**: 必要リソース数（`resource_count`）が最小の構成を選択。
+1. **最速の実測時間**: ベンチマークの中央値が最小となる構成 (`T_min`) を特定します。
+2. **5% near-best 範囲**: `median_elapsed <= T_min * 1.05` を満たす候補プランを near-best として扱います。
+3. **リソース効率**: 使用する CPU コア数／worker 数が最も少ないプラン (`min(resource_count)`) を優先します。
 4. **バックエンド優先順位**:
    - フラット探索: `none` > `threads` > `chunks`
    - ネスト CV: `none` > `threads` > `outer` > `chunks` > `hybrid`

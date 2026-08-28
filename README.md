@@ -129,8 +129,8 @@ fit <- cross_size_cv(data = d, outcome = y, items = Q1:Q10, model_sizes = 1:4, t
 
 When benchmarking is performed, NCVROC evaluates legal execution configurations and selects a measured near-best plan using the following deterministic hierarchy:
 
-1. **Fastest observed time**: Finds the configuration with the lowest median benchmark elapsed time ($T_{\text{min}}$).
-2. **5% near-best qualifying envelope**: Identifies all candidate plans where $\text{median\_elapsed} \le T_{\text{min}} \times 1.05$.
+1. **Fastest observed time**: Finds the configuration with the lowest median benchmark elapsed time (`T_min`).
+2. **5% near-best qualifying envelope**: Identifies all candidate plans where `median_elapsed <= T_min * 1.05`.
 3. **Resource economy**: Chooses the plan requiring the fewest total CPU cores/workers (`min(resource_count)`).
 4. **Backend simplicity priority**:
    - **Flat workloads**: `none` (serial) > `threads` (C++ multithreading) > `chunks` (PSOCK socket workers).

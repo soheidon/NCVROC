@@ -45,7 +45,7 @@ NCVROC は、項目の組み合わせ選択、Receiver Operating Characteristic 
 - **決定論的パイロットベンチマーク**:
   - 全サンプルサイズ $N$、クラス比率、フォールド・リピート構造を完全に保ったまま、等間隔の候補サブセットを用いてスループットを実測。
 - **リソース効率重視の選抜ルール**:
-  - 最速の実測構成を基準とし、5% 近傍枠（$\text{median\_elapsed} \le \text{fastest} \times 1.05$）内の候補から最小リソース割り当て（`resource_count`）およびバックエンド優先順位（`none` > `threads` > `outer` > `chunks` > `hybrid`）を適用。
+  - 最速の実測構成を基準とし、5% 近傍枠（`median_elapsed <= fastest * 1.05`）内の候補から最小リソース割り当て（`resource_count`）およびバックエンド優先順位（`none` > `threads` > `outer` > `chunks` > `hybrid`）を適用。
 - **統計的同一性と RNG 不変性の厳密な保証**:
   - 実行計画機能は実行戦略のみを変更し、候補空間、フォールド分割、カットオフ算出、モデル順位、臨床制約、OOF 予測値、最終モデル適合、および `.Random.seed` に一切影響を与えません。
 
@@ -123,9 +123,9 @@ fit <- cross_size_cv(data = d, outcome = y, items = Q1:Q10, model_sizes = 1:4, t
 ```
 
 ベンチマーク実行時、NCVROC は以下の決定論的階層ルールにより最良近似構成を選択します：
-1. **実測最速時間**: 中央値実行時間が最小の構成を特定（$T_{\text{min}}$）。
-2. **5% 近傍枠**: $\text{median\_elapsed} \le T_{\text{min}} \times 1.05$ を満たす全構成を抽出。
-3. **リソース節約**: 必要コア・ワーカ数が最小（`min(resource_count)`）の構成を選択。
+1. **最速の実測時間**: ベンチマークの中央値が最小となる構成 (`T_min`) を特定します。
+2. **5% near-best 範囲**: `median_elapsed <= T_min * 1.05` を満たす候補プランを near-best として扱います。
+3. **リソース効率**: 使用する CPU コア数／worker 数が最も少ないプラン (`min(resource_count)`) を優先します。
 4. **バックエンド優先順位**:
    - フラット探索: `none`（シリアル） > `threads`（C++ スレッド） > `chunks`（PSOCK ワーカ）。
    - ネスト CV: `none` > `threads` > `outer`（PSOCK 外側フォールド） > `chunks` > `hybrid`。
