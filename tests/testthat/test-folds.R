@@ -144,9 +144,12 @@ test_that("k > min class size warns and reduces k", {
 test_that("k reduction below 2 errors", {
   # 1 positive, 20 negatives → min = 1, k reduced to 1 < 2
   y <- c(rep(1, 1), rep(0, 20))
-  expect_error(
-    make_stratified_folds(y, k = 5, seed = 42),
-    "After reducing `k`"
+  expect_warning(
+    expect_error(
+      make_stratified_folds(y, k = 5, seed = 42),
+      "After reducing `k`"
+    ),
+    "exceeds the size of the smaller class"
   )
 })
 

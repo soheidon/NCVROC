@@ -167,7 +167,7 @@ find_optimal_cutoff <- function(metrics, method = c("youden", "closest_topleft")
   if (method == "closest_topleft") {
     # Min Euclidean distance to (0, 1) = sqrt((1 - sens)^2 + (1 - spec)^2)
     dist <- sqrt((1 - metrics$sensitivity)^2 + (1 - metrics$specificity)^2)
-    idx <- order(dist, -metrics$youden)
+    idx <- order(dist, -metrics$youden, metrics$cutoff)
     return(metrics[idx[1], , drop = FALSE])
   }
 

@@ -1,20 +1,20 @@
-# test-release-v0-16-0.R — Release sanity and integrity tests for v0.16.0
+# test-release-v0-16-0.R — Release sanity and integrity tests for NCVROC
 
-test_that("Package version is 0.16.0 in DESCRIPTION and NEWS", {
+test_that("Package version in DESCRIPTION and NEWS is synchronized", {
   desc_ver <- utils::packageVersion("NCVROC")
-  expect_equal(as.character(desc_ver), "0.16.0")
+  expect_equal(as.character(desc_ver), "0.17.0")
 
   news_file <- system.file("NEWS.md", package = "NCVROC")
   if (file.exists(news_file)) {
     news_lines <- readLines(news_file, n = 5)
-    expect_true(any(grepl("NCVROC 0.16.0", news_lines)))
+    expect_true(any(grepl("NCVROC 0.17.0", news_lines)))
   }
 })
 
-test_that("NAMESPACE exports all intended v0.16.0 public API functions", {
+test_that("NAMESPACE exports all intended public API functions", {
   ns_exports <- getNamespaceExports("NCVROC")
 
-  expected_v16_api <- c(
+  expected_api <- c(
     "cv_sum_roc",
     "loocv_sum_roc",
     "cv_select_sum_roc",
@@ -22,12 +22,13 @@ test_that("NAMESPACE exports all intended v0.16.0 public API functions", {
     "cross_size_cv",
     "cross_size_loocv",
     "cross_size_nested_cv",
-    "compare_cv_selection"
+    "compare_cv_selection",
+    "candidate_stability_roc"
   )
-  expect_true(all(expected_v16_api %in% ns_exports))
+  expect_true(all(expected_api %in% ns_exports))
 
   # Ensure no internal helpers leaked into exports
-  internal_patterns <- c("^\\.", "block_stream", "eval_single_combo", "resolve_model_sizes", "evaluate_combos_cv_cpp")
+  internal_patterns <- c("^\\.", "block_stream", "eval_single_combo", "resolve_model_sizes", "evaluate_combos_cv_cpp", "evaluate_candidate_stability")
   for (pat in internal_patterns) {
     leaked <- grep(pat, ns_exports, value = TRUE)
     expect_length(leaked, 0L)

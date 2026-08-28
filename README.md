@@ -1,6 +1,6 @@
 [English](README.md) | [日本語 README](README-ja.md) | [日本語詳細リファレンス](docs/reference-ja.md)
 
-# NCVROC 0.16.0
+# NCVROC 0.17.0
 
 **N**ested **C**ross-**V**alidation for Combinatorial **ROC**-based Selection of Item-set Scores
 
@@ -20,7 +20,20 @@ NCVROC provides a structured hierarchy of functions covering fixed-model evaluat
 | **Within-size model selection** (single size $K$) | `cv_select_sum_roc()` | `loocv_select_sum_roc()` |
 | **Cross-size ordinary model selection** (multiple sizes) | `cross_size_cv()` | `cross_size_loocv()` |
 | **Selection-procedure validation** (nested CV) | `cross_size_nested_cv()` | — *(Not supported)* |
-| **Ordinary vs. Nested comparison** (optimism estimation) | `compare_cv_selection()` | *(Ordinary LOOCV vs. Nested $K$-fold)* |
+| **Ordinary vs. Nested comparison** (selection optimism) | `compare_cv_selection()` | *(Ordinary LOOCV vs. Nested $K$-fold)* |
+| **Candidate stability & optimism audit** | `candidate_stability_roc()` *(Repeated $K$-fold & Bootstrap)* | — |
+
+---
+
+## What's new in NCVROC 0.17.0
+
+- **Candidate-Level Stability & Optimism Analysis (`candidate_stability_roc()`)**:
+  - Direct audit of candidate unweighted sum-score scales across data perturbations (Repeated $K$-Fold CV and Non-Parametric Bootstrap).
+  - **Mode 1 (Fixed Candidates)**: Head-to-head stability, rank distribution, and feasibility analysis for specified candidate models.
+  - **Mode 2 (Combinatorial Screening)**: Exact Stage-1 apparent screening across combinatorial spaces with Stage-2 resampling audit of top candidates.
+  - **Optimism & Resampling Gaps**: Quantifies candidate-level apparent-to-resampled performance gap and Efron-style bootstrap optimism correction.
+  - **Clinical Feasibility Stability**: Assesses test-side constraint pass rates (`sensitivity_min`, `specificity_min`, joint pass rate).
+  - **Dedicated S3 Visualization**: `plot()` method providing rank stability boxplots, paired performance comparisons, selection frequency barplots, and constraint feasibility charts with zero external dependencies.
 
 ---
 
@@ -187,6 +200,47 @@ print(comp)
 > [!NOTE]
 > **Statistical interpretation:** `selection_optimism` reflects empirical optimism associated with model selection under the non-nested procedure, not the bias of a specific fixed final model. In fixed unweighted sum scores, pooled out-of-fold AUC equals full-data apparent AUC; nested CV estimates the out-of-sample generalization performance of the selection procedure.
 
+### F. Candidate Stability & Optimism Audit (`candidate_stability_roc`)
+
+Audit the performance stability, apparent-to-resampled performance gap, bootstrap optimism, rank stability, selection frequency, and clinical constraint feasibility for specific candidate models across data perturbations:
+
+```r
+# Mode 1: Targeted head-to-head candidate evaluation (Repeated K-Fold)
+cand_audit_cv <- candidate_stability_roc(
+  data            = analysis_dat,
+  outcome         = y,
+  candidate_sets  = list(
+    "Scale A" = c("Q1", "Q2", "Q3"),
+    "Scale B" = c("Q1", "Q4", "Q5"),
+    "Scale C" = c("Q2", "Q3", "Q4", "Q5")
+  ),
+  resampling      = "repeated_cv",
+  folds           = 5,
+  repeats         = 20,
+  sensitivity_min = 0.80,
+  specificity_min = 0.70,
+  seed            = 42
+)
+print(cand_audit_cv)
+plot(cand_audit_cv, type = "rank_stability")
+
+# Mode 2: Combinatorial screening with Stage-2 bootstrap audit
+cand_audit_boot <- candidate_stability_roc(
+  data            = analysis_dat,
+  outcome         = y,
+  items           = paste0("Q", 1:10),
+  model_sizes     = 1:4,
+  screen_top_n    = 100,
+  resampling      = "bootstrap",
+  bootstrap_reps  = 500,
+  bootstrap_test  = "original",
+  rank_by         = "youden",
+  seed            = 42
+)
+summary(cand_audit_boot)
+plot(cand_audit_boot, type = "performance", metric = "youden")
+```
+
 ---
 
 ## Configuration style
@@ -348,10 +402,10 @@ ncvroc_results(result, top_n = NULL, allow_full_load = TRUE)
 ```
 
 ### Caching & atomic storage
- 
+
 Large exhaustive searches can take significant time. `ncvroc()` and
 `roc_bruteforce()` support result caching and atomic chunked storage to disk:
- 
+
 ```r
 result <- ncvroc(
   data    = analysis_dat,

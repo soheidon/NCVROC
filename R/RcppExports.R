@@ -17,3 +17,11 @@ evaluate_combos_cv_cpp <- function(x, y, combo_indices, test_indices, n_folds, r
     .Call(`_NCVROC_evaluate_combos_cv_cpp`, x, y, combo_indices, test_indices, n_folds, repeats, cutoff_method, sensitivity_min, specificity_min, num_threads)
 }
 
+evaluate_candidate_stability_cv_cpp <- function(x, y, combo_indices, test_indices, n_folds, repeats, cutoff_method, num_threads = 1L) {
+    .Call(`_NCVROC_evaluate_candidate_stability_cv_cpp`, x, y, combo_indices, test_indices, n_folds, repeats, cutoff_method, num_threads)
+}
+
+evaluate_candidate_stability_bootstrap_cpp <- function(x, y, combo_indices, train_indices, oob_indices, bootstrap_test, cutoff_method, apparent_auc, num_threads = 1L) {
+    .Call(`_NCVROC_evaluate_candidate_stability_bootstrap_cpp`, x, y, combo_indices, train_indices, oob_indices, bootstrap_test, cutoff_method, apparent_auc, num_threads)
+}
+

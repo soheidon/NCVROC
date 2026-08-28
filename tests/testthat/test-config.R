@@ -181,8 +181,11 @@ test_that("run_ncvroc() with return = 'summary' respects the option", {
   cfg <- ncvroc_config("y", items = c("q1", "q2", "q3"),
                        max_items = 2, mode = "exhaustive",
                        outer_k = 3, inner_k = 2, engine = "R")
-  result <- run_ncvroc(d, c("q1", "q2", "q3"), cfg, seed = 42,
-                       progress = FALSE, verbose = FALSE, return = "summary")
+  expect_warning(
+    result <- run_ncvroc(d, c("q1", "q2", "q3"), cfg, seed = 42,
+                         progress = FALSE, verbose = FALSE, return = "summary"),
+    "not yet implemented"
+  )
   expect_s3_class(result, "ncvroc_result")
 })
 

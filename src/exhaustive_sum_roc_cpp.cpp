@@ -248,16 +248,20 @@ static inline void evaluate_single_candidate(
   } else if (cutoff_method == CUTOFF_CLOSEST_TOPLEFT) {
     double best_dist = R_PosInf;
     double best_youden = -2.0;
+    double best_cutoff_val = R_PosInf;
     for (int si = 0; si < n_scores; si++) {
       double d = std::sqrt(
         (1.0 - buf.sensitivity[si]) * (1.0 - buf.sensitivity[si]) +
         (1.0 - buf.specificity[si]) * (1.0 - buf.specificity[si]));
       double yd = buf.youden_vals[si];
+      double co = buf.unique_scores[si];
 
       if (d < best_dist ||
-          (d == best_dist && yd > best_youden)) {
+          (d == best_dist && yd > best_youden) ||
+          (d == best_dist && yd == best_youden && co < best_cutoff_val)) {
         best_dist = d;
         best_youden = yd;
+        best_cutoff_val = co;
         best_idx = si;
       }
     }
@@ -459,16 +463,20 @@ DataFrame evaluate_combos_cpp(
     } else if (cutoff_method == "closest_topleft") {
       double best_dist = R_PosInf;
       double best_youden = -2.0;
+      double best_cutoff_val = R_PosInf;
       for (int si = 0; si < n_scores; si++) {
         double d = std::sqrt(
           (1.0 - sensitivity[si]) * (1.0 - sensitivity[si]) +
           (1.0 - specificity[si]) * (1.0 - specificity[si]));
         double yd = youden_vals[si];
+        double co = unique_scores[si];
 
         if (d < best_dist ||
-            (d == best_dist && yd > best_youden)) {
+            (d == best_dist && yd > best_youden) ||
+            (d == best_dist && yd == best_youden && co < best_cutoff_val)) {
           best_dist = d;
           best_youden = yd;
+          best_cutoff_val = co;
           best_idx = si;
         }
       }
@@ -1049,17 +1057,22 @@ static inline void evaluate_single_combo_cv_cpp(
           best_idx = si;
         }
       }
-    } else { // CUTOFF_CLOSEST_TOPLEFT
+    } else if (cutoff_method == CUTOFF_CLOSEST_TOPLEFT) {
       double best_dist = R_PosInf;
       double best_youden = -2.0;
+      double best_cutoff_val = R_PosInf;
       for (int si = 0; si < n_scores; si++) {
         double d = std::sqrt(
           (1.0 - buf.sensitivity[si]) * (1.0 - buf.sensitivity[si]) +
           (1.0 - buf.specificity[si]) * (1.0 - buf.specificity[si]));
         double yd = buf.youden_vals[si];
-        if (d < best_dist || (d == best_dist && yd > best_youden)) {
+        double co = buf.unique_scores[si];
+        if (d < best_dist ||
+            (d == best_dist && yd > best_youden) ||
+            (d == best_dist && yd == best_youden && co < best_cutoff_val)) {
           best_dist = d;
           best_youden = yd;
+          best_cutoff_val = co;
           best_idx = si;
         }
       }
@@ -1427,5 +1440,694 @@ DataFrame evaluate_combos_cv_cpp(
     _["cv_cutoff_sd"]           = out_cutoff_sd,
     _["final_full_data_cutoff"] = out_final_cutoff,
     _["valid"]                  = out_valid
+  );
+}
+
+
+// ============================================================================
+// evaluate_candidate_stability_cv_cpp
+// ============================================================================
+
+struct CandidateStabilityCvWorker : public RcppParallel::Worker {
+  const double* x_ptr;
+  const int* y_ptr;
+  int n;
+  int n_cols;
+  const std::vector<std::vector<int>>& combo_indices_vec;
+  const std::vector<std::vector<int>>& fold_test_indices_vec;
+  int n_folds;
+  int repeats;
+  CutoffMethod cm;
+
+  RcppParallel::RVector<int> out_candidate_id;
+  RcppParallel::RVector<int> out_repeat_id;
+  RcppParallel::RVector<double> out_auc;
+  RcppParallel::RVector<double> out_sensitivity;
+  RcppParallel::RVector<double> out_specificity;
+  RcppParallel::RVector<double> out_youden;
+  RcppParallel::RVector<double> out_accuracy;
+  RcppParallel::RVector<double> out_ppv;
+  RcppParallel::RVector<double> out_npv;
+
+  CandidateStabilityCvWorker(
+    const double* x_ptr_,
+    const int* y_ptr_,
+    int n_,
+    int n_cols_,
+    const std::vector<std::vector<int>>& combo_indices_vec_,
+    const std::vector<std::vector<int>>& fold_test_indices_vec_,
+    int n_folds_,
+    int repeats_,
+    CutoffMethod cm_,
+    IntegerVector out_candidate_id_,
+    IntegerVector out_repeat_id_,
+    NumericVector out_auc_,
+    NumericVector out_sensitivity_,
+    NumericVector out_specificity_,
+    NumericVector out_youden_,
+    NumericVector out_accuracy_,
+    NumericVector out_ppv_,
+    NumericVector out_npv_
+  ) : x_ptr(x_ptr_), y_ptr(y_ptr_), n(n_), n_cols(n_cols_),
+      combo_indices_vec(combo_indices_vec_),
+      fold_test_indices_vec(fold_test_indices_vec_),
+      n_folds(n_folds_), repeats(repeats_), cm(cm_),
+      out_candidate_id(out_candidate_id_), out_repeat_id(out_repeat_id_),
+      out_auc(out_auc_), out_sensitivity(out_sensitivity_),
+      out_specificity(out_specificity_), out_youden(out_youden_),
+      out_accuracy(out_accuracy_), out_ppv(out_ppv_), out_npv(out_npv_) {}
+
+  void operator()(std::size_t begin, std::size_t end) {
+    CvThreadBuffer buf(n, n_folds, repeats);
+    for (std::size_t i = begin; i < end; ++i) {
+      double auc_v, sens_v, spec_v, youd_v, acc_v, ppv_v, npv_v;
+      double cut_mean_v, cut_sd_v, final_cut_v;
+      bool valid_v;
+
+      evaluate_single_combo_cv_cpp(
+        combo_indices_vec[i],
+        x_ptr,
+        y_ptr,
+        n,
+        n_cols,
+        fold_test_indices_vec,
+        n_folds,
+        repeats,
+        cm,
+        -1.0,
+        -1.0,
+        buf,
+        auc_v,
+        sens_v,
+        spec_v,
+        youd_v,
+        acc_v,
+        ppv_v,
+        npv_v,
+        cut_mean_v,
+        cut_sd_v,
+        final_cut_v,
+        valid_v
+      );
+
+      for (int r = 0; r < repeats; r++) {
+        std::size_t out_idx = i * (std::size_t)repeats + (std::size_t)r;
+        out_candidate_id[out_idx] = (int)(i + 1);
+        out_repeat_id[out_idx] = r + 1;
+        out_auc[out_idx] = auc_v;
+        out_sensitivity[out_idx] = buf.rep_sens[r];
+        out_specificity[out_idx] = buf.rep_spec[r];
+        out_youden[out_idx] = buf.rep_youd[r];
+        out_accuracy[out_idx] = buf.rep_acc[r];
+        out_ppv[out_idx] = buf.rep_ppv[r];
+        out_npv[out_idx] = buf.rep_npv[r];
+      }
+    }
+  }
+};
+
+// [[Rcpp::export]]
+DataFrame evaluate_candidate_stability_cv_cpp(
+    NumericMatrix x,
+    IntegerVector y,
+    List combo_indices,
+    List test_indices,
+    int n_folds,
+    int repeats,
+    std::string cutoff_method,
+    int num_threads = 1
+) {
+  int n = x.nrow();
+  int n_cols = x.ncol();
+  int n_combos = combo_indices.size();
+  std::size_t total_rows = (std::size_t)n_combos * (std::size_t)repeats;
+
+  CutoffMethod cm = (cutoff_method == "closest_topleft") ?
+    CUTOFF_CLOSEST_TOPLEFT : CUTOFF_YOUDEN;
+
+  std::vector<std::vector<int>> combo_indices_vec(n_combos);
+  for (int i = 0; i < n_combos; i++) {
+    IntegerVector cv = combo_indices[i];
+    combo_indices_vec[i].assign(cv.begin(), cv.end());
+  }
+
+  int total_test_folds = test_indices.size();
+  std::vector<std::vector<int>> fold_test_indices_vec(total_test_folds);
+  for (int f = 0; f < total_test_folds; f++) {
+    IntegerVector fv = test_indices[f];
+    fold_test_indices_vec[f].assign(fv.begin(), fv.end());
+  }
+
+  IntegerVector out_candidate_id(total_rows);
+  IntegerVector out_repeat_id(total_rows);
+  NumericVector out_auc(total_rows);
+  NumericVector out_sensitivity(total_rows);
+  NumericVector out_specificity(total_rows);
+  NumericVector out_youden(total_rows);
+  NumericVector out_accuracy(total_rows);
+  NumericVector out_ppv(total_rows);
+  NumericVector out_npv(total_rows);
+
+  const double* x_ptr = &x[0];
+  const int* y_ptr = &y[0];
+
+  CandidateStabilityCvWorker worker(
+    x_ptr,
+    y_ptr,
+    n,
+    n_cols,
+    combo_indices_vec,
+    fold_test_indices_vec,
+    n_folds,
+    repeats,
+    cm,
+    out_candidate_id,
+    out_repeat_id,
+    out_auc,
+    out_sensitivity,
+    out_specificity,
+    out_youden,
+    out_accuracy,
+    out_ppv,
+    out_npv
+  );
+
+  std::size_t grain_size = 1;
+  if (num_threads <= 1) {
+    worker(0, n_combos);
+  } else {
+    RcppParallel::parallelFor(0, (std::size_t)n_combos, worker, grain_size, num_threads);
+  }
+
+  return DataFrame::create(
+    _["candidate_id"] = out_candidate_id,
+    _["repeat_id"]    = out_repeat_id,
+    _["auc"]          = out_auc,
+    _["sensitivity"]  = out_sensitivity,
+    _["specificity"]  = out_specificity,
+    _["youden"]       = out_youden,
+    _["accuracy"]     = out_accuracy,
+    _["ppv"]          = out_ppv,
+    _["npv"]          = out_npv
+  );
+}
+
+// ============================================================================
+// evaluate_candidate_stability_bootstrap_cpp
+// ============================================================================
+
+struct CandidateStabilityBootstrapWorker : public RcppParallel::Worker {
+  const double* x_ptr;
+  const int* y_ptr;
+  int n;
+  int n_cols;
+  const std::vector<std::vector<int>>& combo_indices_vec;
+  const std::vector<std::vector<int>>& train_indices_vec;
+  const std::vector<std::vector<int>>& oob_indices_vec;
+  int n_reps;
+  bool is_original_test;
+  CutoffMethod cm;
+  const double* apparent_auc_ptr;
+
+  RcppParallel::RVector<int> out_candidate_id;
+  RcppParallel::RVector<int> out_replicate_id;
+  RcppParallel::RVector<int> out_training_valid;
+  RcppParallel::RVector<int> out_test_valid;
+
+  RcppParallel::RVector<double> out_train_auc;
+  RcppParallel::RVector<double> out_train_sensitivity;
+  RcppParallel::RVector<double> out_train_specificity;
+  RcppParallel::RVector<double> out_train_youden;
+  RcppParallel::RVector<double> out_train_accuracy;
+  RcppParallel::RVector<double> out_train_ppv;
+  RcppParallel::RVector<double> out_train_npv;
+  RcppParallel::RVector<double> out_train_cutoff;
+
+  RcppParallel::RVector<double> out_test_auc;
+  RcppParallel::RVector<double> out_test_sensitivity;
+  RcppParallel::RVector<double> out_test_specificity;
+  RcppParallel::RVector<double> out_test_youden;
+  RcppParallel::RVector<double> out_test_accuracy;
+  RcppParallel::RVector<double> out_test_ppv;
+  RcppParallel::RVector<double> out_test_npv;
+
+  CandidateStabilityBootstrapWorker(
+    const double* x_ptr_,
+    const int* y_ptr_,
+    int n_,
+    int n_cols_,
+    const std::vector<std::vector<int>>& combo_indices_vec_,
+    const std::vector<std::vector<int>>& train_indices_vec_,
+    const std::vector<std::vector<int>>& oob_indices_vec_,
+    int n_reps_,
+    bool is_original_test_,
+    CutoffMethod cm_,
+    const double* apparent_auc_ptr_,
+    IntegerVector out_candidate_id_,
+    IntegerVector out_replicate_id_,
+    IntegerVector out_training_valid_,
+    IntegerVector out_test_valid_,
+    NumericVector out_train_auc_,
+    NumericVector out_train_sensitivity_,
+    NumericVector out_train_specificity_,
+    NumericVector out_train_youden_,
+    NumericVector out_train_accuracy_,
+    NumericVector out_train_ppv_,
+    NumericVector out_train_npv_,
+    NumericVector out_train_cutoff_,
+    NumericVector out_test_auc_,
+    NumericVector out_test_sensitivity_,
+    NumericVector out_test_specificity_,
+    NumericVector out_test_youden_,
+    NumericVector out_test_accuracy_,
+    NumericVector out_test_ppv_,
+    NumericVector out_test_npv_
+  ) : x_ptr(x_ptr_), y_ptr(y_ptr_), n(n_), n_cols(n_cols_),
+      combo_indices_vec(combo_indices_vec_),
+      train_indices_vec(train_indices_vec_),
+      oob_indices_vec(oob_indices_vec_),
+      n_reps(n_reps_),
+      is_original_test(is_original_test_),
+      cm(cm_),
+      apparent_auc_ptr(apparent_auc_ptr_),
+      out_candidate_id(out_candidate_id_),
+      out_replicate_id(out_replicate_id_),
+      out_training_valid(out_training_valid_),
+      out_test_valid(out_test_valid_),
+      out_train_auc(out_train_auc_),
+      out_train_sensitivity(out_train_sensitivity_),
+      out_train_specificity(out_train_specificity_),
+      out_train_youden(out_train_youden_),
+      out_train_accuracy(out_train_accuracy_),
+      out_train_ppv(out_train_ppv_),
+      out_train_npv(out_train_npv_),
+      out_train_cutoff(out_train_cutoff_),
+      out_test_auc(out_test_auc_),
+      out_test_sensitivity(out_test_sensitivity_),
+      out_test_specificity(out_test_specificity_),
+      out_test_youden(out_test_youden_),
+      out_test_accuracy(out_test_accuracy_),
+      out_test_ppv(out_test_ppv_),
+      out_test_npv(out_test_npv_) {}
+
+  void operator()(std::size_t begin, std::size_t end) {
+    std::vector<double> scores(n);
+    std::vector<double> unique_scores;
+    unique_scores.reserve(n);
+    std::vector<int> pos_counts;
+    std::vector<int> neg_counts;
+    std::vector<double> sensitivity;
+    std::vector<double> specificity;
+    std::vector<double> youden_vals;
+    std::vector<double> accuracy;
+    std::vector<double> ppv_vals;
+    std::vector<double> npv_vals;
+
+    for (std::size_t i = begin; i < end; ++i) {
+      const std::vector<int>& items = combo_indices_vec[i];
+      int k = items.size();
+      double app_auc = apparent_auc_ptr[i];
+
+      // Compute full data sum scores for candidate i
+      for (int r = 0; r < n; r++) {
+        double sum_val = 0.0;
+        for (int c = 0; c < k; c++) {
+          sum_val += x_ptr[items[c] * n + r];
+        }
+        scores[r] = sum_val;
+      }
+
+      for (int b = 0; b < n_reps; b++) {
+        std::size_t out_idx = i * (std::size_t)n_reps + (std::size_t)b;
+        out_candidate_id[out_idx] = (int)(i + 1);
+        out_replicate_id[out_idx] = b + 1;
+
+        const std::vector<int>& tr_idx = train_indices_vec[b];
+        int tr_size = tr_idx.size();
+
+        // 1. Build frequency table for bootstrap training sample
+        std::map<double, std::pair<int, int>> tr_freq;
+        int tr_pos = 0;
+        int tr_neg = 0;
+
+        for (int idx_pos = 0; idx_pos < tr_size; idx_pos++) {
+          int obs = tr_idx[idx_pos];
+          double s = scores[obs];
+          int y_obs = y_ptr[obs];
+          if (y_obs == 1) {
+            tr_freq[s].first++;
+            tr_pos++;
+          } else {
+            tr_freq[s].second++;
+            tr_neg++;
+          }
+        }
+
+        if (tr_pos == 0 || tr_neg == 0) {
+          out_training_valid[out_idx] = 0;
+          out_test_valid[out_idx] = 0;
+          out_train_auc[out_idx] = NA_REAL;
+          out_train_sensitivity[out_idx] = NA_REAL;
+          out_train_specificity[out_idx] = NA_REAL;
+          out_train_youden[out_idx] = NA_REAL;
+          out_train_accuracy[out_idx] = NA_REAL;
+          out_train_ppv[out_idx] = NA_REAL;
+          out_train_npv[out_idx] = NA_REAL;
+          out_train_cutoff[out_idx] = NA_REAL;
+
+          out_test_auc[out_idx] = NA_REAL;
+          out_test_sensitivity[out_idx] = NA_REAL;
+          out_test_specificity[out_idx] = NA_REAL;
+          out_test_youden[out_idx] = NA_REAL;
+          out_test_accuracy[out_idx] = NA_REAL;
+          out_test_ppv[out_idx] = NA_REAL;
+          out_test_npv[out_idx] = NA_REAL;
+          continue;
+        }
+
+        out_training_valid[out_idx] = 1;
+
+        // Unpack training frequency table
+        int n_scores = tr_freq.size();
+        unique_scores.resize(n_scores);
+        pos_counts.resize(n_scores);
+        neg_counts.resize(n_scores);
+        sensitivity.resize(n_scores);
+        specificity.resize(n_scores);
+        youden_vals.resize(n_scores);
+        accuracy.resize(n_scores);
+        ppv_vals.resize(n_scores);
+        npv_vals.resize(n_scores);
+
+        int si = 0;
+        for (std::map<double, std::pair<int, int>>::const_iterator it = tr_freq.begin(); it != tr_freq.end(); ++it, ++si) {
+          unique_scores[si] = it->first;
+          pos_counts[si] = it->second.first;
+          neg_counts[si] = it->second.second;
+        }
+
+        // Training AUC via trapezoidal rule
+        double cum_neg = 0.0;
+        double auc_sum = 0.0;
+        for (int s_idx = 0; s_idx < n_scores; s_idx++) {
+          double p_c = (double)pos_counts[s_idx];
+          double n_c = (double)neg_counts[s_idx];
+          auc_sum += p_c * cum_neg + 0.5 * p_c * n_c;
+          cum_neg += n_c;
+        }
+        double tr_auc = auc_sum / ((double)tr_pos * (double)tr_neg);
+        out_train_auc[out_idx] = tr_auc;
+
+        // Training ROC cumulative metrics
+        double tr_tp = (double)tr_pos;
+        double tr_fp = (double)tr_neg;
+
+        for (int s_idx = 0; s_idx < n_scores; s_idx++) {
+          sensitivity[s_idx] = tr_tp / (double)tr_pos;
+          specificity[s_idx] = 1.0 - (tr_fp / (double)tr_neg);
+          youden_vals[s_idx] = sensitivity[s_idx] + specificity[s_idx] - 1.0;
+          accuracy[s_idx] = (tr_tp + ((double)tr_neg - tr_fp)) / (double)tr_size;
+
+          double pred_pos = tr_tp + tr_fp;
+          ppv_vals[s_idx] = (pred_pos > 0.0) ? (tr_tp / pred_pos) : NA_REAL;
+
+          double pred_neg = (double)tr_size - pred_pos;
+          double tr_tn = (double)tr_neg - tr_fp;
+          npv_vals[s_idx] = (pred_neg > 0.0) ? (tr_tn / pred_neg) : NA_REAL;
+
+          tr_tp -= (double)pos_counts[s_idx];
+          tr_fp -= (double)neg_counts[s_idx];
+        }
+
+        // Optimal cutoff on training sample
+        int best_idx = 0;
+        if (cm == CUTOFF_YOUDEN) {
+          double best_youden = -2.0;
+          double best_cutoff_val = R_PosInf;
+          for (int s_idx = 0; s_idx < n_scores; s_idx++) {
+            double yd = youden_vals[s_idx];
+            double co = unique_scores[s_idx];
+            if (yd > best_youden || (yd == best_youden && co < best_cutoff_val)) {
+              best_youden = yd;
+              best_cutoff_val = co;
+              best_idx = s_idx;
+            }
+          }
+        } else {
+          double best_dist = R_PosInf;
+          double best_youden = -2.0;
+          double best_cutoff_val = R_PosInf;
+          for (int s_idx = 0; s_idx < n_scores; s_idx++) {
+            double d = std::sqrt((1.0 - sensitivity[s_idx]) * (1.0 - sensitivity[s_idx]) +
+                                 (1.0 - specificity[s_idx]) * (1.0 - specificity[s_idx]));
+            double yd = youden_vals[s_idx];
+            double co = unique_scores[s_idx];
+            if (d < best_dist ||
+                (d == best_dist && yd > best_youden) ||
+                (d == best_dist && yd == best_youden && co < best_cutoff_val)) {
+              best_dist = d;
+              best_youden = yd;
+              best_cutoff_val = co;
+              best_idx = s_idx;
+            }
+          }
+        }
+
+        double opt_cutoff = unique_scores[best_idx];
+        out_train_cutoff[out_idx] = opt_cutoff;
+        out_train_sensitivity[out_idx] = sensitivity[best_idx];
+        out_train_specificity[out_idx] = specificity[best_idx];
+        out_train_youden[out_idx] = youden_vals[best_idx];
+        out_train_accuracy[out_idx] = accuracy[best_idx];
+        out_train_ppv[out_idx] = ppv_vals[best_idx];
+        out_train_npv[out_idx] = npv_vals[best_idx];
+
+        // 2. Evaluate training-derived cutoff on test set
+        if (is_original_test) {
+          out_test_valid[out_idx] = 1;
+          out_test_auc[out_idx] = app_auc;
+
+          int tp = 0, fp = 0, tn = 0, fn = 0;
+          int full_pos = 0, full_neg = 0;
+          for (int obs = 0; obs < n; obs++) {
+            int y_obs = y_ptr[obs];
+            if (y_obs == 1) full_pos++; else full_neg++;
+            if (scores[obs] >= opt_cutoff) {
+              if (y_obs == 1) tp++; else fp++;
+            } else {
+              if (y_obs == 0) tn++; else fn++;
+            }
+          }
+
+          double se = (full_pos > 0) ? ((double)tp / (double)full_pos) : NA_REAL;
+          double sp = (full_neg > 0) ? ((double)tn / (double)full_neg) : NA_REAL;
+          double yd = (!ISNA(se) && !ISNA(sp)) ? (se + sp - 1.0) : NA_REAL;
+          double acc = (double)(tp + tn) / (double)n;
+          double ppv = (tp + fp > 0) ? ((double)tp / (double)(tp + fp)) : NA_REAL;
+          double npv = (tn + fn > 0) ? ((double)tn / (double)(tn + fn)) : NA_REAL;
+
+          out_test_sensitivity[out_idx] = se;
+          out_test_specificity[out_idx] = sp;
+          out_test_youden[out_idx] = yd;
+          out_test_accuracy[out_idx] = acc;
+          out_test_ppv[out_idx] = ppv;
+          out_test_npv[out_idx] = npv;
+        } else {
+          // Out-of-bag (OOB) evaluation
+          const std::vector<int>& oob_idx = oob_indices_vec[b];
+          int oob_size = oob_idx.size();
+
+          if (oob_size == 0) {
+            out_test_valid[out_idx] = 0;
+            out_test_auc[out_idx] = NA_REAL;
+            out_test_sensitivity[out_idx] = NA_REAL;
+            out_test_specificity[out_idx] = NA_REAL;
+            out_test_youden[out_idx] = NA_REAL;
+            out_test_accuracy[out_idx] = NA_REAL;
+            out_test_ppv[out_idx] = NA_REAL;
+            out_test_npv[out_idx] = NA_REAL;
+            continue;
+          }
+
+          out_test_valid[out_idx] = 1;
+
+          std::map<double, std::pair<int, int>> oob_freq;
+          int oob_pos = 0, oob_neg = 0;
+          int tp = 0, fp = 0, tn = 0, fn = 0;
+
+          for (int idx_pos = 0; idx_pos < oob_size; idx_pos++) {
+            int obs = oob_idx[idx_pos];
+            double s = scores[obs];
+            int y_obs = y_ptr[obs];
+            if (y_obs == 1) {
+              oob_freq[s].first++;
+              oob_pos++;
+              if (s >= opt_cutoff) tp++; else fn++;
+            } else {
+              oob_freq[s].second++;
+              oob_neg++;
+              if (s >= opt_cutoff) fp++; else tn++;
+            }
+          }
+
+          if (oob_pos > 0 && oob_neg > 0) {
+            double oob_cum_neg = 0.0;
+            double oob_auc_sum = 0.0;
+            for (std::map<double, std::pair<int, int>>::const_iterator it = oob_freq.begin(); it != oob_freq.end(); ++it) {
+              double p_c = (double)it->second.first;
+              double n_c = (double)it->second.second;
+              oob_auc_sum += p_c * oob_cum_neg + 0.5 * p_c * n_c;
+              oob_cum_neg += n_c;
+            }
+            out_test_auc[out_idx] = oob_auc_sum / ((double)oob_pos * (double)oob_neg);
+          } else {
+            out_test_auc[out_idx] = NA_REAL;
+          }
+
+          double se = (oob_pos > 0) ? ((double)tp / (double)oob_pos) : NA_REAL;
+          double sp = (oob_neg > 0) ? ((double)tn / (double)oob_neg) : NA_REAL;
+          double yd = (!ISNA(se) && !ISNA(sp)) ? (se + sp - 1.0) : NA_REAL;
+          double acc = (double)(tp + tn) / (double)oob_size;
+          double ppv = (tp + fp > 0) ? ((double)tp / (double)(tp + fp)) : NA_REAL;
+          double npv = (tn + fn > 0) ? ((double)tn / (double)(tn + fn)) : NA_REAL;
+
+          out_test_sensitivity[out_idx] = se;
+          out_test_specificity[out_idx] = sp;
+          out_test_youden[out_idx] = yd;
+          out_test_accuracy[out_idx] = acc;
+          out_test_ppv[out_idx] = ppv;
+          out_test_npv[out_idx] = npv;
+        }
+      }
+    }
+  }
+};
+
+// [[Rcpp::export]]
+DataFrame evaluate_candidate_stability_bootstrap_cpp(
+    NumericMatrix x,
+    IntegerVector y,
+    List combo_indices,
+    List train_indices,
+    List oob_indices,
+    std::string bootstrap_test,
+    std::string cutoff_method,
+    NumericVector apparent_auc,
+    int num_threads = 1
+) {
+  int n = x.nrow();
+  int n_cols = x.ncol();
+  int n_combos = combo_indices.size();
+  int n_reps = train_indices.size();
+  std::size_t total_rows = (std::size_t)n_combos * (std::size_t)n_reps;
+
+  bool is_original_test = (bootstrap_test == "original");
+  CutoffMethod cm = (cutoff_method == "closest_topleft") ?
+    CUTOFF_CLOSEST_TOPLEFT : CUTOFF_YOUDEN;
+
+  std::vector<std::vector<int>> combo_indices_vec(n_combos);
+  for (int i = 0; i < n_combos; i++) {
+    IntegerVector cv = combo_indices[i];
+    combo_indices_vec[i].assign(cv.begin(), cv.end());
+  }
+
+  std::vector<std::vector<int>> train_indices_vec(n_reps);
+  for (int b = 0; b < n_reps; b++) {
+    IntegerVector tv = train_indices[b];
+    train_indices_vec[b].assign(tv.begin(), tv.end());
+  }
+
+  std::vector<std::vector<int>> oob_indices_vec(n_reps);
+  for (int b = 0; b < n_reps; b++) {
+    IntegerVector ov = oob_indices[b];
+    oob_indices_vec[b].assign(ov.begin(), ov.end());
+  }
+
+  IntegerVector out_candidate_id(total_rows);
+  IntegerVector out_replicate_id(total_rows);
+  IntegerVector out_training_valid(total_rows);
+  IntegerVector out_test_valid(total_rows);
+
+  NumericVector out_train_auc(total_rows);
+  NumericVector out_train_sensitivity(total_rows);
+  NumericVector out_train_specificity(total_rows);
+  NumericVector out_train_youden(total_rows);
+  NumericVector out_train_accuracy(total_rows);
+  NumericVector out_train_ppv(total_rows);
+  NumericVector out_train_npv(total_rows);
+  NumericVector out_train_cutoff(total_rows);
+
+  NumericVector out_test_auc(total_rows);
+  NumericVector out_test_sensitivity(total_rows);
+  NumericVector out_test_specificity(total_rows);
+  NumericVector out_test_youden(total_rows);
+  NumericVector out_test_accuracy(total_rows);
+  NumericVector out_test_ppv(total_rows);
+  NumericVector out_test_npv(total_rows);
+
+  const double* x_ptr = &x[0];
+  const int* y_ptr = &y[0];
+  const double* app_auc_ptr = &apparent_auc[0];
+
+  CandidateStabilityBootstrapWorker worker(
+    x_ptr,
+    y_ptr,
+    n,
+    n_cols,
+    combo_indices_vec,
+    train_indices_vec,
+    oob_indices_vec,
+    n_reps,
+    is_original_test,
+    cm,
+    app_auc_ptr,
+    out_candidate_id,
+    out_replicate_id,
+    out_training_valid,
+    out_test_valid,
+    out_train_auc,
+    out_train_sensitivity,
+    out_train_specificity,
+    out_train_youden,
+    out_train_accuracy,
+    out_train_ppv,
+    out_train_npv,
+    out_train_cutoff,
+    out_test_auc,
+    out_test_sensitivity,
+    out_test_specificity,
+    out_test_youden,
+    out_test_accuracy,
+    out_test_ppv,
+    out_test_npv
+  );
+
+  std::size_t grain_size = 1;
+  if (num_threads <= 1) {
+    worker(0, n_combos);
+  } else {
+    RcppParallel::parallelFor(0, (std::size_t)n_combos, worker, grain_size, num_threads);
+  }
+
+  return DataFrame::create(
+    _["candidate_id"]       = out_candidate_id,
+    _["replicate_id"]       = out_replicate_id,
+    _["training_valid"]     = out_training_valid,
+    _["test_valid"]         = out_test_valid,
+    _["train_auc"]          = out_train_auc,
+    _["train_sensitivity"]  = out_train_sensitivity,
+    _["train_specificity"]  = out_train_specificity,
+    _["train_youden"]       = out_train_youden,
+    _["train_accuracy"]     = out_train_accuracy,
+    _["train_ppv"]          = out_train_ppv,
+    _["train_npv"]          = out_train_npv,
+    _["train_cutoff"]       = out_train_cutoff,
+    _["test_auc"]           = out_test_auc,
+    _["test_sensitivity"]   = out_test_sensitivity,
+    _["test_specificity"]   = out_test_specificity,
+    _["test_youden"]        = out_test_youden,
+    _["test_accuracy"]      = out_test_accuracy,
+    _["test_ppv"]           = out_test_ppv,
+    _["test_npv"]           = out_test_npv
   );
 }

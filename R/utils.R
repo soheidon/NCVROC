@@ -296,6 +296,34 @@ CACHE_FORMAT_VERSION <- 1L     # bump when cache storage format changes
   result
 }
 
+#' Rank a single combination (lexicographic order)
+#'
+#' Direct lexicographic ranking using 0-based item indices.
+#' Exact mathematical inverse of `.combination_unrank()`.
+#'
+#' @param n Integer, total items.
+#' @param k Integer, items per combination (0 <= k <= n).
+#' @param combo_0based Integer vector of length k (0-based item indices, sorted ascending).
+#' @return Integer scalar, zero-based combination index (0 <= rank < choose(n, k)).
+#' @keywords internal
+#' @noRd
+.combination_rank <- function(n, k, combo_0based) {
+  if (k == 0L) return(0L)
+  rank <- 0.0
+  next_min <- 0L
+  for (position in seq_len(k)) {
+    c_val <- combo_0based[position]
+    remaining_slots <- k - position
+    if (c_val > next_min) {
+      for (candidate in seq.int(next_min, c_val - 1L)) {
+        rank <- rank + choose(n - candidate - 1L, remaining_slots)
+      }
+    }
+    next_min <- c_val + 1L
+  }
+  as.integer(rank)
+}
+
 #' Resolve a global combination rank to k and local rank
 #'
 #' Maps a global rank (index across multiple k-levels) to the correct

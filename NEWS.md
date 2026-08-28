@@ -1,3 +1,26 @@
+# NCVROC 0.17.0
+
+## Candidate-level stability & optimism analysis
+
+- **New `candidate_stability_roc()` function**:
+  - Comprehensive stability and optimism audit for unweighted sum-score candidate models across data perturbations.
+  - **Mode 1 (Fixed Candidates)**: Evaluates a user-supplied named list of candidate item sets (`candidate_sets`).
+  - **Mode 2 (Combinatorial Screening)**: Exact Stage-1 apparent performance screening across full combinatorial model sizes (`items`, `model_sizes`) with Stage-2 resampling evaluation of the top `screen_top_n` candidates.
+  - **Resampling engines**:
+    - Repeated $K$-fold cross-validation (`resampling = "repeated_cv"`).
+    - Non-parametric bootstrap with training-vs-original test evaluation for Efron-style optimism estimation (`bootstrap_test = "original"`).
+    - Non-parametric bootstrap with out-of-bag test evaluation (`bootstrap_test = "oob"`).
+  - **Comprehensive stability metrics**:
+    - Apparent vs. resampled test performance distributions (mean, SD, median, IQR, min, max).
+    - Candidate-level apparent-minus-resampled performance gap and bootstrap optimism correction.
+    - Rank stability across resamples (mean rank, rank SD, rank IQR).
+    - Selection frequency across resamples partitioning into winner selection, `no_feasible_candidate`, and `invalid_evaluation`.
+    - Clinical constraint feasibility pass rates (`sensitivity_min`, `specificity_min`, joint pass rate).
+  - **High-performance computing**: Pure C++ multithreading via `RcppParallel` (`parallel = "threads"`) and multi-process PSOCK parallelism (`parallel = "chunks"`).
+  - **Dedicated S3 visualization**: `plot.candidate_stability_result()` supporting `"rank_stability"`, `"performance"`, `"selection_frequency"`, and `"constraint_stability"` with pure base R graphics.
+
+---
+
 # NCVROC 0.16.0
 
 ## New cross-validation APIs
