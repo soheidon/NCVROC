@@ -1,58 +1,58 @@
 [English](README.md) | [日本語 README](README-ja.md) | [日本語詳細リファレンス](docs/reference-ja.md)
 
-# NCVROC 0.17.0
+# NCVROC 0.19.0
 
 **N**ested **C**ross-**V**alidation for Combinatorial **ROC**-based Selection of Item-set Scores
 
-Develops short item-based screening scales through combinatorial item-set selection, Receiver Operating Characteristic (ROC) curve evaluation, ordinary and nested cross-validation, and selection optimism assessment. For psychological/clinical questionnaire data, identifies which small subset of items best predicts a binary outcome using simple sum scores.
+NCVROC develops short item-based screening scales through combinatorial item-set selection, Receiver Operating Characteristic (ROC) curve evaluation, ordinary and nested cross-validation, and selection optimism assessment. For psychological and clinical questionnaire data, NCVROC identifies which small subset of items best predicts a binary outcome using unweighted sum scores.
 
 Assume higher sum scores indicate higher probability of a positive outcome. Users must reverse-code items beforehand.
 
 ---
 
-## Unified Cross-Validation & Selection API Hierarchy
+## What's new in NCVROC 0.19.0
 
-NCVROC provides a structured hierarchy of functions covering fixed-model evaluation, within-size selection, cross-size selection, procedure validation, and optimism estimation:
-
-| Analysis Goal | $K$-Fold CV | Leave-One-Out CV (LOOCV) |
-| :--- | :--- | :--- |
-| **Fixed model evaluation** (no selection) | `cv_sum_roc()` | `loocv_sum_roc()` |
-| **Within-size model selection** (single size $K$) | `cv_select_sum_roc()` | `loocv_select_sum_roc()` |
-| **Cross-size ordinary model selection** (multiple sizes) | `cross_size_cv()` | `cross_size_loocv()` |
-| **Selection-procedure validation** (nested CV) | `cross_size_nested_cv()` | — *(Not supported)* |
-| **Ordinary vs. Nested comparison** (selection optimism) | `compare_cv_selection()` | *(Ordinary LOOCV vs. Nested $K$-fold)* |
-| **Candidate stability & optimism audit** | `candidate_stability_roc()` *(Repeated $K$-fold & Bootstrap)* | — |
+- **Public Execution Preview API (`plan_ncvroc_execution()`)**:
+  - Previews candidate combinatorial workloads, evaluates scaling across all legal resource configurations, and returns a dedicated S3 `"ncvroc_execution_plan"` object.
+  - Dedicated S3 methods: `print()`, `format()`, and base R diagnostic visualization `plot(plan, type = c("runtime", "speedup", "efficiency", "all"))`.
+- **Empirical Setup-Aware Affine Runtime Estimation**:
+  - Models execution scaling via an affine formulation $T(n) = a + b \cdot n$, distinguishing fixed cluster startup/export overhead ($a$) from candidate-dependent throughput ($b$) so cluster initialization time is not multiplied linearly by massive candidate counts.
+  - Invalid, negative, or unstable fits safely fall back to conservative linear estimates without claiming exact or guaranteed runtimes.
+- **Two-Gate Benchmark Trigger**:
+  - **180-Second Primary Gate**: In `tuning = "auto"` mode, full multi-configuration benchmarking is triggered only when estimated serial runtime meets or exceeds 180 seconds (3 minutes); smaller workloads proceed directly with default/manual execution.
+  - **5% Predicted Overhead Gate**: Caps benchmark sweep time at 5% of estimated production runtime; safely falls back to manual/default plans if the benchmark budget is insufficient.
+- **Bounded Exhaustive Resource Sweep (Flat & CV Workflows)**:
+  - Exhaustively evaluates all legal integer worker allocations (threads, socket chunks) up to the system/user CPU cap for `exhaustive_sum_roc()` and `cross_size_cv()`, applying the formal 5% near-best resource-efficient selection rule.
+- **Explicit Nested Workflow Limitation**:
+  - Nested cross-validation workflows (`nested_sum_roc()`, `cross_size_nested_cv()`) use safe, candidate-bounded runtime probing where supported.
+  - Full nested resource sweep benchmarking is not performed in v0.19.0 when the evaluator cannot safely consume rank-bounded candidate subsets; in that case NCVROC preserves the manual/default execution plan and records the rationale in metadata. Full nested multi-configuration resource sweep is deferred to v0.20.0.
+- **Observable Long-Running Execution & Progress UX**:
+  - **Exact Completed Counts**: Reports exact completed-candidate counts at observable C++ batch boundaries for compiled evaluation loops.
+  - **Observed-Only ETA**: Displays stable approximate remaining-time updates derived strictly from completed work batches.
+  - **Truthful PSOCK Observability**: Opaque PSOCK socket backends report concise start and completion messages (`progress_unit = "none"`, `progress_mode = "start_completion"`) without advertising unverified progress percentages, ETAs, or fake heartbeats.
+  - **Silence Contract**: `progress = FALSE` guarantees complete console silence and zero timing overhead.
+- **Canonical Execution Metadata**:
+  - Canonical `execution_plan` metadata includes `$progress_mode`, `$progress_unit`, `$benchmark_table`, and `$saturation_summary`.
 
 ---
 
-## What's new in NCVROC 0.17.0
+## What's new in NCVROC 0.18.0
 
-- **Candidate-Level Stability & Optimism Analysis (`candidate_stability_roc()`)**:
-  - Direct audit of candidate unweighted sum-score scales across data perturbations (Repeated $K$-Fold CV and Non-Parametric Bootstrap).
-  - **Mode 1 (Fixed Candidates)**: Head-to-head stability, rank distribution, and feasibility analysis for specified candidate models.
-  - **Mode 2 (Combinatorial Screening)**: Exact Stage-1 apparent screening across combinatorial spaces with Stage-2 resampling audit of top candidates.
-  - **Optimism & Resampling Gaps**: Quantifies candidate-level apparent-to-resampled performance gap and Efron-style bootstrap optimism correction.
-  - **Clinical Feasibility Stability**: Assesses test-side constraint pass rates (`sensitivity_min`, `specificity_min`, joint pass rate).
-  - **Dedicated S3 Visualization**: `plot()` method providing rank stability boxplots, paired performance comparisons, selection frequency barplots, and constraint feasibility charts with zero external dependencies.
-
----
-
-## What's new in NCVROC 0.16.0
-
-- **Generalized Ordinary Cross-Validation Engine**:
-  - Supports arbitrary $2 \le K < N$ folds for $K$-fold cross-validation.
-  - Strict input validation: $K \ge N$ is rejected with an informative error directing users to `cv_method = "loocv"`.
-  - Dedicated Leave-One-Out Cross-Validation (LOOCV) engine (`loocv_sum_roc()`, `loocv_select_sum_roc()`, `cross_size_loocv()`) with single-repeat guarantee (`repeats = 1`).
-- **Dedicated Within-Size Model Selection Wrappers**:
-  - `cv_select_sum_roc()` and `loocv_select_sum_roc()` provide focused interfaces to select the optimal combination for a single specified model size (`item_count`).
-- **High-Performance Cutoff-Dependent Search Engine**:
-  - Pure C++ multi-threaded evaluation engine (`evaluate_combos_cv_cpp()`) powered by `RcppParallel`.
-  - Frequency table exact update: evaluates held-out folds by subtracting test frequencies from the full-data frequency table without full table reconstruction.
-  - Native support for both `parallel = "threads"` and `parallel = "chunks"` with zero silent serial fallback.
-- **Statistically Rigorous Repeated $K$-Fold Aggregation**:
-  - Each repeat $r \in \{1,\dots,R\}$ evaluates all $N$ held-out predictions independently. Summary metrics report the arithmetic mean and sample standard deviation across the $R$ repeat-level metrics without pooling $N \times R$ observations into a single artificial sample.
-- **Fixed Sum-Score AUC Mathematical Identity**:
-  - For a fixed unweighted sum-score candidate, the raw score has no fitted parameters. Therefore its pooled out-of-fold score vector is identical to the full-data score vector, and the corresponding AUC is identical to the apparent full-data AUC (theoretical repeat $\text{SD} = 0$).
+- **Automatic Execution Planning Foundation (`tuning = c("off", "auto", "always")`)**:
+  - Automatically identifies a measured near-best execution configuration (serial, C++ multithreading, or PSOCK worker processes) from deterministic pilot micro-benchmarking across core combinatorial workflows (`exhaustive_sum_roc()`, `cross_size_cv()`, `nested_sum_roc()`, `cross_size_nested_cv()`).
+  - **`tuning = "off"`**: Retains user-specified manual execution configuration (`parallel`, `n_workers`, `threads_per_worker`) without runtime probing overhead.
+  - **`tuning = "auto"`**: Probes and benchmarks legal execution configurations only when estimated serial runtime meets or exceeds the trigger threshold.
+  - **`tuning = "always"`**: Actively benchmarks legal execution configurations for all non-degenerate workloads.
+- **Deterministic Micro-Pilot Benchmarking**:
+  - Measures throughput over an evenly-spaced candidate subset while preserving the full sample size $N$, class proportions, and fold/repeat structure intact.
+- **Resource-Efficient Selection Rule**:
+  - Selects the fastest observed configuration, qualifies all plans within a 5% near-best envelope (`median_elapsed <= fastest * 1.05`), prioritizes the lowest resource allocation (`resource_count`), and applies deterministic backend priorities (`none` > `threads` > `outer` > `chunks` > `hybrid`).
+- **Canonical Execution Metadata**:
+  - Attached to result objects (`$settings$execution_plan` or `attr(..., "execution_plan")`) with dedicated S3 formatters (`format()`, `print()`) detailing benchmark timings, candidate allocations, and decision rationale.
+- **Observation-Only Progress Reporting with Approximate ETA**:
+  - Displays lightweight progress bars and approximate remaining time estimates on observable loops without altering candidate ordering, statistics, or RNG determinism (`.Random.seed`). `progress = FALSE` guarantees complete silence.
+- **Strict Non-Statistical Invariance**:
+  - Execution planning changes execution strategy only and never alters candidate spaces, fold/repeat partitions, classification cutoffs, candidate rankings, clinical constraints (`sens_min`, `spec_min`), out-of-fold predictions, final selected models, or final refits.
 
 ---
 
@@ -64,29 +64,171 @@ NCVROC provides a structured hierarchy of functions covering fixed-model evaluat
 remotes::install_github("soheidon/NCVROC")
 ```
 
-## Core assumptions
+---
 
-1. **Higher score = more likely positive.** Reverse-code items beforehand if needed.
-2. **Cutoff rule:** `predicted_positive = score >= cutoff`.
-3. **AUC with ties:** `AUC = P(pos > neg) + 0.5 * P(pos == neg)`.
-4. **Missing values:** Empty strings and whitespace-only values are treated as
-   missing. Rows with missing values in the outcome or selected item columns are
-   removed before analysis.
-5. **Strict binary outcome.** Outcome column must contain only `positive_label` and `negative_label` values.
+## Unified Cross-Validation & Selection API Hierarchy
+
+NCVROC provides a structured hierarchy of functions covering execution preview, fixed-model evaluation, within-size selection, cross-size selection, nested cross-validation, and selection optimism assessment:
+
+| Analysis Goal | $K$-Fold Cross-Validation | Leave-One-Out CV (LOOCV) |
+| :--- | :--- | :--- |
+| **Execution planning & preview** | `plan_ncvroc_execution()` | — |
+| **Fixed model evaluation** (no selection) | `cv_sum_roc()` | `loocv_sum_roc()` |
+| **Within-size model selection** (single size $K$) | `cv_select_sum_roc()` | `loocv_select_sum_roc()` |
+| **Cross-size ordinary model selection** (multiple sizes) | `cross_size_cv()` | `cross_size_loocv()` |
+| **Selection-procedure validation** (nested CV) | `cross_size_nested_cv()` | — *(Not supported)* |
+| **Ordinary vs. Nested comparison** (selection optimism) | `compare_cv_selection()` | *(Ordinary LOOCV vs. Nested $K$-fold)* |
+| **Candidate stability & optimism audit** | `candidate_stability_roc()` *(Repeated $K$-fold & Bootstrap)* | — |
+| **Full automated analysis (single call)** | `ncvroc()` *(Nested CV + final exhaustive search)* | — |
+| **Flat exhaustive combinatorial search** | `exhaustive_sum_roc()` / `roc_bruteforce()` | — |
 
 ---
 
-## Validation Workflows (v0.16.0)
+## Execution Planning, Preview & Tuning
 
-NCVROC provides dedicated functions for validating fixed sum-score models, performing within-size and cross-size model selection, and rigorously estimating model-selection optimism via nested cross-validation:
+Large combinatorial searches across multiple item sizes can generate tens or hundreds of thousands of candidate models. Finding the most efficient execution configuration depends on dataset size, fold counts, CPU core availability, and operating system overhead.
 
-### A. Fixed-Model Cross-Validation (`cv_sum_roc` / `loocv_sum_roc`)
+### 1. Previewing Execution Scaling (`plan_ncvroc_execution`)
 
-Evaluate an unweighted sum score of a predetermined item set using $K$-fold or leave-one-out cross-validation:
+Before launching a long-running analysis, `plan_ncvroc_execution()` allows you to inspect candidate counts, benchmark legal execution configurations, extrapolate runtimes via setup-aware modeling, and visualize scaling curves:
 
 ```r
 library(NCVROC)
 
+# Preview execution scaling for 1 to 4 item models
+plan <- plan_ncvroc_execution(
+  data        = analysis_dat,
+  outcome     = y,
+  items       = paste0("Q", 1:10),
+  workflow    = "cross_size_cv",
+  model_sizes = 1:4,
+  folds       = 5
+)
+
+# Print execution plan summary and benchmark table
+print(plan)
+
+# Plot runtime, speedup, and parallel efficiency curves
+plot(plan, type = "all")
+```
+
+### 2. Tuning Modes & Selection Hierarchy
+
+Execution planning is integrated directly into `exhaustive_sum_roc()`, `cross_size_cv()`, `nested_sum_roc()`, and `cross_size_nested_cv()` via the `tuning` parameter:
+
+```r
+# 1. Manual mode (no planner overhead)
+fit <- cross_size_cv(data = d, outcome = y, items = Q1:Q10, model_sizes = 1:4, tuning = "off")
+
+# 2. Automatic planning (180-second primary gate + 5% overhead budget)
+fit <- cross_size_cv(data = d, outcome = y, items = Q1:Q10, model_sizes = 1:4, tuning = "auto")
+
+# 3. Explicit benchmarking (always sweep legal configurations)
+fit <- cross_size_cv(data = d, outcome = y, items = Q1:Q10, model_sizes = 1:4, tuning = "always")
+```
+
+When benchmarking is performed, NCVROC evaluates legal execution configurations and selects a measured near-best plan using the following deterministic hierarchy:
+
+1. **Fastest observed time**: Finds the configuration with the lowest median benchmark elapsed time ($T_{\text{min}}$).
+2. **5% near-best qualifying envelope**: Identifies all candidate plans where $\text{median\_elapsed} \le T_{\text{min}} \times 1.05$.
+3. **Resource economy**: Chooses the plan requiring the fewest total CPU cores/workers (`min(resource_count)`).
+4. **Backend simplicity priority**:
+   - **Flat workloads**: `none` (serial) > `threads` (C++ multithreading) > `chunks` (PSOCK socket workers).
+   - **Nested workloads**: `none` > `threads` > `outer` (PSOCK outer folds) > `chunks` > `hybrid`.
+5. **Deterministic tie-breakers**: Lowest `median_elapsed` followed by lexicographical `plan_id`.
+
+> [!NOTE]
+> **Nested Workflows in v0.19.0**: Nested cross-validation workflows (`nested_sum_roc()`, `cross_size_nested_cv()`) perform candidate-bounded runtime probing where supported. Full nested multi-configuration resource sweep benchmarking is deferred to v0.20.0; when unavailable, NCVROC retains the user's manual/default execution plan.
+
+---
+
+## Parallel Execution
+
+NCVROC supports four distinct parallel execution modes. `parallel` (manual execution mode) and `tuning` (automatic planning) are separate parameters:
+
+| Mode | `parallel` | Description | Best For |
+|---|---|---|---|
+| **C++ Multi-Threading** | `"threads"` | Parallel combination evaluation within the main R process using native C++ threads via `RcppParallel` (shared memory, zero socket startup). | High-speed in-memory searches (`exhaustive_sum_roc()`, `cross_size_cv()`). |
+| **Outer Fold Parallel** | `"outer"` (or `TRUE` in nested CV) | Parallel outer cross-validation folds using PSOCK worker processes. | Standard nested CV workflows across multiple folds (`nested_sum_roc()`, `cross_size_nested_cv()`, `ncvroc()`). |
+| **Hybrid Nested CV** | `"hybrid"` | Evaluates outer folds with PSOCK workers and each fold's inner search with C++ threads. | High-core systems with large nested CV candidate spaces. |
+| **Chunk Process Parallel** | `"chunks"` (or `TRUE` in exhaustive search) | Evaluates combination chunks across persistent PSOCK socket worker processes. | Massive searches using disk-backed chunked storage and process isolation. |
+
+```r
+# Manual C++ multi-threading with 4 threads:
+res <- cross_size_cv(data = d, outcome = y, items = Q1:Q10, model_sizes = 1:4, parallel = "threads", n_workers = 4)
+
+# Manual outer PSOCK fold parallel:
+res <- cross_size_nested_cv(data = d, outcome = y, items = Q1:Q10, model_sizes = 1:3, parallel = "outer", n_workers = 4)
+
+# Manual hybrid outer processes x inner C++ threads:
+res <- cross_size_nested_cv(data = d, outcome = y, items = Q1:Q10, model_sizes = 1:3, parallel = "hybrid", n_workers = 2, threads_per_worker = 2)
+```
+
+---
+
+## Progress Reporting & Observability
+
+NCVROC includes observation-only progress reporting controlled by `progress`:
+
+- **Exact Completed Counts**: On compiled serial and multithreaded loops, progress reports exact completed candidate counts at batch boundaries (e.g. `Evaluating 25,000 / 100,000 combinations (25.0%)`).
+- **Approximate ETA**: Monotonically estimates remaining time derived strictly from observed completed batches.
+- **Truthful PSOCK Boundaries**: PSOCK worker processes emit concise start and completion notifications (`progress_unit = "none"`) without generating unverified progress percentages.
+- **Silence Contract**: `progress = FALSE` guarantees complete console silence and minimal execution overhead.
+
+---
+
+## Concise Item-Count Syntax
+
+The `item_count` argument provides a concise alternative to `min_items` and `max_items` across `ncvroc()`, `cross_size_cv()`, `cross_size_nested_cv()`, `roc_bruteforce()`, and `cv_select_sum_roc()`:
+
+| Syntax | Meaning | Equivalent Parameters |
+|---|---|---|
+| `item_count = "<=4"` | Scales with 1 through 4 items | `min_items = 1, max_items = 4` |
+| `item_count = "==3"` | Scales with exactly 3 items | `min_items = 3, max_items = 3` (or `item_count = 3`) |
+| `item_count = "2:4"` | Scales with 2 through 4 items | `min_items = 2, max_items = 4` |
+
+---
+
+## Result Storage & Caching
+
+For large combinatorial searches, `ncvroc()` and `roc_bruteforce()` provide disk-backed storage and caching to manage memory and enable rapid re-runs:
+
+- **`results_storage = c("auto", "memory", "rds", "none")`**: In `"auto"` mode, small searches stay in RAM while large searches (> 100,000 combinations) are saved to disk as chunked RDS files.
+- **`cache = c("off", "reuse", "refresh")`**: In `"reuse"` mode, validated cached results are loaded instantly if the exact dataset, items, and search parameters match.
+
+---
+
+## Examples
+
+### 1. Execution Preview & Scaling Diagnostics (`plan_ncvroc_execution`)
+
+```r
+library(NCVROC)
+
+# Synthetic questionnaire data
+set.seed(42)
+n <- 120
+analysis_dat <- data.frame(
+  matrix(rbinom(n * 10, 1, 0.4), nrow = n, ncol = 10),
+  y = rbinom(n, 1, 0.5)
+)
+names(analysis_dat)[1:10] <- paste0("Q", 1:10)
+
+# Preview execution plans and scaling metrics
+plan <- plan_ncvroc_execution(
+  data        = analysis_dat,
+  outcome     = y,
+  items       = paste0("Q", 1:10),
+  workflow    = "cross_size_cv",
+  model_sizes = 1:4,
+  folds       = 5
+)
+print(plan)
+```
+
+### 2. Fixed-Model Cross-Validation (`cv_sum_roc`)
+
+```r
 # Evaluate 5-fold CV for fixed scale Q1 + Q2 + Q3
 cv_fit <- cv_sum_roc(
   data          = analysis_dat,
@@ -98,41 +240,12 @@ cv_fit <- cv_sum_roc(
   seed          = 42
 )
 print(cv_fit)
-
-# Deterministic LOOCV for fixed scale
-loo_fit <- loocv_sum_roc(
-  data          = analysis_dat,
-  outcome       = y,
-  items         = c("Q1", "Q2", "Q3"),
-  cutoff_method = "youden"
-)
-print(loo_fit)
 ```
 
-### B. Within-Size Model Selection (`cv_select_sum_roc` / `loocv_select_sum_roc`)
-
-Search all combinations of a single specified model size (e.g. all 3-item models) and select the single best model:
+### 3. Cross-Size Ordinary Model Selection (`cross_size_cv`)
 
 ```r
-# Select the best 3-item model among all combinations via 5-fold CV
-best_3item <- cv_select_sum_roc(
-  data             = analysis_dat,
-  outcome          = y,
-  items            = paste0("Q", 1:10),
-  item_count       = 3,
-  selection_metric = "youden",
-  folds            = 5,
-  seed             = 42
-)
-print(best_3item)
-```
-
-### C. Cross-Size Ordinary Model Selection (`cross_size_cv` / `cross_size_loocv`)
-
-Search the full combinatorial model space across multiple candidate sizes (e.g. 1 to 4 items) and select the single best model via ordinary (non-nested) cross-validation:
-
-```r
-# Select the best model across 1 to 4 items via 5-fold CV
+# Select the best model across 1 to 4 items via 5-fold CV with automatic tuning
 ord_selection <- cross_size_cv(
   data             = analysis_dat,
   outcome          = y,
@@ -140,1037 +253,119 @@ ord_selection <- cross_size_cv(
   model_sizes      = 1:4,
   selection_metric = "youden",
   folds            = 5,
+  repeats          = 2,
+  tuning           = "auto",
   seed             = 42
 )
 print(ord_selection)
-
-# Select the best model across 1 to 3 items via LOOCV
-loo_selection <- cross_size_loocv(
-  data             = analysis_dat,
-  outcome          = y,
-  items            = paste0("Q", 1:10),
-  model_sizes      = 1:3,
-  selection_metric = "youden"
-)
-print(loo_selection)
 ```
 
-### D. Cross-Size Nested Cross-Validation (`cross_size_nested_cv`)
-
-Assess the out-of-sample generalization performance of the entire model-selection procedure on independent outer test folds:
+### 4. Selection-Procedure Generalization Validation (`cross_size_nested_cv`)
 
 ```r
-# Evaluate model-selection procedure across 1 to 4 items
+# Evaluate model-selection procedure across 1 to 3 items
 nested_val <- cross_size_nested_cv(
   data             = analysis_dat,
   outcome          = y,
   items            = paste0("Q", 1:10),
-  model_sizes      = 1:4,
+  model_sizes      = 1:3,
   selection_metric = "auc",
   outer_folds      = 5,
   inner_folds      = 4,
-  outer_repeats    = 5,
-  parallel         = "threads",
+  outer_repeats    = 1,
   seed             = 42
 )
 print(nested_val)
 ```
 
-### E. Comparing Non-Nested Selection with Nested Validation (`compare_cv_selection`)
-
-Compare the apparent / ordinary cross-validation performance of the selected model against the generalization performance of the selection procedure, directly quantifying `selection_optimism = ordinary - nested`:
+### 5. Comparing Ordinary Selection vs. Nested Validation (`compare_cv_selection`)
 
 ```r
-# Compare ordinary selection performance vs nested procedure generalization
 comp <- compare_cv_selection(
   data             = analysis_dat,
   outcome          = y,
   items            = paste0("Q", 1:10),
-  model_sizes      = 1:4,
+  model_sizes      = 1:3,
   selection_metric = "auc",
   folds            = 5,
   outer_folds      = 5,
   inner_folds      = 4,
-  outer_repeats    = 5,
+  outer_repeats    = 1,
   seed             = 42
 )
 print(comp)
 ```
 
-> [!NOTE]
-> **Statistical interpretation:** `selection_optimism` reflects empirical optimism associated with model selection under the non-nested procedure, not the bias of a specific fixed final model. In fixed unweighted sum scores, pooled out-of-fold AUC equals full-data apparent AUC; nested CV estimates the out-of-sample generalization performance of the selection procedure.
-
-### F. Candidate Stability & Optimism Audit (`candidate_stability_roc`)
-
-Audit the performance stability, apparent-to-resampled performance gap, bootstrap optimism, rank stability, selection frequency, and clinical constraint feasibility for specific candidate models across data perturbations:
+### 6. Candidate Stability & Optimism Audit (`candidate_stability_roc`)
 
 ```r
-# Mode 1: Targeted head-to-head candidate evaluation (Repeated K-Fold)
-cand_audit_cv <- candidate_stability_roc(
+# Audit stability of specific candidate scales
+cand_audit <- candidate_stability_roc(
   data            = analysis_dat,
   outcome         = y,
   candidate_sets  = list(
-    "Scale A" = c("Q1", "Q2", "Q3"),
-    "Scale B" = c("Q1", "Q4", "Q5"),
-    "Scale C" = c("Q2", "Q3", "Q4", "Q5")
+    "Scale_A" = c("Q1", "Q2", "Q3"),
+    "Scale_B" = c("Q1", "Q4", "Q5"),
+    "Scale_C" = c("Q2", "Q3", "Q4")
   ),
   resampling      = "repeated_cv",
   folds           = 5,
-  repeats         = 20,
-  sensitivity_min = 0.80,
-  specificity_min = 0.70,
+  repeats         = 10,
+  sensitivity_min = 0.70,
+  specificity_min = 0.60,
   seed            = 42
 )
-print(cand_audit_cv)
-plot(cand_audit_cv, type = "rank_stability")
-
-# Mode 2: Combinatorial screening with Stage-2 bootstrap audit
-cand_audit_boot <- candidate_stability_roc(
-  data            = analysis_dat,
-  outcome         = y,
-  items           = paste0("Q", 1:10),
-  model_sizes     = 1:4,
-  screen_top_n    = 100,
-  resampling      = "bootstrap",
-  bootstrap_reps  = 500,
-  bootstrap_test  = "original",
-  rank_by         = "youden",
-  seed            = 42
-)
-summary(cand_audit_boot)
-plot(cand_audit_boot, type = "performance", metric = "youden")
+print(cand_audit)
 ```
 
----
-
-## Configuration style
-
-`ncvroc()` has sensible defaults. Users can start with a short call:
+### 7. Full Automated Analysis (`ncvroc`)
 
 ```r
 result <- ncvroc(
-  data    = analysis_dat,
-  outcome = y,
-  items      = Q1:Q5,
-  item_count = "<=4",
-  mode       = "balanced",
-  seed       = 20260705
-)
-```
-
-`mode` controls the default size of the preselected candidate set:
-
-| mode           | preselect_top_n |
-| -------------- | --------------: |
-| `"quick"`      |             100 |
-| `"balanced"`   |             500 |
-| `"thorough"`   |            1000 |
-| `"exhaustive"` |  all candidates |
-
-Other arguments keep their own defaults unless explicitly changed.
-For example, this changes only the computation engine:
-
-```r
-result <- ncvroc(
-  data    = analysis_dat,
-  outcome = y,
-  items      = Q1:Q5,
-  item_count = "<=4",
-  mode       = "balanced",
-  engine     = "R",
-  seed       = 20260705
-)
-```
-
-This is equivalent to using `mode = "balanced"` while overriding only `engine`.
-Users can override any individual setting:
-
-```r
-result <- ncvroc(
-  data    = analysis_dat,
-  outcome = y,
-  items      = Q1:Q5,
-  item_count = "<=4",
-  mode       = "balanced",
-  inner_repeats = 5,
-  preselect_top_n = 1000,
-  engine     = "Rcpp",
-  seed       = 20260705
-)
-```
-
-In general, the rule is:
-
-```text
-defaults < mode-based suggestion < explicitly supplied arguments
-```
-
-So `mode = "balanced"` suggests `preselect_top_n = 500`, but an explicit
-`preselect_top_n` value overrides that suggestion.
-
----
-
-### Item count syntax
-
-The `item_count` argument provides a concise alternative to `min_items` and
-`max_items`. It must not be combined with explicit `min_items` or `max_items`.
-
-| `item_count` | Meaning |
-|---|---|
-| `"==4"` | Exactly 4 items |
-| `"<=4"` | Up to 4 items (1 through 4) |
-| `"2:4"` | 2 through 4 items |
-
-```r
-# Exactly 4-item scales
-result <- ncvroc(
-  data    = analysis_dat,
-  outcome = y,
-  items   = Q1:Q5,
-  item_count = "==4",
-  mode    = "balanced",
-  seed    = 20260705
-)
-
-# Up to 4-item scales (1-4 items)
-result <- ncvroc(
-  data    = analysis_dat,
-  outcome = y,
-  items   = Q1:Q5,
-  item_count = "<=4",
-  mode    = "balanced",
-  seed    = 20260705
-)
-
-# 2-to-4-item scales
-result <- ncvroc(
-  data    = analysis_dat,
-  outcome = y,
-  items   = Q1:Q5,
-  item_count = "2:4",
-  mode    = "balanced",
-  seed    = 20260705
-)
-```
-
-`item_count` is available in `ncvroc()`, `roc_bruteforce()` (and `roc_bf()`),
-and `ncvroc_config()`.
-
-### Backward compatibility
-
-`min_items` and `max_items` remain supported. The table below shows equivalent
-old and new syntax:
-
-| Old (`min_items` / `max_items`) | New (`item_count`) |
-|---|---|
-| `min_items = 4, max_items = 4` | `item_count = "==4"` |
-| `min_items = 1, max_items = 4` | `item_count = "<=4"` |
-| `min_items = 2, max_items = 4` | `item_count = "2:4"` |
-
-Low-level functions (`exhaustive_sum_roc()`, `nested_sum_roc()`,
-`fit_final_sum_scale()`, `count_item_combinations()`,
-`suggest_preselect_top_n()`) continue to use `min_items` and `max_items`.
-
----
-
-### Result storage
-
-`ncvroc()` and `roc_bruteforce()` accept a `results_storage` parameter to
-control where full candidate tables are stored. Since v0.10.0 the default is
-`"auto"`, which selects the storage mode automatically based on search size.
-
-| `results_storage` | Behavior |
-|---|---|
-| `"auto"` (default) | Small searches use in-memory storage; large searches (> 100,000 combinations) use chunked RDS files on disk. |
-| `"memory"` | Keep full table in RAM (pre-v0.9.0 behavior). |
-| `"rds"` | Save the full table to a single RDS file. In RStudio or Quarto projects this is typically the project root. The save location is always shown in the printed output. Use `getwd()` to check the current directory, or set `results_dir` to an explicit path if the default is not suitable. `$results` / `$final_exhaustive_ranked` is `NULL`. |
-| `"none"` | Discard full table. `ncvroc_results()` will error. |
-
-Use `ncvroc_results()` to retrieve the full table when `results_storage` is not
-`"none"`:
-
-```r
-ncvroc_results(result, top_n = 20)  # get top 20 candidates
-```
-
-For chunked RDS results (produced by `"auto"` on large searches or explicitly
-with `"rds"` when chunked), `top_n = NULL` requires
-`allow_full_load = TRUE`:
-
-```r
-ncvroc_results(result, top_n = NULL, allow_full_load = TRUE)
-```
-
-### Caching & atomic storage
-
-Large exhaustive searches can take significant time. `ncvroc()` and
-`roc_bruteforce()` support result caching and atomic chunked storage to disk:
-
-```r
-result <- ncvroc(
-  data    = analysis_dat,
-  outcome = y,
-  items   = Q1:Q5,
-  item_count = "<=4",
-  mode    = "balanced",
-  cache   = "reuse",     # "off" (default), "reuse", or "refresh"
-  seed    = 20260705
-)
-
-# Second identical call loads from cache instantly
-result2 <- ncvroc(
-  data    = analysis_dat,
-  outcome = y,
-  items   = Q1:Q5,
-  item_count = "<=4",
-  mode    = "balanced",
-  cache   = "reuse",
-  seed    = 20260705
-)
-```
-
-| `cache` | Behavior |
-|---|---|
-| `"off"` (default) | No caching. |
-| `"reuse"` | Use cached result if available (validated against exact hash of data, items, metric, and search parameters); otherwise compute and cache. |
-| `"refresh"` | Always recompute and overwrite the cache. |
-
-`cache_dir` controls where cached results are stored (default: `tempdir()`).
-
-**Atomic RDS Storage Guarantee**: Chunk RDS files are written to temporary files (`.tmp`) within the target directory and atomically renamed to `.rds`. Incomplete writes from interrupted processes are never treated as valid final chunk files, and stale temporary files are ignored.
-
-### Parallel computing
-
-NCVROC provides four distinct parallelization modes to suit different analysis scales and workflows:
-
-| Mode | `parallel` | Description | Best For |
-|---|---|---|---|
-| **C++ Multi-Threading** | `"threads"` | Evaluates combinations in parallel within the main R process using native C++ threads via RcppParallel (shared memory, zero socket startup). | High-speed in-memory exhaustive search (`roc_bruteforce()`, `exhaustive_sum_roc()`, or `ncvroc()` with thorough/exhaustive search). |
-| **Outer Fold Parallel** | `"outer"` (or `TRUE` in nested CV) | Evaluates outer cross-validation folds in parallel using PSOCK socket worker processes. | Standard nested CV workflows across multiple folds (`ncvroc()`, `nested_sum_roc()`). |
-| **Hybrid Nested CV** | `"hybrid"` | Evaluates outer folds with PSOCK workers and each fold's exhaustive search with C++ threads. | Nested CV workloads where both fold-level and within-fold concurrency are useful. |
-| **Chunk Process Parallel** | `"chunks"` (or `TRUE` in exhaustive search) | Evaluates combination chunks across persistent PSOCK socket worker processes. | Massive searches using disk-backed chunked storage, caching, and process isolation. |
-
-```r
-# High-speed in-memory C++ multi-threading:
-result <- roc_bruteforce(
-  data       = d,
-  outcome    = y,
-  items      = Q1:Q10,
-  max_items  = 4,
-  parallel   = "threads",
-  n_workers  = 4
-)
-
-# Parallel outer cross-validation folds:
-result <- ncvroc(
-  data       = d,
-  outcome    = y,
-  items      = Q1:Q10,
-  max_items  = 3,
-  parallel   = "outer",
-  n_workers  = 4
-)
-
-# Hybrid outer processes x C++ threads (total budget 8):
-result <- ncvroc(
-  data               = d,
-  outcome            = y,
-  items              = Q1:Q10,
-  max_items          = 3,
-  parallel           = "hybrid",
-  n_workers          = 4,
-  threads_per_worker = 2
-)
-```
-
-**Backward Compatibility**: Specifying `parallel = TRUE` automatically maps to `"outer"` in nested cross-validation functions (`ncvroc()`, `nested_sum_roc()`) and to `"chunks"` in exhaustive search functions (`roc_bruteforce()`, `exhaustive_sum_roc()`).
-
-### Chunk size
-
-The `chunk_size` parameter (default `200000`) controls how many combinations are
-evaluated per chunk in large exhaustive searches. You typically do not need to
-change this default.
-
-### Final candidate output
-
-`ncvroc()` runs the final exhaustive search by default and saves the ranked
-full-data candidate table to an RDS file (see `results_storage` above).
-
-For convenience, the following are kept in memory:
-
-```r
-result$final_candidates       # top N rows (controlled by final_top_n)
-result$final_model            # best single model (first row)
-result$final_n_combinations   # total combinations evaluated
-result$final_results_storage  # storage mode ("auto", "rds", "memory", or "none")
-result$final_exhaustive_file  # RDS file path (in "rds" mode)
-```
-
-`selection_criterion` controls which candidate is selected during nested CV.
-
-`final_rank_by` controls how the final full-data candidate table is ranked.
-
-```r
-result <- ncvroc(
-  data    = analysis_dat,
-  outcome = y,
-  items      = Q1:Q5,
-  item_count = "<=4",
-  mode       = "balanced",
-  final_rank_by = "auc",
-  final_top_n = 20,
-  seed    = 20260705,
-  save_results = TRUE
-)
-
-result$final_candidates
-result$final_model
-```
-
-Use `final_rank_by` to choose the ranking criterion:
-
-```r
-final_rank_by = "auc"          # default
-final_rank_by = "youden"
-final_rank_by = "sensitivity"
-final_rank_by = "specificity"
-final_rank_by = "accuracy"
-```
-
-Use `ncvroc_results()` to filter the ranked table by clinical constraints
-before choosing a model:
-
-```r
-ncvroc_results(
-  result,
-  sensitivity = ">= 0.90",
-  specificity = ">= 0.85",
-  rank_by = "youden",
-  top_n = 20
-)
-```
-
-Conditions support six operators (`>=`, `>`, `<=`, `<`, `==`, `!=`) combined
-with AND logic. Available columns: `sensitivity`, `specificity`, `auc`,
-`youden`, `accuracy`, `ppv`, `npv`, `n_items`, `cutoff`.
-
----
-
-## Reference
-
-### `ncvroc()`
-
-Primary entry point for a complete NCVROC analysis in a single call. Resolves outcome and item columns using base-R style selection, prepares data, runs nested CV, optionally performs a final exhaustive search, and optionally saves CSV outputs.
-
-```r
-ncvroc(
-  data,
-  outcome,
-  items,
-  min_items         = 1,
-  max_items         = 4,
-  mode              = c("balanced", "quick", "thorough", "exhaustive"),
-  outer_k           = 5,
-  inner_k           = 4,
-  outer_repeats     = 5,
-  inner_repeats     = 1,
-  preselect_top_n   = NULL,
-  preselect_by      = "auc",
+  data                = analysis_dat,
+  outcome             = y,
+  items               = Q1:Q10,
+  item_count          = "<=3",
+  mode                = "balanced",
+  outer_k             = 5,
+  inner_k             = 4,
+  outer_repeats       = 1,
   selection_criterion = "auc",
-  cutoff_method     = "youden",
-  positive_label    = 1,
-  negative_label    = 0,
-  stratified        = TRUE,
-  engine            = "Rcpp",
-  seed              = NULL,
-  final_search      = TRUE,
-  final_top_n       = 20,
-  final_rank_by     = c("auc", "youden", "sensitivity", "specificity", "accuracy"),
-  results_storage   = c("auto", "memory", "rds", "none"),
-  results_name      = NULL,
-  results_dir       = NULL,
-  return            = "full",
-  item_count        = NULL,
-  chunk_size        = 200000L,
-  cache             = c("off", "reuse", "refresh"),
-  cache_dir         = NULL,
-  parallel          = FALSE,
-  n_workers         = NULL
+  final_rank_by       = "auc",
+  final_top_n         = 10,
+  seed                = 42
 )
-```
-
-`outcome` accepts a bare symbol (`y`) or character string (`"y"`).
-`items` accepts bare range (`Q1:Q5`), bare names with `c()`, character vector, existing variable, or numeric positions.
-
-`selection_criterion` controls which candidate is selected during nested CV.
-`final_rank_by` controls how the final full-data candidate table is ranked.
-
-**Returns:** S3 object of class `"ncvroc_analysis"`. `print()`, `summary()`, and `plot()` S3 methods are available. Use `ncvroc_results()` to filter the final candidate table by clinical constraints.
-
----
-
-### `ncvroc_results()`
-
-Filter and rank candidate models from an `ncvroc_analysis` or
-`roc_bruteforce_result` object using clinical or practical constraints.
-
-```r
-ncvroc_results(
-  x,
-  sensitivity  = NULL,
-  specificity  = NULL,
-  auc          = NULL,
-  youden       = NULL,
-  accuracy     = NULL,
-  ppv          = NULL,
-  npv          = NULL,
-  n_items      = NULL,
-  cutoff       = NULL,
-  rank_by = c("youden", "auc", "sensitivity", "specificity", "accuracy", "ppv", "npv"),
-  top_n  = 20,
-  allow_full_load = FALSE
-)
-```
-
-Each condition is a string like `">= 0.90"` or `"<= 3"`. Six operators are supported: `>=`, `>`, `<=`, `<`, `==`, `!=`. Multiple conditions are combined with AND logic. Results are ranked by `rank_by` with stable tiebreakers. Set `top_n = NULL` to return all matching rows, or `0` for an empty table.
-
-For chunked RDS storage, `top_n = NULL` requires `allow_full_load = TRUE`.
-
-**Returns:** A data.frame containing the filtered and ranked candidate models.
-
-`x` may be either:
-
-- an `ncvroc_analysis` object created with `final_search = TRUE`, or
-- a `roc_bruteforce_result` object returned by `roc_bruteforce()` or `roc_bf()`.
-
----
-
-### `roc_bruteforce()`
-
-Full-data exhaustive item-combination ROC analysis with NSE column resolution.
-
-```r
-roc_bruteforce(
-  data,
-  outcome,
-  items,
-  min_items        = 1,
-  max_items        = 4,
-  cutoff_method    = c("youden", "closest_topleft"),
-  positive_label   = 1,
-  negative_label   = 0,
-  engine           = c("Rcpp", "R"),
-  rank_by          = c("auc", "youden", "sensitivity", "specificity", "accuracy"),
-  top_n            = 20,
-  progress         = interactive(),
-  save_results     = FALSE,
-  output_dir       = ".",
-  results_storage  = c("auto", "memory", "rds", "none"),
-  results_name     = NULL,
-  results_dir      = NULL,
-  item_count       = NULL,
-  chunk_size       = 200000L,
-  cache            = c("off", "reuse", "refresh"),
-  cache_dir        = NULL,
-  parallel         = FALSE,
-  n_workers        = NULL
-)
-```
-
-**Returns:** S3 object of class `"roc_bruteforce_result"` with `$candidates`
-(top_n subset), `$best_model` (first row), `$results_storage`, `$results_file`,
-and `$n_combinations`. By default `$results` is `NULL` (saved to RDS).
-`print()` displays a formatted summary with a warning that performance may be
-optimistic. Use `ncvroc_results()` to filter by clinical constraints.
-
-The alias `roc_bf()` takes the same arguments and returns the same result.
-
----
-
-### `ncvroc_config()`
-
-Bundle all analysis parameters into a single configuration object. Use with `run_ncvroc()` to reduce verbosity in analysis scripts.
-
-```r
-ncvroc_config(
-  outcome,
-  items             = NULL,
-  min_items         = 1,
-  max_items         = 4,
-  mode              = c("balanced", "quick", "thorough", "exhaustive"),
-  outer_k           = 5,
-  inner_k           = 4,
-  outer_repeats     = 5,
-  inner_repeats     = 1,
-  preselect_top_n   = NULL,
-  preselect_by      = "auc",
-  selection_criterion = "auc",
-  cutoff_method     = c("youden", "closest_topleft"),
-  positive_label    = 1,
-  negative_label    = 0,
-  stratified        = TRUE,
-  engine            = c("Rcpp", "R"),
-  item_count        = NULL,
-  chunk_size        = 200000L,
-  cache             = c("off", "reuse", "refresh"),
-  cache_dir         = NULL
-)
-```
-
-`mode` controls the default `preselect_top_n`:
-
-| Mode | Preselection | Use case |
-|---|---|---|
-| `"quick"` | Top 100 | Fast screening, exploration |
-| `"balanced"` | Top 500 (default) | Routine analysis |
-| `"thorough"` | Top 1000 | Comprehensive search |
-| `"exhaustive"` | All candidates | Full enumeration (may be slow) |
-
-**Returns:** S3 object of class `"ncvroc_config"`. `print()` shows a formatted summary with a warning if `preselect_top_n >= 100,000`.
-
----
-
-### `run_ncvroc()`
-
-Convenience wrapper around `nested_sum_roc()` that reads all parameters from an `ncvroc_config` object.
-
-```r
-run_ncvroc(
-  data,
-  items,
-  config,
-  seed     = NULL,
-  progress = TRUE,
-  verbose  = TRUE,
-  return   = c("full", "summary")
-)
-```
-
-**Returns:** `ncvroc_result` object (same as `nested_sum_roc()`).
-
----
-
-### `nested_sum_roc()`
-
-Nested cross-validation with outer loop for performance estimation, inner loop for model selection.
-
-```r
-nested_sum_roc(
-  data,
-  outcome,
-  items,
-  min_items          = 1,
-  max_items          = 4,
-  positive_label     = 1,
-  negative_label     = 0,
-  cutoff_method      = c("youden", "closest_topleft"),
-  preselect_top_n    = 20,
-  preselect_by       = "auc",
-  selection_criterion = "auc",
-  outer_k            = 5,
-  inner_k            = 4,
-  outer_repeats      = 1,
-  inner_repeats      = 1,
-  stratified         = TRUE,
-  seed               = NULL,
-  engine             = c("R", "Rcpp"),
-  progress           = TRUE,
-  verbose            = TRUE,
-  return             = c("full", "summary"),
-  output_dir         = NULL,
-  file_prefix        = "NCVROC"
-)
-```
-
-**Returns:** S3 object of class `"ncvroc_result"` with elements:
-
-| Element | Description |
-|---|---|
-| `summary` | data.frame: one row per outer fold with AUC, sensitivity, specificity, etc. |
-| `outer_results` | list: full per-fold details including predictions |
-| `selected_models` | character: item-set selected in each fold |
-| `selected_model_frequency` | data.frame: selection frequency of each item set |
-| `outer_predictions` | data.frame: all out-of-sample predictions with scores |
-| `settings` | list: all argument values |
-
-**S3 methods:** `print()`, `summary()`, `plot(which = "selection"|"auc")`.
-
----
-
-### `exhaustive_sum_roc()`
-
-Enumerate all item combinations, compute simple sum scores, evaluate via ROC.
-
-```r
-exhaustive_sum_roc(
-  data,
-  outcome,
-  items,
-  min_items          = 1,
-  max_items          = 4,
-  positive_label     = 1,
-  negative_label     = 0,
-  cutoff_method      = c("youden", "closest_topleft"),
-  rank_by            = c("auc", "youden", "sensitivity", "specificity", "accuracy"),
-  top_n              = NULL,
-  prefer_fewer_items = TRUE,
-  ci                 = FALSE,
-  conf_level         = 0.95,
-  engine             = c("R", "Rcpp"),
-  progress           = TRUE
-)
-```
-
-**Returns:** data.frame with columns `rank`, `items`, `n_items`, `auc`, `cutoff`, `sensitivity`, `specificity`, `youden`, `accuracy`, `ppv`, `npv`, `n_positive`, `n_negative`. When `ci = TRUE`, also includes `auc_lower`, `auc_upper`, `sensitivity_lower`, `sensitivity_upper`, `specificity_lower`, `specificity_upper`, `accuracy_lower`, `accuracy_upper`, `ppv_lower`, `ppv_upper`, `npv_lower`, `npv_upper`. Sorted by `rank_by` descending.
-
-**Performance is apparent (in-sample), not cross-validated.**
-
-Default is `engine = "R"`. For ~7x speedup, use `engine = "Rcpp"`.
-
----
-
-### `fit_final_sum_scale()`
-
-Thin wrapper around `exhaustive_sum_roc()` for fitting the final scale on the full dataset after cross-validation.
-
-```r
-fit_final_sum_scale(
-  data,
-  outcome,
-  items,
-  min_items      = 1,
-  max_items      = 4,
-  positive_label = 1,
-  negative_label = 0,
-  cutoff_method  = c("youden", "closest_topleft"),
-  rank_by        = c("auc", "youden", "sensitivity", "specificity", "accuracy"),
-  top_n          = 20,
-  ci             = TRUE,
-  conf_level     = 0.95,
-  engine         = c("R", "Rcpp"),
-  progress       = TRUE
-)
-```
-
-**Returns:** data.frame with point estimates and confidence intervals (when `ci = TRUE`), tagged with `attr(result, "performance_type") <- "apparent"`. These are in-sample estimates, not cross-validated. Use `nested_sum_roc()` for validated performance.
-
-Default is `engine = "R"`. For ~7x speedup, use `engine = "Rcpp"`.
-
----
-
-### `make_stratified_folds()`
-
-Create stratified k-fold cross-validation indices.
-
-```r
-make_stratified_folds(y, k = 5, repeats = 1, seed = NULL)
-```
-
-**Returns:** named list of integer vectors. Names follow `"Rep1_Fold1"` format. If `k` exceeds the size of the smaller class, `k` is reduced with a warning.
-
----
-
-### `count_item_combinations()`
-
-Count total k-item combinations without generating them.
-
-```r
-count_item_combinations(
-  items_or_n,
-  min_items = 1,
-  max_items = 4,
-  detail    = FALSE
-)
-```
-
-`items_or_n` accepts a character vector of item names or a single integer n.
-`detail = TRUE` returns a data.frame with per-k breakdown.
-
----
-
-### `suggest_preselect_top_n()`
-
-Suggest a practical `preselect_top_n` based on total combinations and analysis mode.
-
-```r
-suggest_preselect_top_n(
-  items_or_n,
-  min_items = 1,
-  max_items = 4,
-  mode      = c("balanced", "quick", "thorough", "exhaustive")
-)
-```
-
-**Returns:** single numeric value, capped at the total number of combinations.
-
----
-
-## Quick example
-
-```r
-library(NCVROC)
-
-set.seed(42)
-d <- data.frame(
-  y  = sample(0:1, 100, replace = TRUE),
-  Q1 = sample(0:2, 100, replace = TRUE),
-  Q2 = sample(0:2, 100, replace = TRUE),
-  Q3 = sample(0:2, 100, replace = TRUE),
-  Q4 = sample(0:2, 100, replace = TRUE),
-  Q5 = sample(0:2, 100, replace = TRUE)
-)
-
-# Single-call analysis with base-R style column selection
-result <- ncvroc(d, y, Q1:Q5, item_count = "<=2", mode = "quick",
-  outer_k = 3, inner_k = 2, outer_repeats = 1, engine = "R",
-  seed = 42, final_search = FALSE)
 print(result)
-summary(result)
-plot(result)
 ```
 
-### Configuration workflow
+### 8. Clinical Constraint Filtering (`ncvroc_results`)
 
 ```r
-# Define the analysis intent once
-cfg <- ncvroc_config(
-  outcome    = "y",
-  items      = paste0("Q", 1:5),
-  item_count = "<=2",
-  mode       = "quick",
-  engine     = "Rcpp"
+# Filter candidate models requiring sensitivity >= 0.70 and specificity >= 0.30
+filtered <- ncvroc_results(
+  result,
+  sensitivity = ">= 0.70",
+  specificity = ">= 0.30",
+  rank_by     = "youden",
+  top_n       = 5
 )
-
-print(cfg)
-
-result <- run_ncvroc(d, paste0("Q", 1:5), cfg, seed = 42)
-summary(result)
+print(filtered)
 ```
 
 ---
 
-## Apparent vs. nested CV performance
+## Core Assumptions
 
-| Function | Performance | Use case |
-|---|---|---|
-| `ncvroc()` | Nested cross-validated | Single-call entry point (recommended) |
-| `roc_bruteforce()` | Apparent (in-sample) | Full-data exhaustive search with NSE |
-| `exhaustive_sum_roc()` | Apparent (in-sample) | Quick screening, exploration |
-| `nested_sum_roc()` | Nested cross-validated | Validated performance estimation |
-| `run_ncvroc()` | Nested cross-validated | Convenience wrapper (config-driven) |
-| `fit_final_sum_scale()` | Apparent (in-sample) | Final scale on full data |
+1. **Higher score = more likely positive.** Reverse-code items beforehand if needed.
+2. **Cutoff rule:** `predicted_positive = score >= cutoff`.
+3. **AUC with ties:** $\text{AUC} = P(\text{pos} > \text{neg}) + 0.5 \times P(\text{pos} == \text{neg})$.
+4. **Missing values:** Empty strings and whitespace-only values are treated as missing. Rows with missing values in the outcome or selected item columns are removed before analysis.
+5. **Strict binary outcome:** Outcome column must contain only `positive_label` and `negative_label` values.
 
 ---
 
-## Confidence intervals
+## References
 
-`NCVROC` provides confidence interval (CI) estimation for final scale performance metrics evaluated on the full dataset:
-
-- **AUC CI:** Non-parametric asymptotic method by DeLong et al. (1988), computed directly and efficiently from score frequency distributions in $O(K)$ time.
-- **Sensitivity, Specificity, Accuracy, PPV, NPV CI:** Exact binomial confidence intervals by Clopper and Pearson (1934) computed using Beta distribution quantiles (`stats::qbeta`).
-- **Confidence level:** Specified via `conf_level` (default `0.95` for 95% CIs).
-- **Default behavior:**
-  - `fit_final_sum_scale()` and `ncvroc()` compute CIs for final models/candidates by default (`ci = TRUE`).
-  - `exhaustive_sum_roc()` defaults to `ci = FALSE` to maintain high combinatorial search speed, computing CIs only after ranking and top-N candidate selection when `ci = TRUE`.
-
-### Example
-
-```r
-# Fit final scale with 95% confidence intervals
-final <- fit_final_sum_scale(
-  data       = d,
-  outcome    = "y",
-  items      = c("Q1", "Q2", "Q3"),
-  max_items  = 2,
-  ci         = TRUE,
-  conf_level = 0.95
-)
-
-# Output includes point estimates alongside lower/upper bounds
-final[, c("rank", "items", "auc", "auc_lower", "auc_upper",
-          "sensitivity", "sensitivity_lower", "sensitivity_upper",
-          "specificity", "specificity_lower", "specificity_upper")]
-```
-
-For small samples or perfect classification (e.g. 10/10 true positives), the Clopper–Pearson exact method properly quantifies sample uncertainty:
-```text
-Sensitivity: 1.000 [0.692, 1.000]
-```
-
-### Important note on CI interpretation
-
-> [!IMPORTANT]
-> **Confidence intervals for final-model performance quantify sampling uncertainty for the fitted model evaluated on the full dataset. They do not account for uncertainty introduced by model or cutoff selection and should not be interpreted as cross-validated confidence intervals.**
->
-> Use `nested_sum_roc()` or `ncvroc()` to assess out-of-sample generalizability across outer cross-validation folds.
-
----
-
-## Parallel execution
-
-`NCVROC` supports multi-core parallelization across four distinct operational modes:
-
-- **C++ Multi-Threading (`parallel = "threads"`)**: Evaluates combinatorial candidate search spaces in parallel directly within the main R process using native C++ threads via `RcppParallel`. Features zero socket IPC overhead, no process-level duplication of input data, and negligible startup latency.
-- **Outer-Fold Parallelization (`parallel = "outer"`)**: Evaluates outer cross-validation folds concurrently across socket worker processes (`parallel::makePSOCKcluster`). Preselection within each fold runs sequentially.
-- **Hybrid Nested CV (`parallel = "hybrid"`)**: Evaluates outer folds across PSOCK workers while each worker evaluates exhaustive candidates with `threads_per_worker` C++ threads. This mode is available only for nested CV with `engine = "Rcpp"`.
-- **Chunk-Level Parallelization (`parallel = "chunks"`)**: Evaluates large combinatorial search spaces ($O(\binom{M}{K})$ candidate models) concurrently across chunks via persistent socket worker processes.
-
-### Parallel modes and contextual resolution
-
-| Setting | Nested Context (`ncvroc`, `nested_sum_roc`) | Exhaustive Context (`roc_bruteforce`, `exhaustive_sum_roc`) |
-|---|---|---|
-| `parallel = FALSE` (Default) | Sequential single-process execution | Sequential single-process execution |
-| `parallel = TRUE` | Resolves to `"outer"` (outer-fold parallelization) | Resolves to `"chunks"` (chunk parallelization) |
-| `parallel = "none"` | Sequential single-process execution | Sequential single-process execution |
-| `parallel = "threads"` | Outer folds run sequentially; inner exhaustive searches use C++ multi-threading | Evaluates exhaustive combinations in parallel using C++ multi-threading |
-| `parallel = "outer"` | Evaluates outer cross-validation folds in parallel | Unsupported (raises error) |
-| `parallel = "chunks"` | Outer folds run sequentially; inner preselection chunks are evaluated in parallel (reusing a single cluster) | Evaluates candidate combination chunks in parallel across socket workers |
-| `parallel = "hybrid"` | Outer folds use PSOCK workers; each worker uses C++ threads for exhaustive evaluation | Unsupported (raises error) |
-
-> [!NOTE]
-> `parallel = "auto"` is reserved for a future release. Specifying `"auto"` raises an informative error prompting you to choose `"none"`, `"threads"`, `"outer"`, `"chunks"`, or `"hybrid"`.
-
-### Worker count (`n_workers`)
-
-- **`n_workers = NULL` (Default)**: Automatically detects available physical CPU cores (`max(1L, parallel::detectCores(logical = FALSE) - 1L)`).
-- **`n_workers = 4`**: Uses up to 4 worker processes or threads.
-- **Automatic Capping**: The effective worker count is safely capped by available CPU cores, task count (for outer folds), and CRAN environment limits (`_R_CHECK_LIMIT_CORES_`).
-- **Hybrid meaning**: In `parallel = "hybrid"`, `n_workers` is the requested number of outer PSOCK workers. When it is `NULL`, NCVROC resolves the outer worker count first, then caps `threads_per_worker` to the remaining CPU budget.
-
-### Threads per hybrid worker (`threads_per_worker`)
-
-`threads_per_worker` is the requested number of C++ threads used inside each outer PSOCK worker in hybrid mode. Its effective value may be reduced according to the CPU budget, the resolved outer worker count, and `_R_CHECK_LIMIT_CORES_`. The effective product of outer workers and threads per worker is kept within the available budget; CRAN checks are limited to at most 2.
-
-### Controlled concurrency and oversubscription protection
-
-Except for the explicitly budgeted `"hybrid"` mode, outer parallelization, chunk parallelization, and C++ multi-threading are never nested concurrently. Hybrid combines only outer PSOCK workers with call-local C++ threads and caps their product to prevent oversubscription. Chunk PSOCK workers are never used inside outer workers.
-
-### Persistent cluster reuse in nested CV
-
-When running nested CV with `parallel = "chunks"`, `nested_sum_roc()` initializes the PSOCK cluster **once** before the outer fold loop, exports package code and DLLs once, and reuses the cluster across all outer folds by updating only fold-specific training matrices. The cluster is cleanly closed on exit.
-
-### High-performance chunk/streaming search engine & exactness
-
-In v0.12.0 and v0.13.0, the exhaustive search engine generates combinations on-the-fly via C++ mathematical unranking (`evaluate_combos_cpp_chunk()`) and maintains streaming local Top-N candidate pools.
-- **Exact exhaustive search**: Evaluates the full exhaustive candidate space without heuristics or screening approximations.
-- **Exact tie-breaking**: Candidates track their 1-based `.global_combo_index` from serial combinatorial enumeration, ensuring deterministic identical candidate ordering and numerical metrics between serial and parallel runs.
-- **Streaming Top-N invariant**: Each chunk retains at least as many candidates as required for the final global Top-N (`top_n_local >= global_top_n`), so no candidate belonging to the global Top-N can be lost during chunk reduction.
-
-### Usage examples
-
-#### Hybrid nested CV
-
-```r
-res_hybrid <- ncvroc(
-  data               = analysis_dat,
-  outcome            = y,
-  items              = Q1:Q30,
-  max_items          = 4,
-  parallel           = "hybrid",
-  n_workers          = 4,
-  threads_per_worker = 2
-)
-```
-
-Hybrid performance depends on fold count, candidate-space size, data size, and hardware; it is not always faster than outer-only or threads-only execution.
-
-#### Example 1: In-memory C++ multi-threading (fastest for exhaustive search)
-
-```r
-res_threads <- roc_bruteforce(
-  data       = analysis_dat,
-  outcome    = y,
-  items      = Q1:Q30,
-  item_count = "<=4",
-  parallel   = "threads",
-  n_workers  = 4
-)
-```
-
-#### Example 2: Outer-fold parallelization (recommended for nested CV with moderate M)
-
-```r
-res_outer <- ncvroc(
-  data          = analysis_dat,
-  outcome       = y,
-  items         = Q1:Q14,
-  max_items     = 4,
-  outer_k       = 5,
-  inner_k       = 4,
-  outer_repeats = 5,
-  parallel      = "outer",   # or parallel = TRUE
-  n_workers     = 4,
-  seed          = 42
-)
-```
-
-#### Example 3: Chunk-level parallel search (recommended for disk-backed/cached massive search)
-
-```r
-res_chunks <- roc_bruteforce(
-  data       = analysis_dat,
-  outcome    = y,
-  items      = Q1:Q40,
-  item_count = "<=4",
-  parallel   = "chunks",  # or parallel = TRUE
-  n_workers  = 4
-)
-```
-
----
-
-## Brute-force ROC search without cross-validation
-
-Use `roc_bruteforce()` (or its alias `roc_bf()`) for exhaustive item-combination
-ROC analysis directly on the full dataset. It shares the same NSE column
-resolution as `ncvroc()`.
-
-> Performance is calculated on the same data used for item and cutoff
-> selection. These estimates may be optimistic. Use `ncvroc()` for nested
-> cross-validated performance estimation.
-
-```r
-result <- roc_bruteforce(
-  data       = d,
-  outcome    = y,
-  items      = Q1:Q5,
-  item_count = "<=3",
-  rank_by    = "youden",
-  engine     = "Rcpp",
-  top_n      = 20
-)
-
-result
-result$best_model
-result$candidates
-
-# To retrieve the full candidate table (saved to RDS by default):
-ncvroc_results(result, top_n = NULL)
-```
-
-Filter with `ncvroc_results()`, just like `ncvroc()` output:
-
-```r
-ncvroc_results(result, sensitivity = ">= 0.90", specificity = ">= 0.85")
-```
-
-The alias `roc_bf()` is equivalent:
-
-```r
-result <- roc_bf(d, y, Q1:Q5, item_count = "<=3", engine = "Rcpp")
-```
-
-## Rcpp engine
-
-Specify `engine = "Rcpp"` in `ncvroc()`, `roc_bruteforce()`,
-`exhaustive_sum_roc()`, `nested_sum_roc()`, or `fit_final_sum_scale()` to use
-the native C++ backend. Results are numerically identical to the R engine;
-typical speedup is ~7x on moderate workloads.
-
-```r
-exhaustive_sum_roc(d, "y", paste0("Q", 1:5), max_items = 2, engine = "Rcpp")
-```
-
-## License
-
-MIT
+- Fawcett, T. (2006). An introduction to ROC analysis. *Pattern Recognition Letters*, 27(8), 861–874. [doi:10.1016/j.patrec.2005.10.010](https://doi.org/10.1016/j.patrec.2005.10.010)
+- Varma, S., & Simon, R. (2006). Bias in error estimation when using cross-validation for model selection. *BMC Bioinformatics*, 7, 91. [doi:10.1186/1471-2105-7-91](https://doi.org/10.1186/1471-2105-7-91)
+- Youden, W. J. (1950). Index for rating diagnostic tests. *Cancer*, 3(1), 32–35.

@@ -104,15 +104,17 @@ The effective value may be reduced according to the CPU budget, resolved
 outer worker count, and `_R_CHECK_LIMIT_CORES_`. For other modes this must
 remain 1.}
 
-\item{tuning}{Automatic execution-planning mode: `"off"` (default, manual
-execution configuration is authoritative), `"auto"` (benchmarks legal
-nested backends only when predicted serial runtime exceeds threshold), or
-`"always"` (always benchmarks legal backends for non-degenerate workloads).}
+\item{tuning}{Automatic execution-planning mode: `"off"` (default; manual
+execution configuration is authoritative), `"auto"`, or `"always"`.
+Nested runtime probing is candidate-bounded and preserves the complete fold
+structure. v0.19.0 does not perform a nested resource sweep when the nested
+evaluator cannot accept rank-bounded candidates; in that case it retains the
+manual/default configuration and records the fallback in `execution_plan`.}
 
-\item{progress}{Logical, show progress bars and approximate remaining-time
-estimates (default \code{TRUE}). For serial outer folds, displays a
-progress bar and periodic approximate ETA. For parallel outer folds, reports
-execution start and completion.}
+\item{progress}{Logical, report observable progress (default \code{TRUE}).
+Sequential outer-fold work may show observed progress and approximate ETA.
+PSOCK `"outer"`, `"chunks"`, and `"hybrid"` paths report only truthful start
+and successful completion, with no percentage or ETA. `FALSE` is silent.}
 
 \item{verbose}{Logical, print progress messages? Default `TRUE`.}
 

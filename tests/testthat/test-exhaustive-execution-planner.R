@@ -57,20 +57,24 @@ test_that("auto small and always degenerate preserve exhaustive statistics", {
 })
 
 test_that("controller compares identical deterministic pilot ranks across plans", {
-  d <- .planner_test_data(5L)
+  d <- .planner_test_data(20L)
   seen <- list()
   executor <- function(x_mat, y, items, min_items, max_items, cutoff_method,
                        engine, global_ranks, plan, timer) {
-    if (length(global_ranks) == 25L) {
+    if (length(global_ranks) == 96L) {
       seen[[length(seen) + 1L]] <<- global_ranks
     }
-    elapsed <- switch(plan$parallel[[1L]], none = 4, threads = 1, chunks = 2)
+    elapsed <- switch(plan$parallel[[1L]],
+                      none = 4 + .10 * length(global_ranks),
+                      threads = 1 + .05 * length(global_ranks),
+                      chunks = 2 + .02 * length(global_ranks))
     list(elapsed = elapsed, success = TRUE, failure_reason = NA_character_)
   }
   plan <- NCVROC:::.planner_exhaustive_controller(
-    as.matrix(d[, -1L]), d$y, names(d)[-1L], 1L, 3L, "youden", "Rcpp", "always",
+    as.matrix(d[, -1L]), d$y, names(d)[-1L], 1L, 5L, "youden", "Rcpp", "always",
     "none", 2L, 5L,
-    dependencies = list(resource_detector = function() 2L, benchmark_executor = executor)
+    dependencies = list(resource_detector = function() 2L, benchmark_executor = executor,
+                        auto_runtime_threshold = 0)
   )
   expect_true(plan$metadata$backend_benchmark_performed)
   expect_identical(plan$plan$parallel[[1L]], "chunks")
@@ -82,25 +86,26 @@ test_that("controller compares identical deterministic pilot ranks across plans"
 })
 
 test_that("R engine creates no threads automatic plans and all failures use manual fallback", {
-  d <- .planner_test_data(5L)
+  d <- .planner_test_data(20L)
   plans_seen <- character()
   failed <- function(x_mat, y, items, min_items, max_items, cutoff_method,
                      engine, global_ranks, plan, timer) {
     plans_seen <<- c(plans_seen, plan$parallel[[1L]])
-    if (length(global_ranks) < 25L) {
+    if (length(global_ranks) < 48L) {
       return(list(elapsed = 0.01, success = TRUE, failure_reason = NA_character_))
     }
     list(elapsed = NA_real_, success = FALSE, failure_reason = "injected failure")
   }
   result <- NCVROC:::.planner_exhaustive_controller(
-    as.matrix(d[, -1L]), d$y, names(d)[-1L], 1L, 3L, "closest_topleft", "R", "always",
+    as.matrix(d[, -1L]), d$y, names(d)[-1L], 1L, 5L, "closest_topleft", "R", "always",
     "chunks", 2L, 5L,
-    dependencies = list(resource_detector = function() 2L, benchmark_executor = failed)
+    dependencies = list(resource_detector = function() 2L, benchmark_executor = failed,
+                        auto_runtime_threshold = 0)
   )
   expect_false("threads" %in% plans_seen)
   expect_identical(result$plan$parallel[[1L]], "chunks")
-  expect_true(result$warn)
-  expect_match(result$metadata$fallback_reason, "all benchmark plans failed")
+  expect_false(result$warn)
+  expect_match(result$metadata$fallback_reason, "runtime estimate unavailable")
   one_worker <- NCVROC:::.planner_manual_exhaustive_plan("chunks", 1L, 25, 5L)
   expect_identical(one_worker$n_workers[[1L]], 1L)
 })
@@ -203,21 +208,22 @@ test_that("clock and failed micro-pilot flags deterministically govern fallback"
 })
 
 test_that("benchmark all-failure fallback retains NA estimated runtime", {
-  d <- .planner_test_data(5L)
+  d <- .planner_test_data(20L)
   failing <- function(x_mat, y, items, min_items, max_items, cutoff_method,
                       engine, global_ranks, plan, timer) {
-    if (length(global_ranks) < 25L) return(list(elapsed = 1, success = TRUE, failure_reason = NA_character_))
+    if (length(global_ranks) < 48L) return(list(elapsed = 1, success = TRUE, failure_reason = NA_character_))
     list(elapsed = NA_real_, success = FALSE, failure_reason = "all failed")
   }
   result <- NCVROC:::.planner_exhaustive_controller(
-    as.matrix(d[, -1L]), d$y, names(d)[-1L], 1L, 3L, "youden", "Rcpp", "always",
+    as.matrix(d[, -1L]), d$y, names(d)[-1L], 1L, 5L, "youden", "Rcpp", "always",
     "chunks", 2L, 5L, list(resource_detector = function() 2L,
-                             benchmark_executor = failing, clock = function() 0)
+                             benchmark_executor = failing, clock = function() 0,
+                             auto_runtime_threshold = 0)
   )
   expect_true(is.na(result$metadata$estimated_runtime))
-  expect_match(result$metadata$fallback_reason, "all benchmark plans failed")
+  expect_match(result$metadata$fallback_reason, "runtime estimate unavailable")
   expect_identical(result$metadata$decision_reason, result$metadata$fallback_reason)
-  expect_true(result$warn)
+  expect_false(result$warn)
 })
 
 test_that("closest-to-topleft ties and top_n remain exact under tuning", {

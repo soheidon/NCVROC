@@ -188,7 +188,7 @@ test_that("cross_size_cv tuning='always' degenerate workload uses manual plan", 
   expect_match(plan$decision_reason, "degenerate workload")
 })
 
-test_that("cross_size_cv tuning='always' on non-degenerate workload runs benchmark and matches off exactly", {
+test_that("cross_size_cv tuning='always' respects the 180-second and 5-percent gates", {
   d <- .planner_cv_test_data(8L)
 
   res_off <- cross_size_cv(
@@ -224,10 +224,11 @@ test_that("cross_size_cv tuning='always' on non-degenerate workload runs benchma
 
   plan <- res_always$settings$execution_plan
   expect_true(plan$tuning_performed)
-  expect_true(plan$backend_benchmark_performed)
+  expect_false(plan$backend_benchmark_performed)
   expect_identical(plan$tuning_mode, "always")
   expect_true(nrow(plan$benchmark_table) >= 1L)
-  expect_identical(plan$decision_reason, "selected near-best benchmark plan")
+  expect_true(plan$decision_reason %in% c("estimated workload too small for backend benchmarking",
+                                           "benchmark_budget_insufficient"))
   expect_identical(plan$cv_method, "kfold")
   expect_identical(plan$k, 5L)
   expect_identical(plan$repeats, 1L)
@@ -335,7 +336,7 @@ test_that("planner controller handles mocked benchmark failure and fallback grac
   expect_match(outcome$metadata$fallback_reason, "manual plan")
 })
 
-test_that("planner controller respects mock timer and budget timeout", {
+test_that("planner controller respects the pre-launch budget gate", {
   d <- .planner_cv_test_data(8L)
   dat_mat <- as.matrix(d[, paste0("Q", 1:8)])
   y_int <- as.integer(d$y)
@@ -366,11 +367,12 @@ test_that("planner controller respects mock timer and budget timeout", {
     tuning               = "always",
     manual_parallel_mode = "none",
     manual_n_workers     = NULL,
-    dependencies         = list(clock = mock_clock)
+    dependencies         = list(clock = mock_clock, auto_runtime_threshold = 0)
   )
 
   expect_type(outcome$metadata, "list")
-  expect_true(outcome$metadata$tuning_budget_exhausted)
+  expect_false(outcome$metadata$backend_benchmark_performed)
+  expect_identical(outcome$metadata$decision_reason, "benchmark_budget_insufficient")
 })
 
 test_that(".planner_evaluate_cv_pilot_combos faithfully handles R-engine with repeats and constraints", {

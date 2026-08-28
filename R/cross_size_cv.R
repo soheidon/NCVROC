@@ -989,16 +989,21 @@
 #' @param parallel Parallel mode: `FALSE` / `"none"` (default), `"threads"` (multi-threaded C++),
 #'   or `"chunks"` (PSOCK cluster).
 #' @param n_workers Integer, number of workers or threads (default `NULL` = auto).
-#' @param tuning Automatic execution-planning mode: `"off"` (default, manual execution configuration is authoritative),
-#'   `"auto"` (benchmarks legal backends only when predicted runtime exceeds threshold), or
-#'   `"always"` (always benchmarks legal backends for non-degenerate workloads).
+#' @param tuning Automatic execution-planning mode: `"off"` (default; manual
+#'   execution configuration is authoritative), `"auto"` (considers a legal
+#'   resource sweep at an empirical 180-second serial-runtime gate), or
+#'   `"always"` (requests the same safe planning process). The benchmark budget
+#'   is at most 5 percent of the estimated runtime; unavailable or insufficient
+#'   pilots fall back to the manual configuration. Suitable two-point pilot
+#'   measurements use an empirical affine runtime estimate.
 #' @param ci Logical, compute confidence intervals for full-data apparent metrics of final model (default `FALSE`).
 #' @param conf_level Numeric, confidence level (default 0.95).
 #' @param seed Integer, random seed for reproducible fold generation.
-#' @param progress Logical, show progress bar and approximate remaining-time
-#'   estimates (default \code{interactive()}). For serial evaluation, displays a
-#'   progress bar and periodic approximate ETA. For parallel execution, reports
-#'   execution start and completion.
+#' @param progress Logical, report observable progress (default
+#'   \code{interactive()}). The cutoff-dependent compiled path reports exact
+#'   completed candidate counts at block boundaries. The PSOCK `"chunks"` path
+#'   reports only truthful start and successful completion, with no percentage or
+#'   ETA. Approximate ETA is based only on observed progress. `FALSE` is silent.
 #'
 #' @return An S3 object of class `"cross_size_cv_result"`, containing:
 #' \describe{
@@ -1360,6 +1365,10 @@ cross_size_cv <- function(data,
       conf_level         = conf_level
     )
     if (!is.null(execution_plan_metadata)) {
+      capability <- .progress_capability("cross_size_cv", parallel_mode, progress,
+                                         observed_unit = "model_size")
+      execution_plan_metadata$progress_mode <- capability$progress_mode
+      execution_plan_metadata$progress_unit <- capability$progress_unit
       settings_obj$execution_plan <- execution_plan_metadata
     }
 
@@ -1539,7 +1548,8 @@ cross_size_cv <- function(data,
       cpp_threads <- 1L
     }
 
-    prg <- .progress_make(n_blocks, enabled = progress)
+    prg <- .progress_make(n_plan, label = "NCVROC", enabled = progress,
+                          progress_mode = "exact")
     on.exit(prg$close(), add = TRUE)
 
     for (b in seq_len(n_blocks)) {
@@ -1586,7 +1596,7 @@ cross_size_cv <- function(data,
           )
         }
       }
-      prg$tick()
+      prg$tick(length(block_items))
       prg$eta_message()
     }
     prg$finish()
@@ -1720,6 +1730,10 @@ cross_size_cv <- function(data,
     conf_level         = conf_level
   )
   if (!is.null(execution_plan_metadata)) {
+    capability <- .progress_capability("cross_size_cv", parallel_mode, progress,
+                                       exact_candidates = TRUE)
+    execution_plan_metadata$progress_mode <- capability$progress_mode
+    execution_plan_metadata$progress_unit <- capability$progress_unit
     settings_obj$execution_plan <- execution_plan_metadata
   }
 

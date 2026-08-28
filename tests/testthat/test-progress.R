@@ -81,6 +81,64 @@ test_that(".progress_make clamps completed units to total", {
   })
 })
 
+test_that("exact progress reports only completed batch work and remains silent when disabled", {
+  expect_message({
+    prg <- NCVROC:::.progress_make(10L, label = "NCVROC", enabled = TRUE, progress_mode = "exact")
+    prg$tick(4L)
+    prg$close()
+  }, "4 / 10 complete")
+  expect_silent({
+    prg <- NCVROC:::.progress_make(10L, enabled = FALSE, progress_mode = "exact")
+    prg$tick(10L); prg$finish(); prg$close()
+  })
+})
+
+test_that("progress capability and batch sizing are deterministic", {
+  expect_equal(NCVROC:::.progress_batch_size(100L), 50000L)
+  expect_equal(NCVROC:::.progress_batch_size(5e6), 200000L)
+  expect_identical(NCVROC:::.progress_capability("exhaustive_sum_roc", "threads")$progress_mode, "exact")
+  expect_identical(NCVROC:::.progress_capability("nested_sum_roc", "hybrid")$progress_mode, "start_completion")
+  expect_identical(NCVROC:::.progress_capability("nested_sum_roc", "hybrid")$progress_unit, "none")
+  expect_identical(NCVROC:::.progress_capability("exhaustive_sum_roc", "chunks")$progress_unit, "none")
+  expect_identical(NCVROC:::.progress_capability("cross_size_cv", "chunks")$progress_unit, "none")
+  expect_identical(
+    NCVROC:::.progress_capability("cross_size_cv", "threads", exact_candidates = TRUE)$progress_mode,
+    "exact"
+  )
+  expect_identical(
+    NCVROC:::.progress_capability("cross_size_cv", "threads", exact_candidates = TRUE)$progress_unit,
+    "candidate"
+  )
+  expect_identical(
+    NCVROC:::.progress_capability("nested_sum_roc", "none", observed_unit = "outer_fold")$progress_unit,
+    "outer_fold"
+  )
+  expect_identical(NCVROC:::.progress_capability("cross_size_cv", "none", FALSE)$progress_unit, "none")
+})
+
+test_that("batched serial Rcpp exhaustive output is identical to the legacy silent path", {
+  set.seed(444)
+  d <- data.frame(y = rep(c(0L, 1L), each = 10L),
+                  q1 = sample(0:2, 20, TRUE), q2 = sample(0:2, 20, TRUE),
+                  q3 = sample(0:2, 20, TRUE))
+  set.seed(901); before <- .Random.seed
+  silent <- exhaustive_sum_roc(d, "y", c("q1", "q2", "q3"), max_items = 2,
+                               engine = "Rcpp", parallel = "none", progress = FALSE)
+  set.seed(901)
+  messages <- character()
+  visible <- withCallingHandlers(
+    exhaustive_sum_roc(d, "y", c("q1", "q2", "q3"), max_items = 2,
+                       engine = "Rcpp", parallel = "none", progress = TRUE),
+    message = function(m) {
+      messages <<- c(messages, conditionMessage(m))
+      invokeRestart("muffleMessage")
+    }
+  )
+  expect_match(paste(messages, collapse = "\n"), "complete")
+  expect_identical(visible, silent)
+  expect_identical(.Random.seed, before)
+})
+
 test_that("simulated error with on.exit(close()) does not advance to 100%", {
   test_fn <- function(fail = TRUE) {
     prg <- NCVROC:::.progress_make(10L, enabled = TRUE)

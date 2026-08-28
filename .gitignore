@@ -38,3 +38,5 @@ NCVROC_*.pdf
 Release/
 .Release/
 .lib/
+plan
+.plan

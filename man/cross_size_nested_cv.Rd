@@ -92,17 +92,20 @@ If `NULL`, resolved from `min_items:max_items` or `item_count`.}
 
 \item{threads_per_worker}{Integer, threads per PSOCK worker in `"hybrid"` mode (default 1).}
 
-\item{tuning}{Automatic execution-planning mode: `"off"` (default, manual
-execution configuration is authoritative), `"auto"` (benchmarks legal
-nested backends only when predicted serial runtime exceeds threshold), or
-`"always"` (always benchmarks legal backends for non-degenerate workloads).}
+\item{tuning}{Automatic execution-planning mode: `"off"` (default; manual
+execution configuration is authoritative), `"auto"`, or `"always"`.
+Nested runtime probing is candidate-bounded and preserves the complete fold
+structure. v0.19.0 does not perform a nested resource sweep when the nested
+evaluator cannot accept rank-bounded candidates; it retains the
+manual/default configuration and records the fallback in `execution_plan`.}
 
 \item{seed}{Integer, random seed for reproducible fold generation.}
 
-\item{progress}{Logical, show progress bar and approximate remaining-time
-estimates (default \code{interactive()}). For serial outer folds, displays a
-progress bar and periodic approximate ETA. For parallel execution, reports
-execution start and completion.}
+\item{progress}{Logical, report observable progress (default
+\code{interactive()}). Sequential outer-fold work may show observed progress
+and approximate ETA. PSOCK `"outer"`, `"chunks"`, and `"hybrid"` paths report
+only truthful start and successful completion, with no percentage or ETA.
+`FALSE` is silent.}
 
 \item{verbose}{Logical, print progress messages (default `FALSE`).}
 

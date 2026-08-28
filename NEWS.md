@@ -1,3 +1,38 @@
+# NCVROC 0.19.0
+
+## Execution planning and truthful progress reporting
+
+- **Measured execution planning for flat workloads**:
+  - `exhaustive_sum_roc()` and `cross_size_cv()` can use deterministic pilot
+    measurements to evaluate legal `none`, `threads`, and `chunks` plans.
+  - `tuning = "auto"` considers a resource sweep only at an empirical
+    180-second serial-runtime gate. `tuning = "always"` requests the same safe
+    planning process; `tuning = "off"` preserves the manual configuration.
+  - Benchmark overhead is capped at 5% of the estimated runtime. Suitable
+    two-point pilot measurements use an empirical affine runtime estimate.
+  - The selected plan is a measured near-best configuration, not a claim of
+    universally best performance. Metadata is stored canonically in
+    `execution_plan`.
+
+- **Safe nested-workflow fallback**:
+  - `nested_sum_roc()` and `cross_size_nested_cv()` perform only
+    candidate-bounded runtime probing in v0.19.0.
+  - A full nested resource sweep is not performed when a rank-bounded nested
+    evaluator is unavailable; the manual/default configuration is retained and
+    the reason is recorded in `execution_plan`. This capability is deferred.
+
+- **Observation-only progress**:
+  - Compiled serial and C++-threaded exhaustive evaluation, and the blocked
+    cutoff-dependent `cross_size_cv()` path, report exact completed candidate
+    counts at observable block boundaries.
+  - Opaque PSOCK backends use `start_completion` metadata with
+    `progress_unit = "none"`: they do not advertise percentage progress or ETA.
+  - Approximate ETA is emitted only from observed completed work. `progress = FALSE`
+    is silent. Progress does not alter candidate ordering, fold/repeat structure,
+    statistics, final refitting, or RNG state.
+
+---
+
 # NCVROC 0.18.0
 
 ## Automatic execution planning

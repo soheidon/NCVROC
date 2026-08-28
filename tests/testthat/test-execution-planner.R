@@ -127,7 +127,7 @@ test_that("legal plan generation proposes only flat API backends", {
     expect_setequal(unique(plans$parallel), c("none", "threads", "chunks"))
     expect_false(any(plans$parallel %in% c("outer", "hybrid")))
     expect_equal(unique(plans$n_workers[plans$parallel != "none"]),
-                 c(2L, 4L, 8L))
+                 2L:8L)
   }
 
   r_plans <- .planner_generate_legal_plans(

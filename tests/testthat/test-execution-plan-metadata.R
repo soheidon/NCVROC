@@ -38,7 +38,9 @@
   "manual_n_workers_requested",
   "environment_summary",
   "tuning_budget_seconds",
-  "tuning_budget_exhausted"
+  "tuning_budget_exhausted",
+  "progress_mode",
+  "progress_unit"
 )
 
 test_that("common metadata schema fields are identical across all four APIs", {
@@ -89,6 +91,12 @@ test_that("common metadata schema fields are identical across all four APIs", {
   expect_identical(nested_meta$target_api, "nested_sum_roc")
   expect_identical(cross_nested_meta$target_api, "cross_size_nested_cv")
 
+  # Disabled progress is represented once, in canonical execution_plan metadata.
+  expect_identical(ex_meta$progress_mode, "disabled")
+  expect_identical(cv_meta$progress_mode, "disabled")
+  expect_identical(nested_meta$progress_unit, "none")
+  expect_identical(cross_nested_meta$progress_unit, "none")
+
   # CV adds CV-specific fields
   expect_true(all(c("cv_method", "k", "repeats", "n_folds_total") %in% names(cv_meta)))
 
@@ -97,6 +105,18 @@ test_that("common metadata schema fields are identical across all four APIs", {
                               "n_outer_tasks", "selected_outer_workers", "selected_threads_per_worker")
   expect_true(all(nested_specific_fields %in% names(nested_meta)))
   expect_true(all(nested_specific_fields %in% names(cross_nested_meta)))
+})
+
+test_that("cutoff-dependent cross_size_cv records exact candidate progress", {
+  d <- .metadata_test_data(5L)
+  res <- cross_size_cv(
+    data = d, outcome = y, items = paste0("Q", 1:5),
+    model_sizes = 1:2, selection_metric = "youden", folds = 3,
+    seed = 42, tuning = "auto", progress = TRUE
+  )
+  meta <- res$settings$execution_plan
+  expect_identical(meta$progress_mode, "exact")
+  expect_identical(meta$progress_unit, "candidate")
 })
 
 test_that("tuning='off' preserves exact legacy return structure with zero metadata", {
@@ -133,13 +153,13 @@ test_that("constants planner_version and auto_runtime_threshold are preserved", 
   )
   cv_meta <- cv_res$settings$execution_plan
 
-  # planner_version is "0.1.0"
-  expect_identical(ex_meta$planner_version, "0.1.0")
-  expect_identical(cv_meta$planner_version, "0.1.0")
+  # planner_version is "0.2.0"
+  expect_identical(ex_meta$planner_version, "0.2.0")
+  expect_identical(cv_meta$planner_version, "0.2.0")
 
-  # auto_runtime_threshold is 30.0
-  expect_equal(ex_meta$auto_runtime_threshold, 30.0)
-  expect_equal(cv_meta$auto_runtime_threshold, 30.0)
+  # auto_runtime_threshold is 180.0
+  expect_equal(ex_meta$auto_runtime_threshold, 180.0)
+  expect_equal(cv_meta$auto_runtime_threshold, 180.0)
 })
 
 test_that(".planner_should_benchmark boundary contract is exact at 30.0 seconds", {

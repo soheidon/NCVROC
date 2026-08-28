@@ -84,9 +84,13 @@ or `"chunks"` (PSOCK cluster).}
 
 \item{n_workers}{Integer, number of workers or threads (default `NULL` = auto).}
 
-\item{tuning}{Automatic execution-planning mode: `"off"` (default, manual execution configuration is authoritative),
-`"auto"` (benchmarks legal backends only when predicted runtime exceeds threshold), or
-`"always"` (always benchmarks legal backends for non-degenerate workloads).}
+\item{tuning}{Automatic execution-planning mode: `"off"` (default; manual
+execution configuration is authoritative), `"auto"` (considers a legal
+resource sweep at an empirical 180-second serial-runtime gate), or
+`"always"` (requests the same safe planning process). The benchmark budget
+is at most 5 percent of the estimated runtime; unavailable or insufficient
+pilots fall back to the manual configuration. Suitable two-point pilot
+measurements use an empirical affine runtime estimate.}
 
 \item{ci}{Logical, compute confidence intervals for full-data apparent metrics of final model (default `FALSE`).}
 
@@ -94,10 +98,11 @@ or `"chunks"` (PSOCK cluster).}
 
 \item{seed}{Integer, random seed for reproducible fold generation.}
 
-\item{progress}{Logical, show progress bar and approximate remaining-time
-estimates (default \code{interactive()}). For serial evaluation, displays a
-progress bar and periodic approximate ETA. For parallel execution, reports
-execution start and completion.}
+\item{progress}{Logical, report observable progress (default
+\code{interactive()}). The cutoff-dependent compiled path reports exact
+completed candidate counts at block boundaries. The PSOCK `"chunks"` path
+reports only truthful start and successful completion, with no percentage or
+ETA. Approximate ETA is based only on observed progress. `FALSE` is silent.}
 }
 \value{
 An S3 object of class `"cross_size_cv_result"`, containing:

@@ -220,15 +220,18 @@
 #'   - `"hybrid"`: outer CV folds use socket workers (`n_workers`), and each worker uses multi-threaded C++ (`threads_per_worker`).
 #' @param n_workers Integer, number of worker processes or threads (default `NULL` = auto).
 #' @param threads_per_worker Integer, threads per PSOCK worker in `"hybrid"` mode (default 1).
-#' @param tuning Automatic execution-planning mode: `"off"` (default, manual
-#'   execution configuration is authoritative), `"auto"` (benchmarks legal
-#'   nested backends only when predicted serial runtime exceeds threshold), or
-#'   `"always"` (always benchmarks legal backends for non-degenerate workloads).
+#' @param tuning Automatic execution-planning mode: `"off"` (default; manual
+#'   execution configuration is authoritative), `"auto"`, or `"always"`.
+#'   Nested runtime probing is candidate-bounded and preserves the complete fold
+#'   structure. v0.19.0 does not perform a nested resource sweep when the nested
+#'   evaluator cannot accept rank-bounded candidates; it retains the
+#'   manual/default configuration and records the fallback in `execution_plan`.
 #' @param seed Integer, random seed for reproducible fold generation.
-#' @param progress Logical, show progress bar and approximate remaining-time
-#'   estimates (default \code{interactive()}). For serial outer folds, displays a
-#'   progress bar and periodic approximate ETA. For parallel execution, reports
-#'   execution start and completion.
+#' @param progress Logical, report observable progress (default
+#'   \code{interactive()}). Sequential outer-fold work may show observed progress
+#'   and approximate ETA. PSOCK `"outer"`, `"chunks"`, and `"hybrid"` paths report
+#'   only truthful start and successful completion, with no percentage or ETA.
+#'   `FALSE` is silent.
 #' @param verbose Logical, print progress messages (default `FALSE`).
 #' @param outer_k Alias for `outer_folds`.
 #' @param inner_k Alias for `inner_folds`.
@@ -611,7 +614,13 @@ cross_size_nested_cv <- function(data,
           tuning             = tuning,
           seed               = seed
         ),
-        if (!identical(tuning, "off")) list(execution_plan = execution_metadata) else list()
+        if (!identical(tuning, "off")) {
+          capability <- .progress_capability("cross_size_nested_cv", parallel_mode, progress,
+                                             observed_unit = "outer_fold")
+          execution_metadata$progress_mode <- capability$progress_mode
+          execution_metadata$progress_unit <- capability$progress_unit
+          list(execution_plan = execution_metadata)
+        } else list()
       )
     ),
     class = "cross_size_nested_cv_result"

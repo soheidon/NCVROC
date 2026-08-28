@@ -72,10 +72,12 @@ the current R process via RcppParallel. Default `FALSE`.}
 threads (for `"threads"`), or `NULL` (default) for automatic detection.
 Ignored when `parallel = FALSE` or `"none"`.}
 
-\item{progress}{Logical, show progress bar and approximate remaining-time
-estimates (default \code{TRUE}). For serial evaluation, displays a progress
-bar and periodic approximate ETA. For parallel chunks or multi-threaded C++,
-reports execution start and completion.}
+\item{progress}{Logical, report observable progress (default \code{TRUE}).
+With the compiled serial or `"threads"` path, completed candidate counts and
+percentages are exact at batch boundaries; an approximate ETA is shown only
+after sufficient observed progress. The PSOCK `"chunks"` path reports only
+truthful start and successful completion status, with no percentage or ETA.
+`FALSE` is silent and retains the legacy execution path.}
 
 \item{chunk_start}{Internal: zero-based global combination index to start
 from. When set together with `chunk_size`, only that range is evaluated.}
@@ -83,8 +85,12 @@ from. When set together with `chunk_size`, only that range is evaluated.}
 \item{chunk_size}{Combinations per chunk (default 200000 when chunking).}
 
 \item{tuning}{Execution-planning mode: `"off"` preserves the manual
-execution path, `"auto"` benchmarks only estimated long searches, and
-`"always"` benchmarks meaningful searches. Default `"off"`.}
+execution path, `"auto"` considers a legal resource sweep only when the
+empirical serial estimate reaches 180 seconds, and `"always"` requests the
+same safe planning process. A sweep is budgeted to at most 5 percent of the
+estimated runtime and otherwise falls back to the manual configuration.
+Runtime estimates use observed pilot timings; a two-point affine estimate is
+used when suitable measurements are available. Default `"off"`.}
 }
 \value{
 A data.frame with columns: `rank`, `items` (comma-separated string),

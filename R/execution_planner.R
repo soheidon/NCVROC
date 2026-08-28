@@ -1,8 +1,9 @@
 # execution_planner.R -- Internal automatic execution-planning primitives
 
-.PLANNER_VERSION <- "0.1.0"
+.PLANNER_VERSION <- "0.2.0"
 .PLANNER_SELECTION_TOLERANCE <- 0.05
-.PLANNER_AUTO_RUNTIME_THRESHOLD <- 30
+.PLANNER_AUTO_RUNTIME_THRESHOLD <- 180
+.PLANNER_BENCHMARK_OVERHEAD_RATIO <- 0.05
 .PLANNER_MAX_EXACT_INTEGER <- 2^53 - 1
 
 if (getRversion() >= "2.15.1") {
@@ -235,16 +236,16 @@ if (getRversion() >= "2.15.1") {
   for (name in names(values)) {
     value <- values[[name]]
     if (!is.null(value) &&
-        (!.planner_is_integer_valued(value) || value < 1L ||
+        (!.planner_is_integer_valued(value) || value < 0L ||
          value > .Machine$integer.max)) {
-      stop(sprintf("`%s` must be a positive integer or NULL.", name),
+      stop(sprintf("`%s` must be a non-negative integer or NULL.", name),
            call. = FALSE)
     }
   }
   cap <- as.integer(available)
   if (!is.null(user_n_workers)) cap <- min(cap, as.integer(user_n_workers))
   if (!is.null(task_count)) cap <- min(cap, as.integer(task_count))
-  max(1L, cap)
+  max(0L, cap)
 }
 
 #' Generate a compact legal plan table for a Phase 1 flat API
@@ -278,8 +279,7 @@ if (getRversion() >= "2.15.1") {
     backend_priority = 1L,
     stringsAsFactors = FALSE
   ))
-  resource_levels <- sort(unique(c(2L, 4L, cap)))
-  resource_levels <- resource_levels[resource_levels >= 2L & resource_levels <= cap]
+  resource_levels <- if (cap >= 2L) seq.int(2L, cap) else integer()
 
   if (engine == "Rcpp" && length(resource_levels) > 0L) {
     plans[[length(plans) + 1L]] <- data.frame(
@@ -347,6 +347,146 @@ if (getRversion() >= "2.15.1") {
   result <- do.call(rbind, rows)
   rownames(result) <- NULL
   result
+}
+
+#' Compute empirical scaling metrics, speedup, efficiency, and saturation
+#'
+#' @param benchmark_table Aggregated benchmark timings data frame.
+#' @param total_candidates Total workload candidate count.
+#' @param pilot_candidates Number of candidates in pilot workload.
+#' @return A list with updated benchmark_table, saturation info, and serial median.
+#' @keywords internal
+#' @noRd
+.planner_fit_affine_runtime <- function(timings, total_units) {
+  required <- c("workload_units", "elapsed")
+  if (!is.data.frame(timings) || !all(required %in% names(timings)) ||
+      !is.numeric(total_units) || length(total_units) != 1L ||
+      !is.finite(total_units) || total_units < 1) {
+    return(list(method = "unavailable", status = "unavailable",
+                setup_seconds = NA_real_, seconds_per_unit = NA_real_,
+                estimated_full_runtime = NA_real_))
+  }
+  success <- if ("success" %in% names(timings)) {
+    vapply(timings$success, isTRUE, logical(1))
+  } else {
+    rep(TRUE, nrow(timings))
+  }
+  keep <- success & is.finite(timings$workload_units) & timings$workload_units > 0 &
+    is.finite(timings$elapsed) & timings$elapsed >= 0
+  observed <- timings[keep, c("workload_units", "elapsed"), drop = FALSE]
+  if (nrow(observed) < 2L) {
+    return(list(method = "unavailable", status = "unavailable",
+                setup_seconds = NA_real_, seconds_per_unit = NA_real_,
+                estimated_full_runtime = NA_real_))
+  }
+  medians <- stats::aggregate(elapsed ~ workload_units, data = observed, FUN = stats::median)
+  medians <- medians[order(medians$workload_units), , drop = FALSE]
+  if (nrow(medians) < 2L) {
+    return(list(method = "unavailable", status = "unavailable",
+                setup_seconds = NA_real_, seconds_per_unit = NA_real_,
+                estimated_full_runtime = NA_real_))
+  }
+  lo <- medians[1L, , drop = FALSE]
+  hi <- medians[nrow(medians), , drop = FALSE]
+  denominator <- hi$workload_units - lo$workload_units
+  b <- (hi$elapsed - lo$elapsed) / denominator
+  a <- lo$elapsed - b * lo$workload_units
+  stable <- is.finite(a) && is.finite(b) && is.finite(denominator) && denominator > 0 &&
+    a >= 0 && b > 0 && is.finite(a + b * total_units) &&
+    abs(b * denominator) > .Machine$double.eps * max(1, abs(lo$elapsed), abs(hi$elapsed))
+  if (!stable) {
+    return(list(method = "unavailable", status = "unavailable",
+                setup_seconds = NA_real_, seconds_per_unit = NA_real_,
+                estimated_full_runtime = NA_real_))
+  }
+  list(method = "empirical_affine", status = "ok", setup_seconds = as.double(a),
+       seconds_per_unit = as.double(b),
+       estimated_full_runtime = as.double(a + b * total_units))
+}
+
+.planner_compute_scaling_metrics <- function(benchmark_table, total_candidates, pilot_candidates,
+                                             affine_timings = NULL) {
+  if (!is.data.frame(benchmark_table) || nrow(benchmark_table) == 0L) {
+    return(list(
+      benchmark_table = benchmark_table,
+      saturation = list(),
+      scaling_summary = list()
+    ))
+  }
+  serial_row <- benchmark_table[benchmark_table$parallel == "none", , drop = FALSE]
+  ok_medians <- benchmark_table$median_elapsed[benchmark_table$status == "ok" & is.finite(benchmark_table$median_elapsed)]
+  serial_median <- if (nrow(serial_row) > 0L && is.finite(serial_row$median_elapsed[[1L]])) {
+    serial_row$median_elapsed[[1L]]
+  } else if (length(ok_medians) > 0L) {
+    min(ok_medians)
+  } else {
+    NA_real_
+  }
+
+  tbl <- benchmark_table
+  eff_serial <- if (is.finite(serial_median) && serial_median > 0) serial_median else 1e-4
+  eff_elapsed <- ifelse(is.finite(tbl$median_elapsed) & tbl$median_elapsed > 0,
+                        tbl$median_elapsed, 1e-4)
+  tbl$speedup <- ifelse(is.finite(tbl$median_elapsed) & is.finite(serial_median),
+                        pmin(tbl$resource_count * 1.5, eff_serial / eff_elapsed), NA_real_)
+  tbl$speedup[tbl$parallel == "none" & tbl$resource_count == 1L] <- 1.0
+  tbl$parallel_efficiency <- ifelse(is.finite(tbl$speedup) & tbl$resource_count > 0,
+                                    tbl$speedup / tbl$resource_count, NA_real_)
+
+  # Setup-aware extrapolation is derived solely from measured two-point timings.
+  # In particular, PSOCK lifecycle cost is represented by the measured intercept
+  # and is never multiplied by the full candidate count.
+  est_runtimes <- rep(NA_real_, nrow(tbl))
+  estimate_method <- rep("unavailable", nrow(tbl))
+  estimate_status <- rep("unavailable", nrow(tbl))
+  setup_seconds <- rep(NA_real_, nrow(tbl))
+  seconds_per_unit <- rep(NA_real_, nrow(tbl))
+  for (i in seq_len(nrow(tbl))) {
+    if (!is.null(affine_timings) && is.data.frame(affine_timings) &&
+        "plan_id" %in% names(affine_timings)) {
+      fit <- .planner_fit_affine_runtime(
+        affine_timings[affine_timings$plan_id == tbl$plan_id[i], , drop = FALSE],
+        total_candidates
+      )
+      est_runtimes[i] <- fit$estimated_full_runtime
+      estimate_method[i] <- fit$method
+      estimate_status[i] <- fit$status
+      setup_seconds[i] <- fit$setup_seconds
+      seconds_per_unit[i] <- fit$seconds_per_unit
+    }
+  }
+  tbl$estimated_full_runtime <- est_runtimes
+  tbl$estimate_method <- estimate_method
+  tbl$estimate_status <- estimate_status
+  tbl$setup_seconds <- setup_seconds
+  tbl$seconds_per_unit <- seconds_per_unit
+
+  # Descriptive Saturation detection per backend
+  saturation_info <- list()
+  backends <- unique(tbl$parallel[tbl$status == "ok"])
+  for (b in backends) {
+    b_rows <- tbl[tbl$parallel == b & tbl$status == "ok" & is.finite(tbl$speedup), , drop = FALSE]
+    b_rows <- b_rows[order(b_rows$resource_count), , drop = FALSE]
+    if (nrow(b_rows) >= 2L) {
+      eff <- b_rows$parallel_efficiency
+      knee_idx <- which(eff < 0.50 | c(1, diff(b_rows$speedup) / diff(b_rows$resource_count)) < 0.10)
+      if (length(knee_idx) > 0L) {
+        knee_res <- b_rows$resource_count[knee_idx[1L]]
+        saturation_info[[b]] <- sprintf("Scaling flattens beyond %d resources (efficiency: %.2f)",
+                                        knee_res, eff[knee_idx[1L]])
+      }
+    }
+  }
+
+  list(
+    benchmark_table = tbl,
+    saturation = saturation_info,
+    serial_median = serial_median,
+    scaling_summary = list(
+      speedup = tbl$speedup,
+      parallel_efficiency = tbl$parallel_efficiency
+    )
+  )
 }
 
 #' Estimate serial runtime from size-stratified pilot timings
@@ -445,6 +585,99 @@ if (getRversion() >= "2.15.1") {
       "estimated workload too small for backend benchmarking"
     }
   )
+}
+
+#' Decide whether a complete resource sweep fits the approved overhead budget
+#' @keywords internal
+#' @noRd
+.planner_sweep_gate <- function(estimated_serial_runtime, expected_sweep_seconds,
+                                threshold = .PLANNER_AUTO_RUNTIME_THRESHOLD,
+                                overhead_ratio = .PLANNER_BENCHMARK_OVERHEAD_RATIO) {
+  primary <- .planner_should_benchmark(estimated_serial_runtime, threshold)
+  if (!isTRUE(primary$backend_benchmark_required)) {
+    return(c(primary, list(allowed = FALSE, overhead_budget_seconds = NA_real_,
+                           reason = primary$reason)))
+  }
+  if (!is.numeric(expected_sweep_seconds) || length(expected_sweep_seconds) != 1L ||
+      !is.finite(expected_sweep_seconds) || expected_sweep_seconds < 0 ||
+      !is.numeric(overhead_ratio) || length(overhead_ratio) != 1L ||
+      !is.finite(overhead_ratio) || overhead_ratio <= 0) {
+    return(c(primary, list(allowed = FALSE, overhead_budget_seconds = NA_real_,
+                           reason = "benchmark_budget_insufficient")))
+  }
+  budget <- estimated_serial_runtime * overhead_ratio
+  list(backend_benchmark_required = TRUE, allowed = expected_sweep_seconds <= budget,
+       auto_runtime_threshold = threshold, overhead_budget_seconds = budget,
+       expected_sweep_seconds = expected_sweep_seconds,
+       reason = if (expected_sweep_seconds <= budget) {
+         "estimated runtime justifies backend benchmarking"
+       } else "benchmark_budget_insufficient")
+}
+
+#' Classify whether a deterministic pilot can exercise a legal plan
+#' @keywords internal
+#' @noRd
+.planner_plan_workload_status <- function(plan, candidate_count, grain_size = 1L,
+                                          task_count = candidate_count,
+                                          outer_task_count = 1L) {
+  workers <- as.integer(plan$n_workers[[1L]])
+  parallel_mode <- plan$parallel[[1L]]
+  candidate_tasks <- floor(as.double(candidate_count) / max(1L, as.integer(grain_size)))
+  task_count <- as.double(task_count)
+  outer_task_count <- as.double(outer_task_count)
+  sufficient <- switch(parallel_mode,
+    none = TRUE,
+    threads = candidate_tasks >= workers,
+    chunks = task_count >= workers,
+    outer = outer_task_count >= workers,
+    hybrid = outer_task_count >= as.integer(plan$outer_workers[[1L]]) &&
+      candidate_tasks >= as.integer(plan$threads_per_worker[[1L]]),
+    FALSE
+  )
+  list(
+    status = if (sufficient) "pending" else "insufficient_workload",
+    sufficient = sufficient,
+    failure_reason = if (sufficient) NA_character_ else sprintf(
+      "insufficient_workload: candidates=%s, candidate_tasks=%s, tasks=%s, outer_tasks=%s",
+      as.character(candidate_count), as.character(candidate_tasks),
+      as.character(task_count), as.character(outer_task_count)
+    )
+  )
+}
+
+.planner_plan_status_table <- function(plans, candidate_count, grain_size = 1L,
+                                       task_count = candidate_count,
+                                       outer_task_count = 1L) {
+  rows <- lapply(seq_len(nrow(plans)), function(i) {
+    status <- .planner_plan_workload_status(plans[i, , drop = FALSE], candidate_count,
+                                            grain_size, task_count, outer_task_count)
+    cbind(plans[i, , drop = FALSE], status = status$status,
+          failure_reason = status$failure_reason, stringsAsFactors = FALSE)
+  })
+  result <- do.call(rbind, rows)
+  rownames(result) <- NULL
+  result
+}
+
+.planner_append_unmeasured_plans <- function(aggregated, plan_statuses) {
+  if (!is.data.frame(aggregated) || nrow(aggregated) == 0L) {
+    out <- plan_statuses
+    out$median_elapsed <- rep(NA_real_, nrow(out))
+    out$n_success <- rep(0L, nrow(out))
+    out$n_failed <- rep(0L, nrow(out))
+    return(out)
+  }
+  unmeasured <- plan_statuses[plan_statuses$status != "pending", , drop = FALSE]
+  if (nrow(unmeasured) == 0L) return(aggregated)
+  unmeasured$median_elapsed <- NA_real_
+  unmeasured$n_success <- 0L
+  unmeasured$n_failed <- 0L
+  keep <- intersect(c("plan_id", "parallel", "n_workers", "outer_workers", "threads_per_worker", "resource_count", "backend_priority",
+                      "median_elapsed", "n_success", "n_failed", "status", "failure_reason"),
+                    union(names(aggregated), names(unmeasured)))
+  for (name in setdiff(keep, names(aggregated))) aggregated[[name]] <- NA
+  for (name in setdiff(keep, names(unmeasured))) unmeasured[[name]] <- NA
+  rbind(aggregated[, keep, drop = FALSE], unmeasured[, keep, drop = FALSE])
 }
 
 #' Select a near-best execution plan with a lower-resource preference
@@ -906,6 +1139,7 @@ if (getRversion() >= "2.15.1") {
     selected_resource_count     = manual_plan$resource_count[[1L]],
     estimated_runtime           = NA_real_,
     runtime_estimation_method   = "size_stratified_candidate_cost",
+    runtime_estimate_status     = "fallback",
     selection_tolerance         = .PLANNER_SELECTION_TOLERANCE,
     decision_reason             = NA_character_,
     fallback_reason             = NA_character_,
@@ -964,68 +1198,96 @@ if (getRversion() >= "2.15.1") {
     chunk_plans <- .planner_generate_legal_plans(
       "exhaustive_sum_roc", detected, manual_n_workers, task_chunks, engine
     )
-    pick_levels <- function(table, backend) {
-      rows <- table[table$parallel == backend & table$n_workers >= 2L, , drop = FALSE]
-      if (!nrow(rows)) return(rows)
-      rows[match(unique(c(min(rows$n_workers), max(rows$n_workers))), rows$n_workers), , drop = FALSE]
-    }
     all_plans <- rbind(
-      thread_plans[thread_plans$parallel == "none", , drop = FALSE],
-      pick_levels(thread_plans, "threads"), pick_levels(chunk_plans, "chunks")
+      thread_plans[thread_plans$parallel != "chunks", , drop = FALSE],
+      chunk_plans[chunk_plans$parallel == "chunks", , drop = FALSE]
     )
     all_plans <- all_plans[!duplicated(paste(all_plans$parallel, all_plans$n_workers)), , drop = FALSE]
-    nonserial <- all_plans$parallel != "none"
+    status_plans <- .planner_plan_status_table(
+      all_plans, length(ranks), grain_size = 1L, task_count = length(ranks)
+    )
+    nonserial <- status_plans$parallel != "none"
     degenerate <- workload$total_candidates < 8 || !any(nonserial)
-    should <- identical(tuning, "always") && !degenerate ||
-      identical(tuning, "auto") && !degenerate &&
-      .planner_should_benchmark(estimate$estimated_serial_runtime, threshold)$backend_benchmark_required
-    if (!should) {
-      metadata$decision_reason <- if (degenerate) "degenerate workload; using manual plan" else
-        .planner_should_benchmark(estimate$estimated_serial_runtime, threshold)$reason
+    if (degenerate || !all(status_plans$status == "pending")) {
+      status_plans$status[status_plans$status == "pending"] <- "not_benchmarked"
+      status_plans$failure_reason[status_plans$status == "not_benchmarked"] <-
+        "benchmark not launched because a legal plan has insufficient_workload"
+      metadata$benchmark_table <- .planner_append_unmeasured_plans(data.frame(), status_plans)
+      metadata$decision_reason <- if (degenerate) "degenerate workload; using manual plan" else "benchmark_budget_insufficient"
+      metadata$fallback_reason <- metadata$decision_reason
+      return(list(plan = manual_plan, metadata = metadata, warn = FALSE))
+    }
+    small_n <- max(1L, as.integer(floor(length(ranks) / 2L)))
+    workloads <- list(ranks[seq_len(small_n)], ranks)
+    expected_sweep <- (metadata$micro_pilot_elapsed / length(ranks)) *
+      sum(vapply(workloads, length, integer(1))) * nrow(status_plans)
+    gate <- .planner_sweep_gate(estimate$estimated_serial_runtime, expected_sweep, threshold)
+    metadata$tuning_budget_seconds <- gate$overhead_budget_seconds
+    if (!isTRUE(gate$allowed)) {
+      status_plans$status <- "not_benchmarked"
+      status_plans$failure_reason <- gate$reason
+      metadata$benchmark_table <- .planner_append_unmeasured_plans(data.frame(), status_plans)
+      metadata$decision_reason <- gate$reason
+      metadata$fallback_reason <- gate$reason
       return(list(plan = manual_plan, metadata = metadata, warn = FALSE))
     }
     metadata$backend_benchmark_performed <- TRUE
-    metadata$tuning_budget_seconds <- min(10, max(2, estimate$estimated_serial_runtime * 0.10))
     benchmark_started <- clock()
     rows <- list(); row_i <- 0L
-    for (i in seq_len(nrow(all_plans))) {
-      plan <- all_plans[i, c("parallel", "n_workers", "resource_count"), drop = FALSE]
-      repeats <- if (plan$parallel == "chunks") 2L else 3L
+    for (i in seq_len(nrow(status_plans))) {
+      plan <- status_plans[i, c("parallel", "n_workers", "resource_count"), drop = FALSE]
       if (plan$parallel != "chunks") {
         .planner_evaluate_exhaustive_ranks(
           x_mat, y, items, min_items, max_items, cutoff_method,
-          ranks[seq_len(min(length(ranks), length(model_sizes)))], engine,
-          plan$parallel, plan$n_workers
+          workloads[[1L]], engine, plan$parallel, plan$n_workers
         )
-        metadata$warmup_performed$plans <- c(
-          metadata$warmup_performed$plans, all_plans$plan_id[i]
-        )
+        metadata$warmup_performed$plans <- c(metadata$warmup_performed$plans, status_plans$plan_id[i])
       }
-      for (repeat_i in seq_len(repeats)) {
-        if (repeat_i > 1L && clock() - benchmark_started > metadata$tuning_budget_seconds) {
-          metadata$tuning_budget_exhausted <- TRUE; next
-        }
+      for (units in workloads) {
         result <- benchmark_executor(x_mat, y, items, min_items, max_items,
-                                     cutoff_method, engine, ranks, plan, timer)
+                                     cutoff_method, engine, units, plan, timer)
         row_i <- row_i + 1L
-        rows[[row_i]] <- data.frame(plan_id = all_plans$plan_id[i], parallel = plan$parallel,
+        rows[[row_i]] <- data.frame(plan_id = status_plans$plan_id[i], parallel = plan$parallel,
           n_workers = plan$n_workers, resource_count = plan$resource_count,
-          backend_priority = all_plans$backend_priority[i], elapsed = result$elapsed,
-          success = result$success, failure_reason = result$failure_reason,
+          backend_priority = status_plans$backend_priority[i], workload_units = length(units),
+          elapsed = result$elapsed, success = result$success, failure_reason = result$failure_reason,
           stringsAsFactors = FALSE)
       }
     }
     raw <- do.call(rbind, rows)
+    if (clock() - benchmark_started > metadata$tuning_budget_seconds) {
+      metadata$tuning_budget_exhausted <- TRUE
+      metadata$decision_reason <- "benchmark_budget_insufficient"
+      metadata$fallback_reason <- metadata$decision_reason
+      metadata$benchmark_table <- .planner_compute_scaling_metrics(
+        .planner_aggregate_timings(raw[raw$workload_units == length(ranks), , drop = FALSE]),
+        workload$total_candidates, length(ranks), raw
+      )$benchmark_table
+      return(list(plan = manual_plan, metadata = metadata, warn = TRUE))
+    }
     metadata$benchmark_repeat_count <- table(raw$plan_id)
-    metadata$benchmark_table <- .planner_aggregate_timings(raw)
+    raw_aggregated <- .planner_aggregate_timings(raw[raw$workload_units == length(ranks), , drop = FALSE])
+    scaling_res <- .planner_compute_scaling_metrics(raw_aggregated, workload$total_candidates, length(ranks), raw)
+    metadata$benchmark_table <- scaling_res$benchmark_table
+    metadata$saturation_summary <- scaling_res$saturation
+    metadata$scaling_summary <- scaling_res$scaling_summary
+    valid_estimates <- metadata$benchmark_table$estimate_status[metadata$benchmark_table$status == "ok"]
+    metadata$runtime_estimation_method <- if (length(valid_estimates) > 0L && all(valid_estimates == "ok")) "empirical_affine" else "unavailable"
+    metadata$runtime_estimate_status <- metadata$runtime_estimation_method
+    if (identical(metadata$runtime_estimation_method, "unavailable")) {
+      metadata$decision_reason <- "runtime estimate unavailable; using manual plan"
+      metadata$fallback_reason <- metadata$decision_reason
+      return(list(plan = manual_plan, metadata = metadata, warn = FALSE))
+    }
     selected <- .planner_select_plan(metadata$benchmark_table, fallback_plan = manual_plan)
     metadata$selected_parallel <- selected$selected_parallel
     metadata$selected_n_workers <- selected$selected_n_workers
     metadata$selected_resource_count <- selected$selected_resource_count
-    selected_elapsed <- selected$selected_plan$median_elapsed
-    metadata$estimated_runtime <- if (length(selected_elapsed) == 1L &&
-                                      is.finite(selected_elapsed[[1L]])) {
-      selected_elapsed[[1L]] / length(ranks) * workload$total_candidates
+    sel_row <- metadata$benchmark_table[metadata$benchmark_table$plan_id == selected$selected_plan_id, , drop = FALSE]
+    metadata$estimated_runtime <- if (nrow(sel_row) > 0L && is.finite(sel_row$estimated_full_runtime[[1L]])) {
+      sel_row$estimated_full_runtime[[1L]]
+    } else if (length(selected$selected_plan$median_elapsed) == 1L && is.finite(selected$selected_plan$median_elapsed[[1L]])) {
+      selected$selected_plan$median_elapsed[[1L]] / length(ranks) * workload$total_candidates
     } else NA_real_
     metadata$fallback_reason <- selected$fallback_reason
     metadata$decision_reason <- if (is.na(selected$fallback_reason)) {
@@ -1286,6 +1548,7 @@ if (getRversion() >= "2.15.1") {
     selected_resource_count     = manual_plan$resource_count[[1L]],
     estimated_runtime           = NA_real_,
     runtime_estimation_method   = "size_stratified_candidate_cost",
+    runtime_estimate_status     = "fallback",
     selection_tolerance         = .PLANNER_SELECTION_TOLERANCE,
     decision_reason             = NA_character_,
     fallback_reason             = NA_character_,
@@ -1372,87 +1635,107 @@ if (getRversion() >= "2.15.1") {
       "cross_size_cv", detected, manual_n_workers, chunk_tasks, engine
     )
 
-    pick_levels <- function(table, backend) {
-      rows <- table[table$parallel == backend & table$n_workers >= 2L, , drop = FALSE]
-      if (!nrow(rows)) return(rows)
-      rows[match(unique(c(min(rows$n_workers), max(rows$n_workers))), rows$n_workers), , drop = FALSE]
-    }
-
     all_plans <- rbind(
-      thread_plans[thread_plans$parallel == "none", , drop = FALSE],
-      pick_levels(thread_plans, "threads"),
-      pick_levels(chunk_plans, "chunks")
+      thread_plans[thread_plans$parallel != "chunks", , drop = FALSE],
+      chunk_plans[chunk_plans$parallel == "chunks", , drop = FALSE]
     )
     all_plans <- all_plans[!duplicated(paste(all_plans$parallel, all_plans$n_workers)), , drop = FALSE]
 
-    nonserial <- all_plans$parallel != "none"
+    # The C++ CV evaluator uses a grain of 64 candidates; a plan is not
+    # comparable unless its requested threads can receive real grain blocks.
+    status_plans <- .planner_plan_status_table(
+      all_plans, length(pilot_combos), grain_size = 64L, task_count = length(pilot_combos)
+    )
+    nonserial <- status_plans$parallel != "none"
     degenerate <- workload$total_candidates < 8 || !any(nonserial)
-    should <- identical(tuning, "always") && !degenerate ||
-      identical(tuning, "auto") && !degenerate &&
-      .planner_should_benchmark(estimate$estimated_serial_runtime, threshold)$backend_benchmark_required
-
-    if (!should) {
-      metadata$decision_reason <- if (degenerate) "degenerate workload; using manual plan" else
-        .planner_should_benchmark(estimate$estimated_serial_runtime, threshold)$reason
+    if (degenerate || !all(status_plans$status == "pending")) {
+      status_plans$status[status_plans$status == "pending"] <- "not_benchmarked"
+      status_plans$failure_reason[status_plans$status == "not_benchmarked"] <-
+        "benchmark not launched because a legal plan has insufficient_workload"
+      metadata$benchmark_table <- .planner_append_unmeasured_plans(data.frame(), status_plans)
+      metadata$decision_reason <- if (degenerate) "degenerate workload; using manual plan" else "benchmark_budget_insufficient"
+      metadata$fallback_reason <- metadata$decision_reason
+      return(list(plan = manual_plan, metadata = metadata, warn = FALSE))
+    }
+    small_n <- max(1L, as.integer(floor(length(pilot_combos) / 2L)))
+    workloads <- list(pilot_combos[seq_len(small_n)], pilot_combos)
+    expected_sweep <- (metadata$micro_pilot_elapsed / length(pilot_combos)) *
+      sum(vapply(workloads, length, integer(1))) * nrow(status_plans)
+    gate <- .planner_sweep_gate(estimate$estimated_serial_runtime, expected_sweep, threshold)
+    metadata$tuning_budget_seconds <- gate$overhead_budget_seconds
+    if (!isTRUE(gate$allowed)) {
+      status_plans$status <- "not_benchmarked"
+      status_plans$failure_reason <- gate$reason
+      metadata$benchmark_table <- .planner_append_unmeasured_plans(data.frame(), status_plans)
+      metadata$decision_reason <- gate$reason
+      metadata$fallback_reason <- gate$reason
       return(list(plan = manual_plan, metadata = metadata, warn = FALSE))
     }
 
     metadata$backend_benchmark_performed <- TRUE
-    metadata$tuning_budget_seconds <- min(10, max(2, estimate$estimated_serial_runtime * 0.10))
     benchmark_started <- clock()
     rows <- list(); row_i <- 0L
-
-    for (i in seq_len(nrow(all_plans))) {
-      plan <- all_plans[i, c("parallel", "n_workers", "resource_count"), drop = FALSE]
-      repeats_bm <- if (plan$parallel == "chunks") 2L else 2L
-
+    for (i in seq_len(nrow(status_plans))) {
+      plan <- status_plans[i, c("parallel", "n_workers", "resource_count"), drop = FALSE]
       if (plan$parallel != "chunks") {
         .planner_evaluate_cv_pilot_combos(
           x_mat, y_int, warmup_combos, test_indices_0based, n_folds_total,
           repeats, cutoff_method, sens_min, spec_min, engine,
           plan$parallel[[1L]], plan$n_workers[[1L]]
         )
-        metadata$warmup_performed$plans <- c(
-          metadata$warmup_performed$plans, all_plans$plan_id[i]
-        )
+        metadata$warmup_performed$plans <- c(metadata$warmup_performed$plans, status_plans$plan_id[i])
       }
-
-      for (repeat_i in seq_len(repeats_bm)) {
-        if (repeat_i > 1L && clock() - benchmark_started > metadata$tuning_budget_seconds) {
-          metadata$tuning_budget_exhausted <- TRUE
-          next
-        }
+      for (units in workloads) {
         result <- benchmark_executor(
-          x_mat, y_int, pilot_combos, test_indices_0based, n_folds_total,
+          x_mat, y_int, units, test_indices_0based, n_folds_total,
           repeats, cutoff_method, sens_min, spec_min, engine, plan, timer
         )
         row_i <- row_i + 1L
         rows[[row_i]] <- data.frame(
-          plan_id          = all_plans$plan_id[i],
-          parallel         = plan$parallel[[1L]],
-          n_workers        = plan$n_workers[[1L]],
-          resource_count   = plan$resource_count[[1L]],
-          backend_priority = all_plans$backend_priority[i],
-          elapsed          = result$elapsed,
-          success          = result$success,
-          failure_reason   = result$failure_reason,
+          plan_id = status_plans$plan_id[i], parallel = plan$parallel[[1L]],
+          n_workers = plan$n_workers[[1L]], resource_count = plan$resource_count[[1L]],
+          backend_priority = status_plans$backend_priority[i], workload_units = length(units),
+          elapsed = result$elapsed, success = result$success, failure_reason = result$failure_reason,
           stringsAsFactors = FALSE
         )
       }
     }
 
     raw <- do.call(rbind, rows)
+    if (clock() - benchmark_started > metadata$tuning_budget_seconds) {
+      metadata$tuning_budget_exhausted <- TRUE
+      metadata$decision_reason <- "benchmark_budget_insufficient"
+      metadata$fallback_reason <- metadata$decision_reason
+      metadata$benchmark_table <- .planner_compute_scaling_metrics(
+        .planner_aggregate_timings(raw[raw$workload_units == length(pilot_combos), , drop = FALSE]),
+        workload$total_candidates, length(pilot_combos), raw
+      )$benchmark_table
+      return(list(plan = manual_plan, metadata = metadata, warn = TRUE))
+    }
     metadata$benchmark_repeat_count <- table(raw$plan_id)
-    metadata$benchmark_table <- .planner_aggregate_timings(raw)
+    raw_aggregated <- .planner_aggregate_timings(raw[raw$workload_units == length(pilot_combos), , drop = FALSE])
+    scaling_res <- .planner_compute_scaling_metrics(raw_aggregated, workload$total_candidates, length(pilot_combos), raw)
+    metadata$benchmark_table <- scaling_res$benchmark_table
+    metadata$saturation_summary <- scaling_res$saturation
+    metadata$scaling_summary <- scaling_res$scaling_summary
+    valid_estimates <- metadata$benchmark_table$estimate_status[metadata$benchmark_table$status == "ok"]
+    metadata$runtime_estimation_method <- if (length(valid_estimates) > 0L && all(valid_estimates == "ok")) "empirical_affine" else "unavailable"
+    metadata$runtime_estimate_status <- metadata$runtime_estimation_method
+    if (identical(metadata$runtime_estimation_method, "unavailable")) {
+      metadata$decision_reason <- "runtime estimate unavailable; using manual plan"
+      metadata$fallback_reason <- metadata$decision_reason
+      return(list(plan = manual_plan, metadata = metadata, warn = FALSE))
+    }
     selected <- .planner_select_plan(metadata$benchmark_table, fallback_plan = manual_plan)
 
     metadata$selected_parallel <- selected$selected_parallel
     metadata$selected_n_workers <- selected$selected_n_workers
     metadata$selected_resource_count <- selected$selected_resource_count
-    selected_elapsed <- selected$selected_plan$median_elapsed
-    metadata$estimated_runtime <- if (length(selected_elapsed) == 1L &&
-                                      is.finite(selected_elapsed[[1L]])) {
-      selected_elapsed[[1L]] / length(pilot_combos) * workload$total_candidates
+    sel_row <- metadata$benchmark_table[metadata$benchmark_table$plan_id == selected$selected_plan_id, , drop = FALSE]
+    metadata$estimated_runtime <- if (nrow(sel_row) > 0L && is.finite(sel_row$estimated_full_runtime[[1L]])) {
+      sel_row$estimated_full_runtime[[1L]]
+    } else if (length(selected$selected_plan$median_elapsed) == 1L && is.finite(selected$selected_plan$median_elapsed[[1L]])) {
+      selected$selected_plan$median_elapsed[[1L]] / length(pilot_combos) * workload$total_candidates
     } else NA_real_
     metadata$fallback_reason <- selected$fallback_reason
     metadata$decision_reason <- if (is.na(selected$fallback_reason)) {
@@ -1590,8 +1873,7 @@ if (getRversion() >= "2.15.1") {
   if (engine == "Rcpp") {
     thread_cap <- min(cap, as.integer(inner_candidate_tasks))
     if (!is.null(user_n_workers)) thread_cap <- min(thread_cap, as.integer(user_n_workers))
-    thread_levels <- sort(unique(c(2L, 4L, thread_cap)))
-    thread_levels <- thread_levels[thread_levels >= 2L & thread_levels <= thread_cap]
+    thread_levels <- if (thread_cap >= 2L) seq.int(2L, thread_cap) else integer()
     if (length(thread_levels) > 0L) {
       plans[[length(plans) + 1L]] <- data.frame(
         plan_id = paste0("threads_", thread_levels),
@@ -1609,8 +1891,7 @@ if (getRversion() >= "2.15.1") {
   # 2. Outer PSOCK plans (priority = 3L)
   outer_cap <- min(cap, as.integer(n_outer_tasks))
   if (!is.null(user_n_workers)) outer_cap <- min(outer_cap, as.integer(user_n_workers))
-  outer_levels <- sort(unique(c(2L, 4L, outer_cap)))
-  outer_levels <- outer_levels[outer_levels >= 2L & outer_levels <= outer_cap]
+  outer_levels <- if (outer_cap >= 2L) seq.int(2L, outer_cap) else integer()
   if (length(outer_levels) > 0L) {
     plans[[length(plans) + 1L]] <- data.frame(
       plan_id = paste0("outer_", outer_levels),
@@ -1628,8 +1909,7 @@ if (getRversion() >= "2.15.1") {
   if (is_chunks_allowed) {
     chunk_cap <- min(cap, as.integer(inner_candidate_tasks))
     if (!is.null(user_n_workers)) chunk_cap <- min(chunk_cap, as.integer(user_n_workers))
-    chunk_levels <- sort(unique(c(2L, 4L, chunk_cap)))
-    chunk_levels <- chunk_levels[chunk_levels >= 2L & chunk_levels <= chunk_cap]
+    chunk_levels <- if (chunk_cap >= 2L) seq.int(2L, chunk_cap) else integer()
     if (length(chunk_levels) > 0L) {
       plans[[length(plans) + 1L]] <- data.frame(
         plan_id = paste0("chunks_", chunk_levels),
@@ -1647,14 +1927,17 @@ if (getRversion() >= "2.15.1") {
   # 4. Hybrid plans (if engine == Rcpp and is_hybrid_allowed, priority = 5L)
   if (engine == "Rcpp" && is_hybrid_allowed && cap >= 4L && n_outer_tasks >= 2L && inner_candidate_tasks >= 2L) {
     candidate_pairs <- list()
-    for (K in c(2L, 4L, min(cap %/% 2L, as.integer(n_outer_tasks)))) {
-      if (K >= 2L && K <= n_outer_tasks) {
+    max_k <- min(cap %/% 2L, as.integer(n_outer_tasks))
+    if (max_k >= 2L) {
+      for (K in 2L:max_k) {
         max_T <- min(cap %/% K, as.integer(inner_candidate_tasks))
         if (!is.null(user_threads_per_worker) && user_threads_per_worker > 1L) {
           max_T <- min(max_T, as.integer(user_threads_per_worker))
         }
         if (max_T >= 2L) {
-          candidate_pairs[[length(candidate_pairs) + 1L]] <- c(K = as.integer(K), T = as.integer(max_T))
+          for (T_val in 2L:max_T) {
+            candidate_pairs[[length(candidate_pairs) + 1L]] <- c(K = as.integer(K), T = as.integer(T_val))
+          }
         }
       }
     }
@@ -1721,6 +2004,7 @@ if (getRversion() >= "2.15.1") {
     selected_resource_count     = manual_plan$resource_count[[1L]],
     estimated_runtime           = NA_real_,
     runtime_estimation_method   = "size_stratified_candidate_cost",
+    runtime_estimate_status     = "fallback",
     selection_tolerance         = .PLANNER_SELECTION_TOLERANCE,
     decision_reason             = NA_character_,
     fallback_reason             = NA_character_,
@@ -1821,21 +2105,30 @@ if (getRversion() >= "2.15.1") {
       is_hybrid_allowed = (engine == "Rcpp")
     )
 
-    degenerate <- nrow(all_plans) <= 1L || all(all_plans$parallel == "none")
-    should <- if (identical(tuning, "always")) {
-      !degenerate
+    # Nested production evaluators currently enumerate their own full candidate
+    # space.  They deliberately do not accept the representative pilot ranks.
+    # Running them here would therefore make the pilot cosmetic and launch a
+    # near-full nested search once per plan.  Keep the full fold/repeat pilot
+    # above for the serial estimate, record every legal resource plan, and use
+    # the validated manual plan until a rank-bounded nested evaluator exists.
+    status_plans <- .planner_plan_status_table(
+      all_plans, nrow(pilot), grain_size = 1L, task_count = nrow(pilot),
+      outer_task_count = n_outer_tasks
+    )
+    status_plans$status[status_plans$status == "pending"] <- "insufficient_workload"
+    status_plans$failure_reason <- "insufficient_workload: nested pilot has no rank-bounded evaluator"
+    metadata$benchmark_table <- .planner_append_unmeasured_plans(data.frame(), status_plans)
+    gate <- .planner_sweep_gate(metadata$estimated_serial_runtime, 0, threshold)
+    metadata$tuning_budget_seconds <- gate$overhead_budget_seconds
+    metadata$decision_reason <- if (nrow(all_plans) <= 1L) {
+      "degenerate workload; using manual plan"
+    } else if (!isTRUE(gate$backend_benchmark_required)) {
+      gate$reason
     } else {
-      !degenerate && (metadata$estimated_serial_runtime >= threshold)
+      "benchmark_budget_insufficient"
     }
-
-    if (!should) {
-      metadata$decision_reason <- if (degenerate) {
-        "degenerate workload; using manual plan"
-      } else {
-        .planner_should_benchmark(metadata$estimated_serial_runtime, threshold)$reason
-      }
-      return(list(plan = manual_plan, metadata = metadata, warn = FALSE))
-    }
+    metadata$fallback_reason <- metadata$decision_reason
+    return(list(plan = manual_plan, metadata = metadata, warn = FALSE))
 
     # 3. Benchmark legal plans on pilot candidates over complete nested structure
     metadata$backend_benchmark_performed <- TRUE
@@ -1938,15 +2231,24 @@ if (getRversion() >= "2.15.1") {
     bench_table <- .planner_aggregate_timings(all_raw)
     extra_cols <- unique(all_raw[, c("plan_id", "outer_workers", "threads_per_worker"), drop = FALSE])
     bench_table <- merge(bench_table, extra_cols, by = "plan_id", all.x = TRUE, sort = FALSE)
-    metadata$benchmark_table <- bench_table
+    scaling_res <- .planner_compute_scaling_metrics(bench_table, workload$total_candidates, nrow(pilot))
+    metadata$benchmark_table <- scaling_res$benchmark_table
+    metadata$saturation_summary <- scaling_res$saturation
+    metadata$scaling_summary <- scaling_res$scaling_summary
 
-    selected <- .planner_select_plan(bench_table, tolerance = .PLANNER_SELECTION_TOLERANCE, fallback_plan = manual_plan, allow_nested = TRUE)
+    selected <- .planner_select_plan(metadata$benchmark_table, tolerance = .PLANNER_SELECTION_TOLERANCE, fallback_plan = manual_plan, allow_nested = TRUE)
     chosen_plan <- selected$selected_plan
     metadata$selected_parallel <- chosen_plan$parallel[[1L]]
     metadata$selected_n_workers <- chosen_plan$n_workers[[1L]]
     metadata$selected_resource_count <- chosen_plan$resource_count[[1L]]
     metadata$selected_outer_workers <- if (!is.null(chosen_plan$outer_workers)) chosen_plan$outer_workers[[1L]] else chosen_plan$n_workers[[1L]]
     metadata$selected_threads_per_worker <- if (!is.null(chosen_plan$threads_per_worker)) chosen_plan$threads_per_worker[[1L]] else 1L
+    sel_row <- metadata$benchmark_table[metadata$benchmark_table$plan_id == selected$selected_plan_id, , drop = FALSE]
+    metadata$estimated_runtime <- if (nrow(sel_row) > 0L && is.finite(sel_row$estimated_full_runtime[[1L]])) {
+      sel_row$estimated_full_runtime[[1L]]
+    } else if (length(chosen_plan$median_elapsed) == 1L && is.finite(chosen_plan$median_elapsed[[1L]])) {
+      chosen_plan$median_elapsed[[1L]] / nrow(pilot) * workload$total_candidates
+    } else NA_real_
 
     metadata$fallback_reason <- selected$fallback_reason
     metadata$decision_reason <- if (is.na(selected$fallback_reason)) {
@@ -2014,6 +2316,7 @@ if (getRversion() >= "2.15.1") {
     selected_resource_count     = manual_plan$resource_count[[1L]],
     estimated_runtime           = NA_real_,
     runtime_estimation_method   = "size_stratified_candidate_cost",
+    runtime_estimate_status     = "fallback",
     selection_tolerance         = .PLANNER_SELECTION_TOLERANCE,
     decision_reason             = NA_character_,
     fallback_reason             = NA_character_,
@@ -2111,21 +2414,27 @@ if (getRversion() >= "2.15.1") {
       is_hybrid_allowed = (engine == "Rcpp")
     )
 
-    degenerate <- nrow(all_plans) <= 1L || all(all_plans$parallel == "none")
-    should <- if (identical(tuning, "always")) {
-      !degenerate
+    # See nested_sum_roc: a planner pilot must bound the candidate search
+    # itself.  This evaluator cannot consume pilot ranks, so do not time the
+    # full nested search once per resource plan.
+    status_plans <- .planner_plan_status_table(
+      all_plans, nrow(pilot), grain_size = 1L, task_count = nrow(pilot),
+      outer_task_count = n_outer_tasks
+    )
+    status_plans$status[status_plans$status == "pending"] <- "insufficient_workload"
+    status_plans$failure_reason <- "insufficient_workload: nested pilot has no rank-bounded evaluator"
+    metadata$benchmark_table <- .planner_append_unmeasured_plans(data.frame(), status_plans)
+    gate <- .planner_sweep_gate(metadata$estimated_serial_runtime, 0, threshold)
+    metadata$tuning_budget_seconds <- gate$overhead_budget_seconds
+    metadata$decision_reason <- if (nrow(all_plans) <= 1L) {
+      "degenerate workload; using manual plan"
+    } else if (!isTRUE(gate$backend_benchmark_required)) {
+      gate$reason
     } else {
-      !degenerate && (metadata$estimated_serial_runtime >= threshold)
+      "benchmark_budget_insufficient"
     }
-
-    if (!should) {
-      metadata$decision_reason <- if (degenerate) {
-        "degenerate workload; using manual plan"
-      } else {
-        .planner_should_benchmark(metadata$estimated_serial_runtime, threshold)$reason
-      }
-      return(list(plan = manual_plan, metadata = metadata, warn = FALSE))
-    }
+    metadata$fallback_reason <- metadata$decision_reason
+    return(list(plan = manual_plan, metadata = metadata, warn = FALSE))
 
     # 3. Benchmark legal plans on pilot candidates over complete nested structure
     metadata$backend_benchmark_performed <- TRUE
@@ -2242,15 +2551,24 @@ if (getRversion() >= "2.15.1") {
     bench_table <- .planner_aggregate_timings(all_raw)
     extra_cols <- unique(all_raw[, c("plan_id", "outer_workers", "threads_per_worker"), drop = FALSE])
     bench_table <- merge(bench_table, extra_cols, by = "plan_id", all.x = TRUE, sort = FALSE)
-    metadata$benchmark_table <- bench_table
+    scaling_res <- .planner_compute_scaling_metrics(bench_table, workload$total_candidates, nrow(pilot))
+    metadata$benchmark_table <- scaling_res$benchmark_table
+    metadata$saturation_summary <- scaling_res$saturation
+    metadata$scaling_summary <- scaling_res$scaling_summary
 
-    selected <- .planner_select_plan(bench_table, tolerance = .PLANNER_SELECTION_TOLERANCE, fallback_plan = manual_plan, allow_nested = TRUE)
+    selected <- .planner_select_plan(metadata$benchmark_table, tolerance = .PLANNER_SELECTION_TOLERANCE, fallback_plan = manual_plan, allow_nested = TRUE)
     chosen_plan <- selected$selected_plan
     metadata$selected_parallel <- chosen_plan$parallel[[1L]]
     metadata$selected_n_workers <- chosen_plan$n_workers[[1L]]
     metadata$selected_resource_count <- chosen_plan$resource_count[[1L]]
     metadata$selected_outer_workers <- if (!is.null(chosen_plan$outer_workers)) chosen_plan$outer_workers[[1L]] else chosen_plan$n_workers[[1L]]
     metadata$selected_threads_per_worker <- if (!is.null(chosen_plan$threads_per_worker)) chosen_plan$threads_per_worker[[1L]] else 1L
+    sel_row <- metadata$benchmark_table[metadata$benchmark_table$plan_id == selected$selected_plan_id, , drop = FALSE]
+    metadata$estimated_runtime <- if (nrow(sel_row) > 0L && is.finite(sel_row$estimated_full_runtime[[1L]])) {
+      sel_row$estimated_full_runtime[[1L]]
+    } else if (length(chosen_plan$median_elapsed) == 1L && is.finite(chosen_plan$median_elapsed[[1L]])) {
+      chosen_plan$median_elapsed[[1L]] / nrow(pilot) * workload$total_candidates
+    } else NA_real_
 
     metadata$fallback_reason <- selected$fallback_reason
     metadata$decision_reason <- if (is.na(selected$fallback_reason)) {

@@ -73,10 +73,11 @@ or `"chunks"` (PSOCK cluster).}
 
 \item{conf_level}{Numeric, confidence level (default 0.95).}
 
-\item{progress}{Logical, show progress bar and approximate remaining-time
-estimates (default \code{interactive()}). For serial evaluation, displays a
-progress bar and periodic approximate ETA. For parallel execution, reports
-execution start and completion.}
+\item{progress}{Logical, report observable progress (default
+\code{interactive()}). The cutoff-dependent compiled path reports exact
+completed candidate counts at block boundaries. The PSOCK `"chunks"` path
+reports only truthful start and successful completion, with no percentage or
+ETA. Approximate ETA is based only on observed progress. `FALSE` is silent.}
 }
 \value{
 An S3 object of class \code{"cross_size_cv_result"}.

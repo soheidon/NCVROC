@@ -153,3 +153,17 @@ testthat::test_that("nested_sum_roc with Rcpp engine and hybrid execution plan",
   testthat::expect_true(grepl("Target API:\\s+nested_sum_roc", formatted))
   testthat::expect_true(grepl("Nested CV Structure:", formatted))
 })
+
+testthat::test_that("nested execution planning never runs an unbounded resource sweep", {
+  set.seed(7)
+  d <- data.frame(y = rep(c(0L, 1L), each = 12L),
+                  q1 = sample(0:2, 24, TRUE), q2 = sample(0:2, 24, TRUE),
+                  q3 = sample(0:2, 24, TRUE), q4 = sample(0:2, 24, TRUE))
+  res <- nested_sum_roc(d, "y", c("q1", "q2", "q3", "q4"), max_items = 2,
+                        outer_k = 2, inner_k = 2, engine = "Rcpp", tuning = "always",
+                        seed = 11, progress = FALSE, verbose = FALSE)
+  plan <- res$settings$execution_plan
+  expect_false(plan$backend_benchmark_performed)
+  expect_true(all(plan$benchmark_table$status == "insufficient_workload"))
+  expect_match(plan$benchmark_table$failure_reason[[1L]], "rank-bounded evaluator")
+})

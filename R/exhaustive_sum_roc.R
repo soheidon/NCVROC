@@ -132,6 +132,36 @@
   results
 }
 
+#' Evaluate an exhaustive C++ search in ordered, observable batch boundaries.
+#'
+#' The C++ evaluator remains unchanged within each batch.  R regains control
+#' only after a complete contiguous range, so reported counts are exact and
+#' candidate order is identical to the unbatched global enumeration.
+#' @keywords internal
+#' @noRd
+.evaluate_exhaustive_batched <- function(x_mat, y, items, min_items, max_items,
+                                         cutoff_method, total_combos, engine,
+                                         n_pos, n_neg, num_threads = 1L,
+                                         batch_size = 50000L, progress = FALSE) {
+  batch_size <- max(1000L, as.integer(batch_size))
+  starts <- seq.int(0, as.double(total_combos) - 1, by = batch_size)
+  prg <- .progress_make(total_combos, label = "NCVROC", enabled = progress,
+                        progress_mode = "exact")
+  on.exit(prg$close(), add = TRUE)
+  results <- lapply(starts, function(start) {
+    n_this <- as.integer(min(as.double(batch_size), as.double(total_combos) - start))
+    out <- .evaluate_chunk_serial(
+      x_mat, y, items, min_items, max_items, cutoff_method, start, n_this,
+      engine, n_pos, n_neg, num_threads
+    )
+    prg$tick(n_this)
+    prg$eta_message()
+    out
+  })
+  prg$finish()
+  do.call(rbind, results)
+}
+
 #' Worker task execution function for PSOCK chunk workers
 #'
 #' Reads immutable data from worker environment and evaluates one chunk task.
@@ -384,16 +414,22 @@
 #' @param n_workers Integer, number of worker processes (for `"chunks"`) or
 #'   threads (for `"threads"`), or `NULL` (default) for automatic detection.
 #'   Ignored when `parallel = FALSE` or `"none"`.
-#' @param progress Logical, show progress bar and approximate remaining-time
-#'   estimates (default \code{TRUE}). For serial evaluation, displays a progress
-#'   bar and periodic approximate ETA. For parallel chunks or multi-threaded C++,
-#'   reports execution start and completion.
+#' @param progress Logical, report observable progress (default \code{TRUE}).
+#'   With the compiled serial or `"threads"` path, completed candidate counts and
+#'   percentages are exact at batch boundaries; an approximate ETA is shown only
+#'   after sufficient observed progress. The PSOCK `"chunks"` path reports only
+#'   truthful start and successful completion status, with no percentage or ETA.
+#'   `FALSE` is silent and retains the legacy execution path.
 #' @param chunk_start Internal: zero-based global combination index to start
 #'   from. When set together with `chunk_size`, only that range is evaluated.
 #' @param chunk_size Combinations per chunk (default 200000 when chunking).
 #' @param tuning Execution-planning mode: `"off"` preserves the manual
-#'   execution path, `"auto"` benchmarks only estimated long searches, and
-#'   `"always"` benchmarks meaningful searches. Default `"off"`.
+#'   execution path, `"auto"` considers a legal resource sweep only when the
+#'   empirical serial estimate reaches 180 seconds, and `"always"` requests the
+#'   same safe planning process. A sweep is budgeted to at most 5 percent of the
+#'   estimated runtime and otherwise falls back to the manual configuration.
+#'   Runtime estimates use observed pilot timings; a two-point affine estimate is
+#'   used when suitable measurements are available. Default `"off"`.
 #'
 #' @details
 #' When `ci = TRUE`, confidence intervals are calculated after ranking and
@@ -576,25 +612,20 @@ exhaustive_sum_roc <- function(data,
       message("Evaluating ", total_combos, " combination(s)...")
     }
 
-    results <- .evaluate_chunk_serial(
-      x_mat         = x_mat,
-      y             = y,
-      items         = items,
-      min_items     = min_items,
-      max_items     = max_items,
-      cutoff_method = cutoff_method,
-      chunk_start   = 0.0,
-      chunk_size    = total_combos,
-      engine        = engine,
-      n_pos         = n_pos,
-      n_neg         = n_neg,
-      num_threads   = eff_n_threads
-    )
-    results$.global_combo_index <- NULL
-
-    if (isTRUE(progress)) {
-      message("Evaluation complete.")
+    results <- if (isTRUE(progress)) {
+      .evaluate_exhaustive_batched(
+        x_mat, y, items, min_items, max_items, cutoff_method, total_combos,
+        engine, n_pos, n_neg, eff_n_threads,
+        batch_size = .progress_batch_size(total_combos),
+        progress = TRUE
+      )
+    } else {
+      .evaluate_chunk_serial(
+        x_mat, y, items, min_items, max_items, cutoff_method, 0.0, total_combos,
+        engine, n_pos, n_neg, eff_n_threads
+      )
     }
+    results$.global_combo_index <- NULL
 
     results <- .order_and_rank_candidates(results, rank_by, prefer_fewer_items)
 
@@ -636,16 +667,21 @@ exhaustive_sum_roc <- function(data,
     n_combos <- length(combos)
 
     if (engine == "Rcpp") {
-      if (isTRUE(progress)) {
-        message("Evaluating ", n_combos, " combination(s)...")
-      }
       x_mat <- as.matrix(x[, items, drop = FALSE])
-      combo_indices <- lapply(combos, function(v) match(v, items) - 1L)
-      results <- evaluate_combos_cpp(x_mat, y, combo_indices, cutoff_method)
-      results$items <- sapply(combos, format_items)
-      if (isTRUE(progress)) {
-        message("Evaluation complete.")
+      results <- if (isTRUE(progress)) {
+        .evaluate_exhaustive_batched(
+          x_mat, y, items, min_items, max_items, cutoff_method, n_combos,
+          engine, n_pos, n_neg, num_threads = 1L,
+          batch_size = .progress_batch_size(n_combos),
+          progress = TRUE
+        )
+      } else {
+        combo_indices <- lapply(combos, function(v) match(v, items) - 1L)
+        out <- evaluate_combos_cpp(x_mat, y, combo_indices, cutoff_method)
+        out$items <- sapply(combos, format_items)
+        out
       }
+      results$.global_combo_index <- NULL
     } else {
       prg <- .progress_make(n_combos, enabled = progress)
       on.exit(prg$close(), add = TRUE)
@@ -724,6 +760,9 @@ exhaustive_sum_roc <- function(data,
 
   rownames(results) <- NULL
   if (!is_single_chunk && !identical(tuning, "off")) {
+    capability <- .progress_capability("exhaustive_sum_roc", execution_parallel_mode, progress)
+    execution_metadata$progress_mode <- capability$progress_mode
+    execution_metadata$progress_unit <- capability$progress_unit
     attr(results, "execution_plan") <- execution_metadata
   }
   results
