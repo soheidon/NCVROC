@@ -372,3 +372,82 @@ test_that("planner controller respects mock timer and budget timeout", {
   expect_type(outcome$metadata, "list")
   expect_true(outcome$metadata$tuning_budget_exhausted)
 })
+
+test_that(".planner_evaluate_cv_pilot_combos faithfully handles R-engine with repeats and constraints", {
+  d <- .planner_cv_test_data(6L, n_pos = 10L, n_neg = 10L)
+  x_mat <- as.matrix(d[, paste0("Q", 1:6)])
+  mode(x_mat) <- "double"
+  y_int <- as.integer(d$y)
+  cv_folds <- .build_cv_folds(y_int, cv_method = "kfold", folds = 3L, repeats = 2L, seed = 42L)
+  test_indices_0based <- lapply(cv_folds, function(f) as.integer(f - 1L))
+
+  combo_indices <- list(0:1, 0:2, c(0L, 2L, 4L))
+
+  # Should run cleanly without error
+  expect_silent(.planner_evaluate_cv_pilot_combos(
+    x_mat               = x_mat,
+    y                   = y_int,
+    combo_indices_list  = combo_indices,
+    test_indices_0based = test_indices_0based,
+    n_folds_total       = length(cv_folds),
+    repeats             = 2L,
+    cutoff_method       = "youden",
+    sens_min            = 0.5,
+    spec_min            = 0.5,
+    engine              = "R",
+    parallel            = "none",
+    n_workers           = 1L
+  ))
+})
+
+test_that("cross_size_cv with R engine, repeated CV, constraints and tuning preserves statistical identity and RNG", {
+  d <- .planner_cv_test_data(6L, n_pos = 12L, n_neg = 12L)
+
+  set.seed(123L)
+  seed_before_off <- .Random.seed
+  res_off <- cross_size_cv(
+    data             = d,
+    outcome          = y,
+    items            = paste0("Q", 1:5),
+    model_sizes      = 1:2,
+    folds            = 3L,
+    repeats          = 2L,
+    selection_metric = "youden",
+    sensitivity_min  = 0.3,
+    specificity_min  = 0.3,
+    engine           = "R",
+    tuning           = "off",
+    seed             = 42L,
+    progress         = FALSE
+  )
+  seed_after_off <- .Random.seed
+
+  set.seed(123L)
+  seed_before_always <- .Random.seed
+  res_always <- cross_size_cv(
+    data             = d,
+    outcome          = y,
+    items            = paste0("Q", 1:5),
+    model_sizes      = 1:2,
+    folds            = 3L,
+    repeats          = 2L,
+    selection_metric = "youden",
+    sensitivity_min  = 0.3,
+    specificity_min  = 0.3,
+    engine           = "R",
+    tuning           = "always",
+    seed             = 42L,
+    progress         = FALSE
+  )
+  seed_after_always <- .Random.seed
+
+  # Statistical identity
+  expect_equal(res_off$final_selected_model, res_always$final_selected_model)
+  expect_equal(res_off$candidate_ranking, res_always$candidate_ranking)
+  expect_equal(res_off$cv_performance, res_always$cv_performance)
+  expect_equal(res_off$oof_predictions, res_always$oof_predictions)
+  expect_equal(res_off$repeat_metrics, res_always$repeat_metrics)
+
+  # RNG determinism
+  expect_identical(seed_after_off, seed_after_always)
+})

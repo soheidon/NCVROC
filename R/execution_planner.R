@@ -5,6 +5,15 @@
 .PLANNER_AUTO_RUNTIME_THRESHOLD <- 30
 .PLANNER_MAX_EXACT_INTEGER <- 2^53 - 1
 
+if (getRversion() >= "2.15.1") {
+  utils::globalVariables(c(
+    ".PLANNER_X", ".PLANNER_Y", ".PLANNER_ITEMS", ".PLANNER_MIN",
+    ".PLANNER_MAX", ".PLANNER_CUTOFF", ".PLANNER_ENGINE",
+    ".PLANNER_TEST_IDX", ".PLANNER_NFOLDS", ".PLANNER_REPEATS",
+    ".PLANNER_SENS_MIN", ".PLANNER_SPEC_MIN"
+  ))
+}
+
 .planner_is_integer_valued <- function(x) {
   is.numeric(x) && length(x) == 1L && !is.na(x) && is.finite(x) &&
     x == floor(x)
@@ -176,7 +185,7 @@
     remaining <- remaining - length(add_to)
   }
 
-  offsets <- c(0, head(cumsum(counts), -1L))
+  offsets <- c(0, utils::head(cumsum(counts), -1L))
   rows <- vector("list", length(sizes))
   for (i in seq_along(sizes)) {
     local_ranks <- .planner_evenly_spaced_ranks(counts[i], quotas[i])
@@ -1094,17 +1103,47 @@
     return(invisible(NULL))
   }
   # Engine = "R"
+  folds_total <- length(test_indices_0based)
+  folds_per_rep <- folds_total %/% max(1L, as.integer(repeats))
   for (idx in combo_indices_list) {
-    .eval_single_combo_cv(
-      x_mat         = x_mat,
-      y             = y,
-      items_0based  = idx,
-      folds         = test_indices_0based,
-      repeats       = repeats,
-      cutoff_method = cutoff_method,
-      sens_min      = sens_min,
-      spec_min      = spec_min
-    )
+    items_1based <- idx + 1L
+    scores <- rowSums(x_mat[, items_1based, drop = FALSE])
+    tps <- numeric(folds_total)
+    tns <- numeric(folds_total)
+    fps <- numeric(folds_total)
+    fns <- numeric(folds_total)
+    for (f in seq_len(folds_total)) {
+      test_idx <- test_indices_0based[[f]] + 1L
+      train_scores <- scores[-test_idx]
+      train_y <- y[-test_idx]
+      freq <- compute_score_frequencies(train_scores, train_y)
+      metrics <- compute_roc_metrics_from_table(freq$pos_counts, freq$neg_counts)
+      best_cut <- find_optimal_cutoff(metrics, method = cutoff_method)
+      test_preds <- ifelse(scores[test_idx] >= best_cut$cutoff, 1L, 0L)
+      test_y <- y[test_idx]
+      tps[f] <- sum(test_preds == 1L & test_y == 1L)
+      tns[f] <- sum(test_preds == 0L & test_y == 0L)
+      fps[f] <- sum(test_preds == 1L & test_y == 0L)
+      fns[f] <- sum(test_preds == 0L & test_y == 1L)
+    }
+    rep_sens <- numeric(repeats)
+    rep_spec <- numeric(repeats)
+    for (r in seq_len(repeats)) {
+      r_idx <- ((r - 1L) * folds_per_rep + 1L):(r * folds_per_rep)
+      tot_tp <- sum(tps[r_idx])
+      tot_tn <- sum(tns[r_idx])
+      tot_fp <- sum(fps[r_idx])
+      tot_fn <- sum(fns[r_idx])
+      rep_sens[r] <- if (tot_tp + tot_fn > 0) tot_tp / (tot_tp + tot_fn) else NA_real_
+      rep_spec[r] <- if (tot_tn + tot_fp > 0) tot_tn / (tot_tn + tot_fp) else NA_real_
+    }
+    mean_sens <- mean(rep_sens, na.rm = TRUE)
+    mean_spec <- mean(rep_spec, na.rm = TRUE)
+    if (!is.null(sens_min) && (is.na(mean_sens) || mean_sens < sens_min)) next
+    if (!is.null(spec_min) && (is.na(mean_spec) || mean_spec < spec_min)) next
+    full_freq <- compute_score_frequencies(scores, y)
+    full_metrics <- compute_roc_metrics_from_table(full_freq$pos_counts, full_freq$neg_counts)
+    best_full <- find_optimal_cutoff(full_metrics, method = cutoff_method)
   }
   invisible(NULL)
 }

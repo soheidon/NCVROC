@@ -1,3 +1,48 @@
+# NCVROC 0.18.0
+
+## Automatic execution planning
+
+- **Adaptive hardware- and workload-aware execution planning**:
+  - Automatically selects a measured near-best execution plan from pilot micro-benchmarking across all core combinatorial workflows:
+    - `exhaustive_sum_roc()`
+    - `cross_size_cv()` (and related wrappers `cross_size_loocv()`, `cv_select_sum_roc()`, `loocv_select_sum_roc()`)
+    - `nested_sum_roc()`
+    - `cross_size_nested_cv()`
+  - **Tuning modes** (`tuning = c("off", "auto", "always")`):
+    - `"off"`: Preserves user-specified manual execution configuration (`parallel`, `n_workers`, `threads_per_worker`) without runtime probing.
+    - `"auto"`: Probes and benchmarks candidate execution plans only when estimated serial runtime exceeds 30 seconds.
+    - `"always"`: Actively benchmarks candidate execution plans for all non-degenerate workloads.
+  - **Micro-pilot benchmark design**:
+    - Flat combinatorial searches: Evaluates an evenly-spaced candidate subset using an active CPU budget cap (`min(detected_cores, 8L)`).
+    - Nested cross-validation searches: Strict candidate-count reduction only; preserves the complete outer fold, inner fold, and repeat structure intact to prevent structural or class-balance extrapolation bias.
+  - **Multi-stage decision rule**:
+    - Identifies the fastest observed benchmarked plan (`min(median_elapsed)`).
+    - Qualifies all candidate plans within a 5% near-best threshold (`median_elapsed <= fastest * 1.05`).
+    - Breaks ties by resource economy (`resource_count`: fewer total worker/thread allocations).
+    - Breaks further ties by backend simplicity priority:
+      - Flat workloads: `none` (serial) > `threads` (C++ multi-threading) > `chunks` (PSOCK socket workers).
+      - Nested workloads: `none` (serial) > `threads` (inner C++ threads) > `outer` (PSOCK outer folds) > `chunks` (PSOCK chunks) > `hybrid` (PSOCK outer folds + inner C++ threads).
+    - Resolves remaining ties deterministically by `median_elapsed` and lexicographical `plan_id`.
+  - **Fault tolerance**:
+    - Automatic error-handling fallback hierarchy: PSOCK cluster setup failure gracefully falls back to multi-threaded C++ or serial evaluation without aborting the workload.
+  - **Unified planning metadata schema**:
+    - Compact, serializable `execution_plan` metadata list attached as an attribute or result list element detailing the selected backend, worker allocations, benchmark timings, and decision rationale.
+    - Dedicated formatter `format(plan)` / `print(plan)` for inspection.
+
+## Progress reporting & approximate ETA
+
+- **Observation-only progress reporting**:
+  - Enhanced `progress` reporting with lightweight, approximate remaining-time (ETA) estimation during long-running combinatorial evaluations.
+  - Displays progress bar and periodic ETA messages (at most once every 30 seconds after $\ge 3$ completed units and $\ge 30$ seconds elapsed) on main-process observable iteration loops.
+  - Opaque parallel dispatch boundaries (PSOCK cluster calls, C++ multi-threading) report concise start and completion messages.
+  - **Zero statistical or execution impact**:
+    - Progress reporting is strictly observation-only; does not modify candidate evaluation order, fold partitioning, cutoff selection, ranking, OOF predictions, final model refitting, or RNG determinism (`.Random.seed` is identical).
+    - `progress = FALSE` retains minimal overhead with no `proc.time()` calls or console output.
+  - **Safe cleanup contract**:
+    - Idempotent `finish()` vs. `close()` separation: normal completion advances progress to 100% and closes, while error or user-interrupt handlers (`on.exit`) safely close the display at the current progress position without falsely reporting 100% completion.
+
+---
+
 # NCVROC 0.17.0
 
 ## Candidate-level stability & optimism analysis
