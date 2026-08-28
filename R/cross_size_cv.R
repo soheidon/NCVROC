@@ -17,6 +17,9 @@
 .NCVROC_ROUTING_COUNTERS$chunk_psock_count <- 0L
 .NCVROC_ROUTING_COUNTERS$threads_count <- 0L
 .NCVROC_ROUTING_COUNTERS$inner_psock_count <- 0L
+.NCVROC_ROUTING_COUNTERS$strategy2_threads_count <- 0L
+.NCVROC_ROUTING_COUNTERS$strategy2_serial_count <- 0L
+.NCVROC_ROUTING_COUNTERS$strategy2_chunks_count <- 0L
 
 #' Reset routing instrumentation counters
 #' @keywords internal
@@ -25,6 +28,9 @@
   .NCVROC_ROUTING_COUNTERS$chunk_psock_count <- 0L
   .NCVROC_ROUTING_COUNTERS$threads_count <- 0L
   .NCVROC_ROUTING_COUNTERS$inner_psock_count <- 0L
+  .NCVROC_ROUTING_COUNTERS$strategy2_threads_count <- 0L
+  .NCVROC_ROUTING_COUNTERS$strategy2_serial_count <- 0L
+  .NCVROC_ROUTING_COUNTERS$strategy2_chunks_count <- 0L
 }
 
 #' Open a streaming block writer for a logical block stream
@@ -919,8 +925,34 @@
 #' Cross-size ordinary cross-validation and model selection
 #'
 #' Evaluates candidate item-set sum score models across multiple model sizes
-#' using ordinary cross-validation (k-fold or LOOCV), ranks candidates deterministically,
+#' using ordinary cross-validation (\eqn{k}-fold or LOOCV), ranks candidates deterministically,
 #' and selects a single final best model.
+#'
+#' @details
+#' \code{cross_size_cv()} performs combinatorial model selection over unweighted sum scores
+#' \eqn{\sum X_j}.
+#'
+#' \bold{Cross-Validation Methods}:
+#' \itemize{
+#'   \item \code{"kfold"}: \eqn{k}-fold cross-validation with \eqn{2 \le k < N} folds. In repeated
+#'     \eqn{k}-fold CV (\code{repeats > 1}), metrics are evaluated independently on each repeat's
+#'     \eqn{N} out-of-fold predictions, and summarized as the mean and sample standard deviation across
+#'     repeats (no \eqn{N \times R} pooling).
+#'   \item \code{"loocv"}: Exact Leave-One-Out Cross-Validation (\eqn{k = N}, \code{repeats = 1}).
+#' }
+#'
+#' \bold{Fixed Sum-Score AUC Identity}:
+#' For a fixed unweighted sum-score candidate, the raw score has no fitted parameters.
+#' Therefore its pooled out-of-fold score vector is identical to the full-data score vector,
+#' and the corresponding AUC is identical to the apparent full-data AUC (theoretical repeat \eqn{\text{SD} = 0}).
+#'
+#' \bold{Candidate Ranking and Tie-Breaking}:
+#' Candidate models are ranked deterministically:
+#' \enumerate{
+#'   \item Primary selection metric (e.g. mean \code{cv_youden} or \code{cv_auc}) descending.
+#'   \item Smaller model size (\code{n_items}) ascending if \code{prefer_fewer_items = TRUE}.
+#'   \item Global candidate index (\code{.global_combo_index}) ascending.
+#' }
 #'
 #' @param data A data.frame containing the outcome and item columns.
 #' @param outcome Name of the binary outcome column (bare symbol or character string).
@@ -932,7 +964,7 @@
 #' @param max_items Integer, maximum items per model (default 4, used if `model_sizes` is `NULL`).
 #' @param item_count String specification (e.g. `"==4"`, `"<=3"`, `"2:4"`, used if `model_sizes` is `NULL`).
 #' @param cv_method Character, `"kfold"` (default) or `"loocv"`.
-#' @param folds Integer, number of folds for k-fold CV (default 5). Ignored when `cv_method = "loocv"`.
+#' @param folds Integer, number of folds for k-fold CV (default 5, \eqn{2 \le \text{folds} < N}). Ignored when `cv_method = "loocv"`.
 #' @param repeats Integer, number of independent repeats for k-fold CV (default 1).
 #'   Must be 1 for LOOCV.
 #' @param stratified Logical, maintain class balance across folds (default `TRUE`).
@@ -954,7 +986,40 @@
 #' @param seed Integer, random seed for reproducible fold generation.
 #' @param progress Logical, show progress bar (default `interactive()`).
 #'
-#' @return An S3 object of class `"cross_size_cv_result"`.
+#' @return An S3 object of class `"cross_size_cv_result"`, containing:
+#' \describe{
+#'   \item{final_selected_model}{A one-row data.frame of performance metrics for the best model.}
+#'   \item{candidate_ranking}{A data.frame ranking top candidate models.}
+#'   \item{model_size_summary}{Descriptive summary of candidates evaluated per model size.}
+#'   \item{oof_predictions}{Out-of-fold predictions data.frame (\eqn{N \times R} rows).}
+#'   \item{fold_results}{Fold-level training cutoffs and evaluations.}
+#'   \item{repeat_metrics}{Repeat-level performance metrics table (\eqn{R} rows).}
+#'   \item{cv_performance}{Summary metrics table with mean and SD across repeats.}
+#'   \item{cv_cutoff_distribution}{List with mean and SD of fold cutoffs.}
+#'   \item{final_full_data_cutoff}{Deployment cutoff estimated on the full dataset.}
+#'   \item{model_sizes}{Evaluated model sizes vector.}
+#'   \item{total_combinations}{Total number of evaluated candidate models.}
+#'   \item{cv_method}{Cross-validation method used (\code{"kfold"} or \code{"loocv"}).}
+#'   \item{settings}{List of execution settings and parameters.}
+#' }
+#'
+#' @seealso \code{\link{cross_size_loocv}}, \code{\link{cv_select_sum_roc}},
+#'   \code{\link{cross_size_nested_cv}}, \code{\link{compare_cv_selection}}.
+#'
+#' @examples
+#' \dontrun{
+#' data(sample_data_bin)
+#' res <- cross_size_cv(
+#'   data             = sample_data_bin,
+#'   outcome          = y,
+#'   items            = paste0("Q", 1:5),
+#'   model_sizes      = 1:3,
+#'   selection_metric = "youden",
+#'   folds            = 5,
+#'   seed             = 42
+#' )
+#' print(res)
+#' }
 #'
 #' @export
 cross_size_cv <- function(data,
@@ -1013,6 +1078,10 @@ cross_size_cv <- function(data,
     }
   }
 
+  if (identical(positive_label, negative_label)) {
+    stop("`positive_label` and `negative_label` must be distinct.", call. = FALSE)
+  }
+
   # ---- Prepare Data ----
   dat_prep <- .prepare_ncvroc_data(data, outcome_name, item_names)
   y <- dat_prep[[outcome_name]]
@@ -1026,6 +1095,33 @@ cross_size_cv <- function(data,
   }
   n_total <- length(y)
   n_items_total <- length(item_names)
+
+  # ---- Validate cv_method, repeats, and folds ----
+  if (cv_method == "loocv") {
+    if (!is.null(repeats) && repeats > 1) {
+      stop("LOOCV is deterministic and unique; repeats > 1 is not supported.", call. = FALSE)
+    }
+    repeats <- 1L
+    stratified <- FALSE
+    n_pos <- sum(y == 1L)
+    n_neg <- sum(y == 0L)
+    if (min(n_pos, n_neg) < 2L) {
+      stop("LOOCV requires at least 2 positive and 2 negative cases so each training fold contains both classes for cutoff optimization.", call. = FALSE)
+    }
+    requested_folds <- folds
+    effective_folds <- n_total
+  } else {
+    if (is.null(folds) || !is.numeric(folds) || length(folds) != 1L || is.na(folds) || !is.finite(folds) || folds != as.integer(folds)) {
+      stop("`folds` must be an integer-valued scalar.", call. = FALSE)
+    }
+    folds <- as.integer(folds)
+
+    if (folds < 2L || folds >= n_total) {
+      stop("Under cv_method = 'kfold', folds must satisfy 2 <= folds < n. Use cv_method = 'loocv' for leave-one-out cross-validation.", call. = FALSE)
+    }
+    requested_folds <- folds
+    effective_folds <- folds
+  }
 
   # ---- Resolve model_sizes ----
   sizes <- .resolve_model_sizes(
@@ -1062,14 +1158,6 @@ cross_size_cv <- function(data,
   }
 
   # ---- Build CV Folds ----
-  if (cv_method == "loocv") {
-    if (!is.null(repeats) && repeats > 1) {
-      stop("LOOCV does not support `repeats > 1` because the leave-one-out partition is deterministic and unique.",
-           call. = FALSE)
-    }
-    repeats <- 1L
-  }
-
   cv_folds <- .build_cv_folds(
     y          = y,
     cv_method  = cv_method,
@@ -1080,8 +1168,8 @@ cross_size_cv <- function(data,
   )
 
   n_folds_total   <- length(cv_folds)
-  effective_folds <- if (cv_method == "loocv") n_total else (n_folds_total %/% repeats)
-  requested_folds <- if (cv_method == "loocv") n_total else folds
+  effective_folds <- n_folds_total %/% repeats
+  requested_folds <- folds
 
   # Total combinations
   total_combos <- .count_total_combos_cross_size(n_items_total, sizes)
@@ -1201,6 +1289,8 @@ cross_size_cv <- function(data,
         model_size_summary     = size_summary_df,
         oof_predictions        = best_cv$oof_predictions,
         fold_results           = best_cv$fold_results,
+        repeat_metrics         = best_agg$repeat_metrics,
+        cv_performance         = best_agg$summary,
         cv_cutoff_distribution = best_agg$cv_cutoff_distribution,
         final_full_data_cutoff = best_candidate$cutoff,
         model_sizes            = sizes,
@@ -1210,11 +1300,13 @@ cross_size_cv <- function(data,
           outcome_name       = outcome_name,
           item_names         = item_names,
           model_sizes        = sizes,
+          cv_method          = cv_method,
           selection_metric   = selection_metric,
           cutoff_method      = cutoff_method,
           sensitivity_min    = sensitivity_min,
           specificity_min    = specificity_min,
           requested_folds    = requested_folds,
+          folds_requested    = requested_folds,
           effective_folds    = effective_folds,
           repeats            = repeats,
           stratified         = stratified,
@@ -1233,24 +1325,17 @@ cross_size_cv <- function(data,
   }
 
   # =========================================================================
-  # STRATEGY 2: Cutoff-dependent Streaming Exact Evaluation
+  # STRATEGY 2: Cutoff-dependent Streaming Exact Evaluation (C++ accelerated)
   # =========================================================================
-  fold_subsets <- lapply(cv_folds, function(test_idx) {
-    train_idx <- setdiff(seq_len(n_total), test_idx)
-    list(
-      train_idx = train_idx,
-      test_idx  = test_idx,
-      train_y   = y[train_idx],
-      test_y    = y[test_idx]
-    )
-  })
-
   running_buffer <- NULL
   metric_col <- paste0("cv_", selection_metric)
 
-  if (parallel_mode == "threads") {
-    .NCVROC_ROUTING_COUNTERS$threads_count <- .NCVROC_ROUTING_COUNTERS$threads_count + 1L
-  }
+  # Convert data matrix and inputs for C++
+  dat_mat <- as.matrix(dat_prep[, item_names, drop = FALSE])
+  y_int <- as.integer(y)
+  test_indices_0based <- lapply(cv_folds, function(f_idx) as.integer(f_idx - 1L))
+  sens_min <- if (is.null(sensitivity_min)) -1.0 else as.numeric(sensitivity_min)
+  spec_min <- if (is.null(specificity_min)) -1.0 else as.numeric(specificity_min)
 
   # Build combo plan
   combo_plan <- list()
@@ -1260,12 +1345,12 @@ cross_size_cv <- function(data,
     n_combos_s <- choose(n_items_total, s)
     for (gi in seq_len(n_combos_s)) {
       combo_0based <- .combination_unrank(n_items_total, s, gi - 1L)
-      combo_items <- item_names[combo_0based + 1L]
       combo_plan[[length(combo_plan) + 1L]] <- list(
-        items      = combo_items,
-        s          = s,
-        gi         = gi,
-        cum_offset = cum_offset
+        items_0based = combo_0based,
+        items_names  = item_names[combo_0based + 1L],
+        s            = s,
+        gi           = gi,
+        cum_offset   = cum_offset
       )
     }
     cum_offset <- cum_offset + n_combos_s
@@ -1275,13 +1360,15 @@ cross_size_cv <- function(data,
 
   if (parallel_mode == "chunks" && n_plan > 1L && n_workers_res > 1L) {
     .NCVROC_ROUTING_COUNTERS$chunk_psock_count <- .NCVROC_ROUTING_COUNTERS$chunk_psock_count + 1L
+    .NCVROC_ROUTING_COUNTERS$strategy2_chunks_count <- .NCVROC_ROUTING_COUNTERS$strategy2_chunks_count + 1L
+
     chunk_batch_size <- max(1L, ceiling(n_plan / (n_workers_res * 4L)))
     n_batches <- ceiling(n_plan / chunk_batch_size)
-    batches <- vector("list", n_batches)
+    blocks <- vector("list", n_batches)
     for (b in seq_len(n_batches)) {
       b_start <- (b - 1L) * chunk_batch_size + 1L
       b_end   <- min(n_plan, b * chunk_batch_size)
-      batches[[b]] <- combo_plan[b_start:b_end]
+      blocks[[b]] <- combo_plan[b_start:b_end]
     }
 
     actual_workers <- min(as.integer(n_workers_res), as.integer(n_batches))
@@ -1304,32 +1391,49 @@ cross_size_cv <- function(data,
 
     parallel::clusterExport(
       cl,
-      varlist = c("dat_prep", "y", "fold_subsets", "n_folds_total", "repeats", "cutoff_method",
-                  "sensitivity_min", "specificity_min", "metric_col", "top_n", "prefer_fewer_items"),
+      varlist = c("dat_mat", "y_int", "test_indices_0based", "n_folds_total", "repeats", "cutoff_method",
+                  "sens_min", "spec_min", "metric_col", "top_n", "prefer_fewer_items"),
       envir = environment()
     )
 
-    eval_batch_worker <- function(batch_items_list) {
+    eval_block_psock <- function(block_items) {
+      indices_list <- lapply(block_items, function(x) x$items_0based)
+      res_cpp <- evaluate_combos_cv_cpp(
+        x               = dat_mat,
+        y               = y_int,
+        combo_indices   = indices_list,
+        test_indices    = test_indices_0based,
+        n_folds         = n_folds_total,
+        repeats         = repeats,
+        cutoff_method   = cutoff_method,
+        sensitivity_min = sens_min,
+        specificity_min = spec_min,
+        num_threads     = 1L
+      )
       local_buf <- NULL
-      for (item_info in batch_items_list) {
-        row_eval <- .eval_single_combo_cv(
-          combo_items     = item_info$items,
-          s               = item_info$s,
-          gi              = item_info$gi,
-          cum_offset      = item_info$cum_offset,
-          dat_prep        = dat_prep,
-          y               = y,
-          fold_subsets    = fold_subsets,
-          n_folds_total   = n_folds_total,
-          repeats         = repeats,
-          cutoff_method   = cutoff_method,
-          sensitivity_min = sensitivity_min,
-          specificity_min = specificity_min
-        )
-        if (!is.null(row_eval)) {
+      valid_idx <- which(res_cpp$valid == 1L)
+      if (length(valid_idx) > 0L) {
+        for (vi in valid_idx) {
+          info <- block_items[[vi]]
+          cand_row <- data.frame(
+            items                  = format_items(info$items_names),
+            n_items                = info$s,
+            cv_auc                 = res_cpp$cv_auc[vi],
+            cv_sensitivity         = res_cpp$cv_sensitivity[vi],
+            cv_specificity         = res_cpp$cv_specificity[vi],
+            cv_youden              = res_cpp$cv_youden[vi],
+            cv_accuracy            = res_cpp$cv_accuracy[vi],
+            cv_ppv                 = res_cpp$cv_ppv[vi],
+            cv_npv                 = res_cpp$cv_npv[vi],
+            cv_cutoff_mean         = res_cpp$cv_cutoff_mean[vi],
+            cv_cutoff_sd           = res_cpp$cv_cutoff_sd[vi],
+            final_full_data_cutoff = res_cpp$final_full_data_cutoff[vi],
+            .global_combo_index    = info$cum_offset + info$gi,
+            stringsAsFactors       = FALSE
+          )
           local_buf <- .update_running_top_n(
             buffer             = local_buf,
-            candidate_row      = row_eval,
+            candidate_row      = cand_row,
             metric_col         = metric_col,
             top_n              = top_n,
             prefer_fewer_items = prefer_fewer_items
@@ -1339,9 +1443,8 @@ cross_size_cv <- function(data,
       local_buf
     }
 
-    batch_results <- parallel::parLapply(cl, batches, eval_batch_worker)
-
-    for (b_res in batch_results) {
+    block_results <- parallel::parLapply(cl, blocks, eval_block_psock)
+    for (b_res in block_results) {
       if (!is.null(b_res) && nrow(b_res) > 0L) {
         for (r_i in seq_len(nrow(b_res))) {
           running_buffer <- .update_running_top_n(
@@ -1355,39 +1458,74 @@ cross_size_cv <- function(data,
       }
     }
   } else {
-    # Sequential / Threads loop
+    # Threads / Serial C++ batch processing
+    block_size <- 2000L
+    n_blocks <- ceiling(n_plan / block_size)
+    blocks <- vector("list", n_blocks)
+    for (b in seq_len(n_blocks)) {
+      b_start <- (b - 1L) * block_size + 1L
+      b_end   <- min(n_plan, b * block_size)
+      blocks[[b]] <- combo_plan[b_start:b_end]
+    }
+
+    if (parallel_mode == "threads") {
+      .NCVROC_ROUTING_COUNTERS$threads_count <- .NCVROC_ROUTING_COUNTERS$threads_count + 1L
+      .NCVROC_ROUTING_COUNTERS$strategy2_threads_count <- .NCVROC_ROUTING_COUNTERS$strategy2_threads_count + 1L
+      cpp_threads <- as.integer(n_workers_res)
+    } else {
+      .NCVROC_ROUTING_COUNTERS$strategy2_serial_count <- .NCVROC_ROUTING_COUNTERS$strategy2_serial_count + 1L
+      cpp_threads <- 1L
+    }
+
     if (progress) {
-      pb <- utils::txtProgressBar(min = 0, max = n_plan, style = 3)
+      pb <- utils::txtProgressBar(min = 0, max = n_blocks, style = 3)
       on.exit(close(pb), add = TRUE)
     }
 
-    for (pi in seq_len(n_plan)) {
-      if (progress && (pi %% 100 == 0 || pi == n_plan)) {
-        utils::setTxtProgressBar(pb, pi)
-      }
-      item_info <- combo_plan[[pi]]
-      row_eval <- .eval_single_combo_cv(
-        combo_items     = item_info$items,
-        s               = item_info$s,
-        gi              = item_info$gi,
-        cum_offset      = item_info$cum_offset,
-        dat_prep        = dat_prep,
-        y               = y,
-        fold_subsets    = fold_subsets,
-        n_folds_total   = n_folds_total,
+    for (b in seq_len(n_blocks)) {
+      if (progress) utils::setTxtProgressBar(pb, b)
+      block_items <- blocks[[b]]
+      indices_list <- lapply(block_items, function(x) x$items_0based)
+      res_cpp <- evaluate_combos_cv_cpp(
+        x               = dat_mat,
+        y               = y_int,
+        combo_indices   = indices_list,
+        test_indices    = test_indices_0based,
+        n_folds         = n_folds_total,
         repeats         = repeats,
         cutoff_method   = cutoff_method,
-        sensitivity_min = sensitivity_min,
-        specificity_min = specificity_min
+        sensitivity_min = sens_min,
+        specificity_min = spec_min,
+        num_threads     = cpp_threads
       )
-      if (!is.null(row_eval)) {
-        running_buffer <- .update_running_top_n(
-          buffer             = running_buffer,
-          candidate_row      = row_eval,
-          metric_col         = metric_col,
-          top_n              = top_n,
-          prefer_fewer_items = prefer_fewer_items
-        )
+      valid_idx <- which(res_cpp$valid == 1L)
+      if (length(valid_idx) > 0L) {
+        for (vi in valid_idx) {
+          info <- block_items[[vi]]
+          cand_row <- data.frame(
+            items                  = format_items(info$items_names),
+            n_items                = info$s,
+            cv_auc                 = res_cpp$cv_auc[vi],
+            cv_sensitivity         = res_cpp$cv_sensitivity[vi],
+            cv_specificity         = res_cpp$cv_specificity[vi],
+            cv_youden              = res_cpp$cv_youden[vi],
+            cv_accuracy            = res_cpp$cv_accuracy[vi],
+            cv_ppv                 = res_cpp$cv_ppv[vi],
+            cv_npv                 = res_cpp$cv_npv[vi],
+            cv_cutoff_mean         = res_cpp$cv_cutoff_mean[vi],
+            cv_cutoff_sd           = res_cpp$cv_cutoff_sd[vi],
+            final_full_data_cutoff = res_cpp$final_full_data_cutoff[vi],
+            .global_combo_index    = info$cum_offset + info$gi,
+            stringsAsFactors       = FALSE
+          )
+          running_buffer <- .update_running_top_n(
+            buffer             = running_buffer,
+            candidate_row      = cand_row,
+            metric_col         = metric_col,
+            top_n              = top_n,
+            prefer_fewer_items = prefer_fewer_items
+          )
+        }
       }
     }
   }
@@ -1503,6 +1641,8 @@ cross_size_cv <- function(data,
       model_size_summary     = size_summary_df,
       oof_predictions        = best_cv$oof_predictions,
       fold_results           = best_cv$fold_results,
+      repeat_metrics         = best_agg$repeat_metrics,
+      cv_performance         = best_agg$summary,
       cv_cutoff_distribution = best_agg$cv_cutoff_distribution,
       final_full_data_cutoff = best_candidate$final_full_data_cutoff,
       model_sizes            = sizes,
@@ -1512,11 +1652,13 @@ cross_size_cv <- function(data,
         outcome_name       = outcome_name,
         item_names         = item_names,
         model_sizes        = sizes,
+        cv_method          = cv_method,
         selection_metric   = selection_metric,
         cutoff_method      = cutoff_method,
         sensitivity_min    = sensitivity_min,
         specificity_min    = specificity_min,
         requested_folds    = requested_folds,
+        folds_requested    = requested_folds,
         effective_folds    = effective_folds,
         repeats            = repeats,
         stratified         = stratified,
@@ -1579,5 +1721,365 @@ print.cross_size_cv_result <- function(x, ...) {
 #' @param ... Additional arguments.
 #' @export
 summary.cross_size_cv_result <- function(object, ...) {
+  print(object, ...)
+}
+
+#' Cross-size leave-one-out cross-validation and model selection
+#'
+#' Dedicated wrapper for combinatorial model selection using leave-one-out
+#' cross-validation (LOOCV) across multiple candidate model sizes.
+#'
+#' @inheritParams cross_size_cv
+#'
+#' @return An S3 object of class \code{"cross_size_cv_result"}.
+#'
+#' @examples
+#' \dontrun{
+#' data(sample_data_bin)
+#' res <- cross_size_loocv(
+#'   data       = sample_data_bin,
+#'   outcome    = "y",
+#'   items      = paste0("Q", 1:5),
+#'   model_sizes= 1:3,
+#'   selection_metric = "auc"
+#' )
+#' print(res)
+#' }
+#'
+#' @export
+cross_size_loocv <- function(data,
+                             outcome,
+                             items,
+                             model_sizes        = NULL,
+                             min_items          = 1,
+                             max_items          = 4,
+                             item_count         = NULL,
+                             selection_metric   = c("auc", "youden", "sensitivity", "specificity", "accuracy"),
+                             cutoff_method      = c("youden", "closest_topleft"),
+                             sensitivity_min    = NULL,
+                             specificity_min    = NULL,
+                             top_n              = 20,
+                             prefer_fewer_items = TRUE,
+                             positive_label     = 1,
+                             negative_label     = 0,
+                             engine             = c("Rcpp", "R"),
+                             parallel           = FALSE,
+                             n_workers          = NULL,
+                             ci                 = FALSE,
+                             conf_level         = 0.95,
+                             progress           = interactive()) {
+  env <- parent.frame()
+  outcome_name <- .resolve_outcome(substitute(outcome), env)
+  item_names   <- .resolve_items(data, substitute(items), env)
+  selection_metric <- match.arg(selection_metric)
+  cutoff_method    <- match.arg(cutoff_method)
+  engine           <- match.arg(engine)
+
+  cross_size_cv(
+    data               = data,
+    outcome            = outcome_name,
+    items              = item_names,
+    model_sizes        = model_sizes,
+    min_items          = min_items,
+    max_items          = max_items,
+    item_count         = item_count,
+    cv_method          = "loocv",
+    folds              = nrow(data),
+    repeats            = 1,
+    stratified         = FALSE,
+    selection_metric   = selection_metric,
+    cutoff_method      = cutoff_method,
+    sensitivity_min    = sensitivity_min,
+    specificity_min    = specificity_min,
+    top_n              = top_n,
+    prefer_fewer_items = prefer_fewer_items,
+    positive_label     = positive_label,
+    negative_label     = negative_label,
+    engine             = engine,
+    parallel           = parallel,
+    n_workers          = n_workers,
+    ci                 = ci,
+    conf_level         = conf_level,
+    seed               = NULL,
+    progress           = progress
+  )
+}
+
+#' Within-size cross-validated item-set sum score model selection
+#'
+#' Evaluates all combinations of a single specified model size (\code{item_count})
+#' using ordinary \eqn{k}-fold cross-validation and selects the best model.
+#'
+#' @details
+#' Unlike \code{\link{cv_sum_roc}()}, which evaluates the cross-validated performance
+#' of a single fixed set of items, \code{cv_select_sum_roc()} performs combinatorial
+#' model selection across all \eqn{\binom{P}{K}} subsets of size \code{item_count}.
+#'
+#' @param data A data.frame containing the outcome and item columns.
+#' @param outcome Name of the binary outcome column (bare symbol or character string).
+#' @param items Item columns to evaluate (bare range e.g. `Q1:Q10`, bare names in `c()`,
+#'   character vector, or numeric positions).
+#' @param item_count Integer, exact number of items in each candidate model (e.g. `3`).
+#' @param folds Integer, number of folds for k-fold CV (default 5).
+#' @param repeats Integer, number of independent repeats for k-fold CV (default 1).
+#' @param stratified Logical, maintain class balance across folds (default `TRUE`).
+#' @param selection_metric Metric for candidate ranking and model selection:
+#'   `"auc"` (default), `"youden"`, `"sensitivity"`, `"specificity"`, or `"accuracy"`.
+#' @param cutoff_method Cutoff selection rule: `"youden"` (default) or `"closest_topleft"`.
+#' @param sensitivity_min Optional minimum OOF sensitivity threshold (numeric in `[0, 1]`, default `NULL`).
+#' @param specificity_min Optional minimum OOF specificity threshold (numeric in `[0, 1]`, default `NULL`).
+#' @param top_n Integer, number of top candidates to return in `candidate_ranking` (default 20).
+#' @param prefer_fewer_items Logical, prefer smaller models on ties (default `TRUE`).
+#' @param positive_label Value indicating positive class (default 1).
+#' @param negative_label Value indicating negative class (default 0).
+#' @param engine Combinatorial computation engine: `"Rcpp"` (default) or `"R"`.
+#' @param parallel Parallel mode: `FALSE` / `"none"` (default), `"threads"`, or `"chunks"`.
+#' @param n_workers Integer, number of workers or threads (default `NULL` = auto).
+#' @param ci Logical, compute confidence intervals for full-data apparent metrics of final model (default `FALSE`).
+#' @param conf_level Numeric, confidence level (default 0.95).
+#' @param seed Integer, random seed for reproducible fold generation.
+#' @param progress Logical, show progress bar (default `interactive()`).
+#'
+#' @return An S3 object of class \code{c("cv_select_sum_roc_result", "cross_size_cv_result")}.
+#'
+#' @seealso \code{\link{cv_sum_roc}} for fixed-model evaluation,
+#'   \code{\link{loocv_select_sum_roc}} for leave-one-out selection,
+#'   \code{\link{cross_size_cv}} for multi-size selection.
+#'
+#' @examples
+#' \dontrun{
+#' data(sample_data_bin)
+#' res <- cv_select_sum_roc(
+#'   data       = sample_data_bin,
+#'   outcome    = "y",
+#'   items      = paste0("Q", 1:5),
+#'   item_count = 3,
+#'   folds      = 5,
+#'   selection_metric = "auc"
+#' )
+#' print(res)
+#' }
+#'
+#' @export
+cv_select_sum_roc <- function(data,
+                              outcome,
+                              items,
+                              item_count         = 3,
+                              folds              = 5,
+                              repeats            = 1,
+                              stratified         = TRUE,
+                              selection_metric   = c("auc", "youden", "sensitivity", "specificity", "accuracy"),
+                              cutoff_method      = c("youden", "closest_topleft"),
+                              sensitivity_min    = NULL,
+                              specificity_min    = NULL,
+                              top_n              = 20,
+                              prefer_fewer_items = TRUE,
+                              positive_label     = 1,
+                              negative_label     = 0,
+                              engine             = c("Rcpp", "R"),
+                              parallel           = FALSE,
+                              n_workers          = NULL,
+                              ci                 = FALSE,
+                              conf_level         = 0.95,
+                              seed               = NULL,
+                              progress           = interactive()) {
+  env <- parent.frame()
+  outcome_name <- .resolve_outcome(substitute(outcome), env)
+  item_names   <- .resolve_items(data, substitute(items), env)
+  selection_metric <- match.arg(selection_metric)
+  cutoff_method    <- match.arg(cutoff_method)
+  engine           <- match.arg(engine)
+
+  if (is.null(item_count) || !is.numeric(item_count) || length(item_count) != 1L ||
+      is.na(item_count) || !is.finite(item_count) || item_count != as.integer(item_count) || item_count < 1L) {
+    stop("`item_count` must be a positive integer-valued scalar.", call. = FALSE)
+  }
+  item_count <- as.integer(item_count)
+
+  if (item_count > length(item_names)) {
+    stop(sprintf("`item_count` (%d) cannot exceed the number of available items (%d).",
+                 item_count, length(item_names)), call. = FALSE)
+  }
+
+  res <- cross_size_cv(
+    data               = data,
+    outcome            = outcome_name,
+    items              = item_names,
+    model_sizes        = item_count,
+    cv_method          = "kfold",
+    folds              = folds,
+    repeats            = repeats,
+    stratified         = stratified,
+    selection_metric   = selection_metric,
+    cutoff_method      = cutoff_method,
+    sensitivity_min    = sensitivity_min,
+    specificity_min    = specificity_min,
+    top_n              = top_n,
+    prefer_fewer_items = prefer_fewer_items,
+    positive_label     = positive_label,
+    negative_label     = negative_label,
+    engine             = engine,
+    parallel           = parallel,
+    n_workers          = n_workers,
+    ci                 = ci,
+    conf_level         = conf_level,
+    seed               = seed,
+    progress           = progress
+  )
+
+  res$settings$selection_scope <- "within_size"
+  res$settings$item_count      <- item_count
+  class(res) <- c("cv_select_sum_roc_result", "cross_size_cv_result")
+
+  res
+}
+
+#' Within-size leave-one-out cross-validated item-set sum score model selection
+#'
+#' Evaluates all combinations of a single specified model size (\code{item_count})
+#' using leave-one-out cross-validation (LOOCV) and selects the best model.
+#'
+#' @details
+#' Unlike \code{\link{loocv_sum_roc}()}, which evaluates the leave-one-out performance
+#' of a single fixed set of items, \code{loocv_select_sum_roc()} performs combinatorial
+#' model selection across all \eqn{\binom{P}{K}} subsets of size \code{item_count}.
+#'
+#' @inheritParams cv_select_sum_roc
+#'
+#' @return An S3 object of class \code{c("loocv_select_sum_roc_result", "cv_select_sum_roc_result", "cross_size_cv_result")}.
+#'
+#' @seealso \code{\link{loocv_sum_roc}} for fixed-model evaluation,
+#'   \code{\link{cv_select_sum_roc}} for k-fold selection,
+#'   \code{\link{cross_size_loocv}} for multi-size LOOCV selection.
+#'
+#' @examples
+#' \dontrun{
+#' data(sample_data_bin)
+#' res <- loocv_select_sum_roc(
+#'   data       = sample_data_bin,
+#'   outcome    = "y",
+#'   items      = paste0("Q", 1:5),
+#'   item_count = 3,
+#'   selection_metric = "auc"
+#' )
+#' print(res)
+#' }
+#'
+#' @export
+loocv_select_sum_roc <- function(data,
+                                 outcome,
+                                 items,
+                                 item_count         = 3,
+                                 selection_metric   = c("auc", "youden", "sensitivity", "specificity", "accuracy"),
+                                 cutoff_method      = c("youden", "closest_topleft"),
+                                 sensitivity_min    = NULL,
+                                 specificity_min    = NULL,
+                                 top_n              = 20,
+                                 prefer_fewer_items = TRUE,
+                                 positive_label     = 1,
+                                 negative_label     = 0,
+                                 engine             = c("Rcpp", "R"),
+                                 parallel           = FALSE,
+                                 n_workers          = NULL,
+                                 ci                 = FALSE,
+                                 conf_level         = 0.95,
+                                 progress           = interactive()) {
+  env <- parent.frame()
+  outcome_name <- .resolve_outcome(substitute(outcome), env)
+  item_names   <- .resolve_items(data, substitute(items), env)
+  selection_metric <- match.arg(selection_metric)
+  cutoff_method    <- match.arg(cutoff_method)
+  engine           <- match.arg(engine)
+
+  if (is.null(item_count) || !is.numeric(item_count) || length(item_count) != 1L ||
+      is.na(item_count) || !is.finite(item_count) || item_count != as.integer(item_count) || item_count < 1L) {
+    stop("`item_count` must be a positive integer-valued scalar.", call. = FALSE)
+  }
+  item_count <- as.integer(item_count)
+
+  if (item_count > length(item_names)) {
+    stop(sprintf("`item_count` (%d) cannot exceed the number of available items (%d).",
+                 item_count, length(item_names)), call. = FALSE)
+  }
+
+  res <- cross_size_cv(
+    data               = data,
+    outcome            = outcome_name,
+    items              = item_names,
+    model_sizes        = item_count,
+    cv_method          = "loocv",
+    folds              = nrow(data),
+    repeats            = 1,
+    stratified         = FALSE,
+    selection_metric   = selection_metric,
+    cutoff_method      = cutoff_method,
+    sensitivity_min    = sensitivity_min,
+    specificity_min    = specificity_min,
+    top_n              = top_n,
+    prefer_fewer_items = prefer_fewer_items,
+    positive_label     = positive_label,
+    negative_label     = negative_label,
+    engine             = engine,
+    parallel           = parallel,
+    n_workers          = n_workers,
+    ci                 = ci,
+    conf_level         = conf_level,
+    seed               = NULL,
+    progress           = progress
+  )
+
+  res$settings$selection_scope <- "within_size"
+  res$settings$item_count      <- item_count
+  class(res) <- c("loocv_select_sum_roc_result", "cv_select_sum_roc_result", "cross_size_cv_result")
+
+  res
+}
+
+#' Print method for cv_select_sum_roc_result
+#'
+#' @param x A `cv_select_sum_roc_result` object.
+#' @param ... Additional arguments.
+#' @export
+print.cv_select_sum_roc_result <- function(x, ...) {
+  is_loocv <- inherits(x, "loocv_select_sum_roc_result") || (x$cv_method == "loocv")
+  cat("\n=== Within-Size CV Sum-Score Selection (NCVROC) ===\n")
+  cat("Selection scope:  Within-size (", x$settings$item_count, " items)\n", sep = "")
+  cat("Method:           ", if (is_loocv) "Leave-One-Out (LOOCV)" else paste0(x$settings$repeats, "x repeated ", x$settings$effective_folds, "-fold CV"), "\n")
+  cat("Selection metric: ", x$settings$selection_metric, "\n")
+  cat("Cutoff rule:      ", x$settings$cutoff_method, "\n")
+  if (!is.null(x$settings$sensitivity_min)) {
+    cat(sprintf("Constraint:        OOF sensitivity >= %.2f\n", x$settings$sensitivity_min))
+  }
+  if (!is.null(x$settings$specificity_min)) {
+    cat(sprintf("Constraint:        OOF specificity >= %.2f\n", x$settings$specificity_min))
+  }
+
+  cat("\n--- Selected Best Model (Size ", x$settings$item_count, ") ---\n", sep = "")
+  m <- x$final_selected_model
+  cat("  Items:          ", m$items, "\n", sep = "")
+  cat(sprintf("  OOF AUC:        %.4f\n", m$cv_auc))
+  cat(sprintf("  OOF Sensitivity:%.4f\n", m$cv_sensitivity))
+  cat(sprintf("  OOF Specificity:%.4f\n", m$cv_specificity))
+  cat(sprintf("  OOF Youden:     %.4f\n", m$cv_youden))
+  cat(sprintf("  OOF Accuracy:   %.4f\n", m$cv_accuracy))
+  cat(sprintf("  CV Cutoff:      mean = %.2f (SD = %.2f)\n", m$cv_cutoff_mean, m$cv_cutoff_sd))
+  cat(sprintf("  Final Cutoff:   %.2f (Full-data deployment)\n", x$final_full_data_cutoff))
+
+  cat("\n--- Top Candidate Models (Size ", x$settings$item_count, ") ---\n", sep = "")
+  print(utils::head(x$candidate_ranking, 10), row.names = FALSE)
+  if (nrow(x$candidate_ranking) > 10) {
+    cat("... (", nrow(x$candidate_ranking) - 10, " more candidates in ranking table)\n", sep = "")
+  }
+  cat("\n")
+
+  invisible(x)
+}
+
+#' Summary method for cv_select_sum_roc_result
+#'
+#' @param object A `cv_select_sum_roc_result` object.
+#' @param ... Additional arguments.
+#' @export
+summary.cv_select_sum_roc_result <- function(object, ...) {
   print(object, ...)
 }

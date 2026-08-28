@@ -176,7 +176,8 @@ CACHE_FORMAT_VERSION <- 1L     # bump when cache storage format changes
                                  item_count = NULL,
                                  n_available = NULL) {
   if (!is.null(model_sizes)) {
-    if (!is.numeric(model_sizes) || length(model_sizes) == 0 || anyNA(model_sizes)) {
+    if (!is.numeric(model_sizes) || length(model_sizes) == 0 || anyNA(model_sizes) ||
+        any(!is.finite(model_sizes)) || any(model_sizes != as.integer(model_sizes))) {
       stop("`model_sizes` must be a non-empty numeric/integer vector without NA.", call. = FALSE)
     }
     sizes <- sort(unique(as.integer(model_sizes)))

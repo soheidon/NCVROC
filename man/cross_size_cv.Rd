@@ -52,7 +52,7 @@ If `NULL`, resolved from `min_items:max_items` or `item_count`.}
 
 \item{cv_method}{Character, `"kfold"` (default) or `"loocv"`.}
 
-\item{folds}{Integer, number of folds for k-fold CV (default 5). Ignored when `cv_method = "loocv"`.}
+\item{folds}{Integer, number of folds for k-fold CV (default 5, \eqn{2 \le \text{folds} < N}). Ignored when `cv_method = "loocv"`.}
 
 \item{repeats}{Integer, number of independent repeats for k-fold CV (default 1).
 Must be 1 for LOOCV.}
@@ -92,10 +92,71 @@ or `"chunks"` (PSOCK cluster).}
 \item{progress}{Logical, show progress bar (default `interactive()`).}
 }
 \value{
-An S3 object of class `"cross_size_cv_result"`.
+An S3 object of class `"cross_size_cv_result"`, containing:
+\describe{
+  \item{final_selected_model}{A one-row data.frame of performance metrics for the best model.}
+  \item{candidate_ranking}{A data.frame ranking top candidate models.}
+  \item{model_size_summary}{Descriptive summary of candidates evaluated per model size.}
+  \item{oof_predictions}{Out-of-fold predictions data.frame (\eqn{N \times R} rows).}
+  \item{fold_results}{Fold-level training cutoffs and evaluations.}
+  \item{repeat_metrics}{Repeat-level performance metrics table (\eqn{R} rows).}
+  \item{cv_performance}{Summary metrics table with mean and SD across repeats.}
+  \item{cv_cutoff_distribution}{List with mean and SD of fold cutoffs.}
+  \item{final_full_data_cutoff}{Deployment cutoff estimated on the full dataset.}
+  \item{model_sizes}{Evaluated model sizes vector.}
+  \item{total_combinations}{Total number of evaluated candidate models.}
+  \item{cv_method}{Cross-validation method used (\code{"kfold"} or \code{"loocv"}).}
+  \item{settings}{List of execution settings and parameters.}
+}
 }
 \description{
 Evaluates candidate item-set sum score models across multiple model sizes
-using ordinary cross-validation (k-fold or LOOCV), ranks candidates deterministically,
+using ordinary cross-validation (\eqn{k}-fold or LOOCV), ranks candidates deterministically,
 and selects a single final best model.
+}
+\details{
+\code{cross_size_cv()} performs combinatorial model selection over unweighted sum scores
+\eqn{\sum X_j}.
+
+\bold{Cross-Validation Methods}:
+\itemize{
+  \item \code{"kfold"}: \eqn{k}-fold cross-validation with \eqn{2 \le k < N} folds. In repeated
+    \eqn{k}-fold CV (\code{repeats > 1}), metrics are evaluated independently on each repeat's
+    \eqn{N} out-of-fold predictions, and summarized as the mean and sample standard deviation across
+    repeats (no \eqn{N \times R} pooling).
+  \item \code{"loocv"}: Exact Leave-One-Out Cross-Validation (\eqn{k = N}, \code{repeats = 1}).
+}
+
+\bold{Fixed Sum-Score AUC Identity}:
+For a fixed unweighted sum-score candidate, the raw score has no fitted parameters.
+Therefore its pooled out-of-fold score vector is identical to the full-data score vector,
+and the corresponding AUC is identical to the apparent full-data AUC (theoretical repeat \eqn{\text{SD} = 0}).
+
+\bold{Candidate Ranking and Tie-Breaking}:
+Candidate models are ranked deterministically:
+\enumerate{
+  \item Primary selection metric (e.g. mean \code{cv_youden} or \code{cv_auc}) descending.
+  \item Smaller model size (\code{n_items}) ascending if \code{prefer_fewer_items = TRUE}.
+  \item Global candidate index (\code{.global_combo_index}) ascending.
+}
+}
+\examples{
+\dontrun{
+data(sample_data_bin)
+res <- cross_size_cv(
+  data             = sample_data_bin,
+  outcome          = y,
+  items            = paste0("Q", 1:5),
+  model_sizes      = 1:3,
+  selection_metric = "youden",
+  folds            = 5,
+  seed             = 42
+)
+print(res)
+}
+
+}
+\seealso{
+\code{\link{cross_size_loocv}}, \code{\link{cv_select_sum_roc}},
+  \code{\link{cross_size_nested_cv}}, \code{\link{compare_cv_selection}}.
 }

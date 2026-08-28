@@ -853,3 +853,579 @@ DataFrame evaluate_combos_cpp_chunk_parallel(
     _["n_negative"]  = out_n_negative
   );
 }
+
+// -----------------------------------------------------------------------------
+// CV Candidate Evaluator for Strategy 2 (Cutoff-Dependent Selection)
+// -----------------------------------------------------------------------------
+
+struct CvThreadBuffer {
+  std::vector<double> scores;
+  std::map<double, int> full_pos_counts;
+  std::map<double, int> full_neg_counts;
+  std::vector<double> unique_scores;
+  std::vector<double> cum_pos;
+  std::vector<double> cum_neg;
+  std::vector<double> tp, fp, fn, tn;
+  std::vector<double> sensitivity, specificity, youden_vals, accuracy;
+  std::vector<double> ppv_vals, npv_vals;
+  std::vector<double> cutoffs_vec;
+  std::vector<int> tps, tns, fps, fns;
+  std::vector<double> rep_sens, rep_spec, rep_youd, rep_acc, rep_ppv, rep_npv;
+
+  explicit CvThreadBuffer(int n, int n_folds, int repeats)
+    : scores(n),
+      cutoffs_vec(n_folds),
+      tps(n_folds),
+      tns(n_folds),
+      fps(n_folds),
+      fns(n_folds),
+      rep_sens(repeats),
+      rep_spec(repeats),
+      rep_youd(repeats),
+      rep_acc(repeats),
+      rep_ppv(repeats),
+      rep_npv(repeats) {}
+};
+
+static inline void evaluate_single_combo_cv_cpp(
+    const std::vector<int>& combo_cols,
+    const double* x_ptr,
+    const int* y_ptr,
+    int n,
+    int n_cols,
+    const std::vector<std::vector<int>>& fold_test_indices,
+    int n_folds,
+    int repeats,
+    CutoffMethod cutoff_method,
+    double sensitivity_min,
+    double specificity_min,
+    CvThreadBuffer& buf,
+    double& out_auc,
+    double& out_sensitivity,
+    double& out_specificity,
+    double& out_youden,
+    double& out_accuracy,
+    double& out_ppv,
+    double& out_npv,
+    double& out_cutoff_mean,
+    double& out_cutoff_sd,
+    double& out_final_cutoff,
+    bool& out_valid
+) {
+  int k = combo_cols.size();
+
+  // 1. Compute full scores
+  for (int i = 0; i < n; i++) {
+    double s = 0.0;
+    for (int j = 0; j < k; j++) {
+      s += x_ptr[i + combo_cols[j] * n];
+    }
+    buf.scores[i] = s;
+  }
+
+  // 2. Full-data frequency table and full AUC
+  buf.full_pos_counts.clear();
+  buf.full_neg_counts.clear();
+  int total_pos = 0, total_neg = 0;
+  for (int i = 0; i < n; i++) {
+    if (y_ptr[i] == 1) {
+      buf.full_pos_counts[buf.scores[i]]++;
+      total_pos++;
+    } else {
+      buf.full_neg_counts[buf.scores[i]]++;
+      total_neg++;
+    }
+  }
+
+  if (total_pos == 0 || total_neg == 0) {
+    out_auc = NA_REAL;
+    out_sensitivity = NA_REAL;
+    out_specificity = NA_REAL;
+    out_youden = NA_REAL;
+    out_accuracy = NA_REAL;
+    out_ppv = NA_REAL;
+    out_npv = NA_REAL;
+    out_cutoff_mean = NA_REAL;
+    out_cutoff_sd = NA_REAL;
+    out_final_cutoff = NA_REAL;
+    out_valid = false;
+    return;
+  }
+
+  // Compute full AUC
+  double auc_sum = 0.0;
+  for (const auto& p : buf.full_pos_counts) {
+    double sp = p.first;
+    int pc = p.second;
+    for (const auto& neg : buf.full_neg_counts) {
+      double sn = neg.first;
+      int nc = neg.second;
+      double pair_count = (double)pc * nc;
+      if (sp > sn) {
+        auc_sum += pair_count;
+      } else if (sp == sn) {
+        auc_sum += 0.5 * pair_count;
+      }
+    }
+  }
+  out_auc = auc_sum / ((double)total_pos * total_neg);
+
+  // Helper lambda to find optimal cutoff from frequency maps
+  auto find_cutoff_from_freqs = [&](const std::map<double, int>& pos_map,
+                                    const std::map<double, int>& neg_map,
+                                    int n_pos,
+                                    int n_neg) -> double {
+    if (n_pos == 0 || n_neg == 0) return NA_REAL;
+    int tot_sub = n_pos + n_neg;
+
+    buf.unique_scores.clear();
+    for (const auto& p : pos_map) {
+      if (p.second > 0) buf.unique_scores.push_back(p.first);
+    }
+    for (const auto& neg : neg_map) {
+      if (neg.second > 0) {
+        bool found = false;
+        for (double s : buf.unique_scores) {
+          if (s == neg.first) { found = true; break; }
+        }
+        if (!found) buf.unique_scores.push_back(neg.first);
+      }
+    }
+    std::sort(buf.unique_scores.begin(), buf.unique_scores.end(), std::greater<double>());
+
+    int n_scores = buf.unique_scores.size();
+    if (n_scores == 0) return NA_REAL;
+
+    buf.cum_pos.resize(n_scores);
+    buf.cum_neg.resize(n_scores);
+    buf.tp.resize(n_scores);
+    buf.fp.resize(n_scores);
+    buf.fn.resize(n_scores);
+    buf.tn.resize(n_scores);
+    buf.sensitivity.resize(n_scores);
+    buf.specificity.resize(n_scores);
+    buf.youden_vals.resize(n_scores);
+    buf.accuracy.resize(n_scores);
+
+    for (int si = 0; si < n_scores; si++) {
+      double sc = buf.unique_scores[si];
+      int prev_pos = (si == 0) ? 0 : buf.cum_pos[si - 1];
+      int prev_neg = (si == 0) ? 0 : buf.cum_neg[si - 1];
+      auto it_pos = pos_map.find(sc);
+      int pos_c = (it_pos != pos_map.end()) ? it_pos->second : 0;
+      auto it_neg = neg_map.find(sc);
+      int neg_c = (it_neg != neg_map.end()) ? it_neg->second : 0;
+      buf.cum_pos[si] = prev_pos + pos_c;
+      buf.cum_neg[si] = prev_neg + neg_c;
+
+      buf.tp[si] = buf.cum_pos[si];
+      buf.fp[si] = buf.cum_neg[si];
+      buf.fn[si] = n_pos - buf.tp[si];
+      buf.tn[si] = n_neg - buf.fp[si];
+
+      buf.sensitivity[si] = buf.tp[si] / n_pos;
+      buf.specificity[si] = buf.tn[si] / n_neg;
+      buf.youden_vals[si] = buf.sensitivity[si] + buf.specificity[si] - 1.0;
+      buf.accuracy[si] = (buf.tp[si] + buf.tn[si]) / (double)tot_sub;
+    }
+
+    int best_idx = 0;
+    if (cutoff_method == CUTOFF_YOUDEN) {
+      double best_youden = -2.0, best_sens = -1.0, best_spec = -1.0;
+      double best_cutoff_val = R_PosInf;
+      for (int si = 0; si < n_scores; si++) {
+        double yd = buf.youden_vals[si];
+        double se = buf.sensitivity[si];
+        double sp = buf.specificity[si];
+        double co = buf.unique_scores[si];
+        if (yd > best_youden ||
+            (yd == best_youden && se > best_sens) ||
+            (yd == best_youden && se == best_sens && sp > best_spec) ||
+            (yd == best_youden && se == best_sens && sp == best_spec && co < best_cutoff_val)) {
+          best_youden = yd;
+          best_sens = se;
+          best_spec = sp;
+          best_cutoff_val = co;
+          best_idx = si;
+        }
+      }
+    } else { // CUTOFF_CLOSEST_TOPLEFT
+      double best_dist = R_PosInf;
+      double best_youden = -2.0;
+      for (int si = 0; si < n_scores; si++) {
+        double d = std::sqrt(
+          (1.0 - buf.sensitivity[si]) * (1.0 - buf.sensitivity[si]) +
+          (1.0 - buf.specificity[si]) * (1.0 - buf.specificity[si]));
+        double yd = buf.youden_vals[si];
+        if (d < best_dist || (d == best_dist && yd > best_youden)) {
+          best_dist = d;
+          best_youden = yd;
+          best_idx = si;
+        }
+      }
+    }
+    return buf.unique_scores[best_idx];
+  };
+
+  out_final_cutoff = find_cutoff_from_freqs(buf.full_pos_counts, buf.full_neg_counts, total_pos, total_neg);
+
+  // 3. Loop over folds
+  bool is_loocv = (n_folds == n && repeats == 1);
+
+  if (is_loocv) {
+    for (int i = 0; i < n; i++) {
+      double s_i = buf.scores[i];
+      int y_i = y_ptr[i];
+      int tr_pos = total_pos;
+      int tr_neg = total_neg;
+
+      // Decrement observation i from full counts
+      if (y_i == 1) {
+        buf.full_pos_counts[s_i]--;
+        tr_pos--;
+      } else {
+        buf.full_neg_counts[s_i]--;
+        tr_neg--;
+      }
+
+      double fold_cutoff = find_cutoff_from_freqs(buf.full_pos_counts, buf.full_neg_counts, tr_pos, tr_neg);
+      buf.cutoffs_vec[i] = fold_cutoff;
+
+      // Restore full counts
+      if (y_i == 1) {
+        buf.full_pos_counts[s_i]++;
+      } else {
+        buf.full_neg_counts[s_i]++;
+      }
+
+      // Test prediction
+      int pred_cls = (s_i >= fold_cutoff) ? 1 : 0;
+      buf.tps[i] = (pred_cls == 1 && y_i == 1) ? 1 : 0;
+      buf.tns[i] = (pred_cls == 0 && y_i == 0) ? 1 : 0;
+      buf.fps[i] = (pred_cls == 1 && y_i == 0) ? 1 : 0;
+      buf.fns[i] = (pred_cls == 0 && y_i == 1) ? 1 : 0;
+    }
+  } else {
+    // General K-fold / repeated K-fold
+    for (int f = 0; f < n_folds; f++) {
+      const auto& test_idx = fold_test_indices[f];
+      int n_test = test_idx.size();
+      int tr_pos = total_pos;
+      int tr_neg = total_neg;
+
+      // Subtract test observations from full counts
+      for (int ti = 0; ti < n_test; ti++) {
+        int idx = test_idx[ti];
+        double s_idx = buf.scores[idx];
+        if (y_ptr[idx] == 1) {
+          buf.full_pos_counts[s_idx]--;
+          tr_pos--;
+        } else {
+          buf.full_neg_counts[s_idx]--;
+          tr_neg--;
+        }
+      }
+
+      double fold_cutoff = find_cutoff_from_freqs(buf.full_pos_counts, buf.full_neg_counts, tr_pos, tr_neg);
+      buf.cutoffs_vec[f] = fold_cutoff;
+
+      // Restore full counts
+      for (int ti = 0; ti < n_test; ti++) {
+        int idx = test_idx[ti];
+        double s_idx = buf.scores[idx];
+        if (y_ptr[idx] == 1) {
+          buf.full_pos_counts[s_idx]++;
+        } else {
+          buf.full_neg_counts[s_idx]++;
+        }
+      }
+
+      // Test predictions for fold f
+      int fold_tp = 0, fold_tn = 0, fold_fp = 0, fold_fn = 0;
+      for (int ti = 0; ti < n_test; ti++) {
+        int idx = test_idx[ti];
+        int pred_cls = (buf.scores[idx] >= fold_cutoff) ? 1 : 0;
+        int y_idx = y_ptr[idx];
+        if (pred_cls == 1 && y_idx == 1) fold_tp++;
+        else if (pred_cls == 0 && y_idx == 0) fold_tn++;
+        else if (pred_cls == 1 && y_idx == 0) fold_fp++;
+        else if (pred_cls == 0 && y_idx == 1) fold_fn++;
+      }
+      buf.tps[f] = fold_tp;
+      buf.tns[f] = fold_tn;
+      buf.fps[f] = fold_fp;
+      buf.fns[f] = fold_fn;
+    }
+  }
+
+  // 4. Repeat aggregations
+  int folds_per_rep = n_folds / repeats;
+  for (int r = 0; r < repeats; r++) {
+    int r_start = r * folds_per_rep;
+    int r_end = (r + 1) * folds_per_rep;
+    int tot_tp = 0, tot_tn = 0, tot_fp = 0, tot_fn = 0;
+    for (int fi = r_start; fi < r_end; fi++) {
+      tot_tp += buf.tps[fi];
+      tot_tn += buf.tns[fi];
+      tot_fp += buf.fps[fi];
+      tot_fn += buf.fns[fi];
+    }
+    double sens = (tot_tp + tot_fn > 0) ? (double)tot_tp / (tot_tp + tot_fn) : NA_REAL;
+    double spec = (tot_tn + tot_fp > 0) ? (double)tot_tn / (tot_tn + tot_fp) : NA_REAL;
+    double ppv  = (tot_tp + tot_fp > 0) ? (double)tot_tp / (tot_tp + tot_fp) : NA_REAL;
+    double npv  = (tot_tn + tot_fn > 0) ? (double)tot_tn / (tot_tn + tot_fn) : NA_REAL;
+    double acc  = (tot_tp + tot_tn + tot_fp + tot_fn > 0) ? (double)(tot_tp + tot_tn) / (tot_tp + tot_tn + tot_fp + tot_fn) : NA_REAL;
+    double youd = (std::isnan(sens) || std::isnan(spec)) ? NA_REAL : (sens + spec - 1.0);
+
+    buf.rep_sens[r] = sens;
+    buf.rep_spec[r] = spec;
+    buf.rep_youd[r] = youd;
+    buf.rep_acc[r]  = acc;
+    buf.rep_ppv[r]  = ppv;
+    buf.rep_npv[r]  = npv;
+  }
+
+  auto mean_vec = [](const std::vector<double>& v) -> double {
+    double s = 0.0;
+    int count = 0;
+    for (double val : v) {
+      if (!std::isnan(val)) { s += val; count++; }
+    }
+    return count > 0 ? (s / count) : NA_REAL;
+  };
+
+  out_sensitivity = mean_vec(buf.rep_sens);
+  out_specificity = mean_vec(buf.rep_spec);
+  out_youden      = mean_vec(buf.rep_youd);
+  out_accuracy    = mean_vec(buf.rep_acc);
+  out_ppv         = mean_vec(buf.rep_ppv);
+  out_npv         = mean_vec(buf.rep_npv);
+
+  // Cutoff mean and SD
+  double c_sum = 0.0;
+  for (int f = 0; f < n_folds; f++) {
+    c_sum += buf.cutoffs_vec[f];
+  }
+  out_cutoff_mean = c_sum / n_folds;
+  if (n_folds > 1) {
+    double sq_diff = 0.0;
+    for (int f = 0; f < n_folds; f++) {
+      double diff = buf.cutoffs_vec[f] - out_cutoff_mean;
+      sq_diff += diff * diff;
+    }
+    out_cutoff_sd = std::sqrt(sq_diff / (n_folds - 1));
+  } else {
+    out_cutoff_sd = 0.0;
+  }
+
+  // Constraints check
+  if (sensitivity_min >= 0.0 && (std::isnan(out_sensitivity) || out_sensitivity < sensitivity_min)) {
+    out_valid = false;
+    return;
+  }
+  if (specificity_min >= 0.0 && (std::isnan(out_specificity) || out_specificity < specificity_min)) {
+    out_valid = false;
+    return;
+  }
+  out_valid = true;
+}
+
+struct CvComboEvaluatorWorker : public RcppParallel::Worker {
+  const double* x_ptr;
+  const int* y_ptr;
+  int n;
+  int n_cols;
+  const std::vector<std::vector<int>>& combo_indices_vec;
+  const std::vector<std::vector<int>>& fold_test_indices_vec;
+  int n_folds;
+  int repeats;
+  CutoffMethod cm;
+  double sensitivity_min;
+  double specificity_min;
+
+  RcppParallel::RVector<double> out_auc;
+  RcppParallel::RVector<double> out_sensitivity;
+  RcppParallel::RVector<double> out_specificity;
+  RcppParallel::RVector<double> out_youden;
+  RcppParallel::RVector<double> out_accuracy;
+  RcppParallel::RVector<double> out_ppv;
+  RcppParallel::RVector<double> out_npv;
+  RcppParallel::RVector<double> out_cutoff_mean;
+  RcppParallel::RVector<double> out_cutoff_sd;
+  RcppParallel::RVector<double> out_final_cutoff;
+  RcppParallel::RVector<int> out_valid;
+
+  CvComboEvaluatorWorker(
+    const double* x_ptr_,
+    const int* y_ptr_,
+    int n_,
+    int n_cols_,
+    const std::vector<std::vector<int>>& combo_indices_vec_,
+    const std::vector<std::vector<int>>& fold_test_indices_vec_,
+    int n_folds_,
+    int repeats_,
+    CutoffMethod cm_,
+    double sensitivity_min_,
+    double specificity_min_,
+    NumericVector out_auc_,
+    NumericVector out_sensitivity_,
+    NumericVector out_specificity_,
+    NumericVector out_youden_,
+    NumericVector out_accuracy_,
+    NumericVector out_ppv_,
+    NumericVector out_npv_,
+    NumericVector out_cutoff_mean_,
+    NumericVector out_cutoff_sd_,
+    NumericVector out_final_cutoff_,
+    IntegerVector out_valid_
+  ) : x_ptr(x_ptr_), y_ptr(y_ptr_), n(n_), n_cols(n_cols_),
+      combo_indices_vec(combo_indices_vec_),
+      fold_test_indices_vec(fold_test_indices_vec_),
+      n_folds(n_folds_), repeats(repeats_), cm(cm_),
+      sensitivity_min(sensitivity_min_), specificity_min(specificity_min_),
+      out_auc(out_auc_), out_sensitivity(out_sensitivity_),
+      out_specificity(out_specificity_), out_youden(out_youden_),
+      out_accuracy(out_accuracy_), out_ppv(out_ppv_), out_npv(out_npv_),
+      out_cutoff_mean(out_cutoff_mean_), out_cutoff_sd(out_cutoff_sd_),
+      out_final_cutoff(out_final_cutoff_), out_valid(out_valid_) {}
+
+  void operator()(std::size_t begin, std::size_t end) {
+    CvThreadBuffer buf(n, n_folds, repeats);
+    for (std::size_t i = begin; i < end; ++i) {
+      double auc_v, sens_v, spec_v, youd_v, acc_v, ppv_v, npv_v;
+      double cut_mean_v, cut_sd_v, final_cut_v;
+      bool valid_v;
+
+      evaluate_single_combo_cv_cpp(
+        combo_indices_vec[i],
+        x_ptr,
+        y_ptr,
+        n,
+        n_cols,
+        fold_test_indices_vec,
+        n_folds,
+        repeats,
+        cm,
+        sensitivity_min,
+        specificity_min,
+        buf,
+        auc_v,
+        sens_v,
+        spec_v,
+        youd_v,
+        acc_v,
+        ppv_v,
+        npv_v,
+        cut_mean_v,
+        cut_sd_v,
+        final_cut_v,
+        valid_v
+      );
+
+      out_auc[i] = auc_v;
+      out_sensitivity[i] = sens_v;
+      out_specificity[i] = spec_v;
+      out_youden[i] = youd_v;
+      out_accuracy[i] = acc_v;
+      out_ppv[i] = ppv_v;
+      out_npv[i] = npv_v;
+      out_cutoff_mean[i] = cut_mean_v;
+      out_cutoff_sd[i] = cut_sd_v;
+      out_final_cutoff[i] = final_cut_v;
+      out_valid[i] = valid_v ? 1 : 0;
+    }
+  }
+};
+
+// [[Rcpp::export]]
+DataFrame evaluate_combos_cv_cpp(
+    NumericMatrix x,
+    IntegerVector y,
+    List combo_indices,
+    List test_indices,
+    int n_folds,
+    int repeats,
+    std::string cutoff_method,
+    double sensitivity_min = -1.0,
+    double specificity_min = -1.0,
+    int num_threads = 1
+) {
+  int n = x.nrow();
+  int n_cols = x.ncol();
+  int n_combos = combo_indices.size();
+
+  CutoffMethod cm = (cutoff_method == "closest_topleft") ? CUTOFF_CLOSEST_TOPLEFT : CUTOFF_YOUDEN;
+
+  std::vector<std::vector<int>> combo_indices_vec(n_combos);
+  for (int i = 0; i < n_combos; i++) {
+    IntegerVector iv = combo_indices[i];
+    combo_indices_vec[i].assign(iv.begin(), iv.end());
+  }
+
+  std::vector<std::vector<int>> fold_test_indices_vec(n_folds);
+  for (int f = 0; f < n_folds; f++) {
+    IntegerVector iv = test_indices[f];
+    fold_test_indices_vec[f].assign(iv.begin(), iv.end());
+  }
+
+  NumericVector out_auc(n_combos);
+  NumericVector out_sensitivity(n_combos);
+  NumericVector out_specificity(n_combos);
+  NumericVector out_youden(n_combos);
+  NumericVector out_accuracy(n_combos);
+  NumericVector out_ppv(n_combos);
+  NumericVector out_npv(n_combos);
+  NumericVector out_cutoff_mean(n_combos);
+  NumericVector out_cutoff_sd(n_combos);
+  NumericVector out_final_cutoff(n_combos);
+  IntegerVector out_valid(n_combos);
+
+  const double* x_ptr = &x[0];
+  const int* y_ptr = &y[0];
+
+  CvComboEvaluatorWorker worker(
+    x_ptr,
+    y_ptr,
+    n,
+    n_cols,
+    combo_indices_vec,
+    fold_test_indices_vec,
+    n_folds,
+    repeats,
+    cm,
+    sensitivity_min,
+    specificity_min,
+    out_auc,
+    out_sensitivity,
+    out_specificity,
+    out_youden,
+    out_accuracy,
+    out_ppv,
+    out_npv,
+    out_cutoff_mean,
+    out_cutoff_sd,
+    out_final_cutoff,
+    out_valid
+  );
+
+  std::size_t grain_size = 64;
+  if (num_threads <= 1) {
+    worker(0, n_combos);
+  } else {
+    RcppParallel::parallelFor(0, (std::size_t)n_combos, worker, grain_size, num_threads);
+  }
+
+  return DataFrame::create(
+    _["cv_auc"]                 = out_auc,
+    _["cv_sensitivity"]         = out_sensitivity,
+    _["cv_specificity"]         = out_specificity,
+    _["cv_youden"]              = out_youden,
+    _["cv_accuracy"]            = out_accuracy,
+    _["cv_ppv"]                 = out_ppv,
+    _["cv_npv"]                 = out_npv,
+    _["cv_cutoff_mean"]         = out_cutoff_mean,
+    _["cv_cutoff_sd"]           = out_cutoff_sd,
+    _["final_full_data_cutoff"] = out_final_cutoff,
+    _["valid"]                  = out_valid
+  );
+}

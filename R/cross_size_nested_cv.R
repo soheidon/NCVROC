@@ -19,6 +19,7 @@
   ".resolve_n_workers",
   ".build_cv_folds",
   ".build_loocv_folds",
+  ".make_stratified_cv_folds",
   ".count_total_combos_cross_size",
   ".select_cross_size_auc_exact",
   ".create_initial_block_streams",
@@ -40,7 +41,8 @@
   "compute_auc_from_table",
   "add_performance_cis",
   "cv_sum_roc",
-  "loocv_sum_roc"
+  "loocv_sum_roc",
+  "evaluate_combos_cv_cpp"
 )
 
 #' Evaluate a single outer fold in cross-size nested cross-validation

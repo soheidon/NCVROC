@@ -1,6 +1,6 @@
 [English](README.md) | [日本語 README](README-ja.md) | [日本語詳細リファレンス](docs/reference-ja.md)
 
-# NCVROC 0.15.0
+# NCVROC 0.16.0
 
 **N**ested **C**ross-**V**alidation for Combinatorial **ROC**-based Selection of Item-set Scores
 
@@ -10,43 +10,36 @@ Assume higher sum scores indicate higher probability of a positive outcome. User
 
 ---
 
-## What's new in NCVROC 0.15.0
+## Unified Cross-Validation & Selection API Hierarchy
 
-- **Unified Cross-Validation & Model Selection Framework**:
-  - `cv_sum_roc()`: Evaluates a fixed unweighted sum score model using $K$-fold or repeated $K$-fold cross-validation.
-  - `loocv_sum_roc()`: Evaluates a fixed unweighted sum score model using leave-one-out cross-validation (LOOCV).
-  - `cross_size_cv()`: Performs ordinary (non-nested) cross-validation model selection across multiple candidate model sizes (e.g. 1 to 5 items).
-  - `cross_size_nested_cv()`: Performs cross-size nested cross-validation to assess the generalization performance of the model-selection procedure on independent outer test folds.
-  - `compare_cv_selection()`: Directly compares ordinary selected-model performance against nested selection-procedure performance to estimate empirical `selection_optimism = ordinary - nested`.
-- **Exact AUC Mathematical Identity Optimization**:
-  - Leverages the mathematical property of fixed unweighted sum scores: the pooled out-of-fold score vector equals the full-data score vector, hence pooled OOF AUC equals full-data apparent AUC, avoiding redundant fold-wise AUC recomputation during combinatorial model selection.
-- **Universal Logical Block Streams & External Merge Architecture**:
-  - Guaranteed bounded memory traversal (proportional to block size) for constrained AUC searches (`sensitivity_min` / `specificity_min`).
-- **Comprehensive Parallel Routing**:
-  - Full support for `none`, `threads` (C++ multi-threading), `chunks` (PSOCK clusters), `outer` (outer folds), and `hybrid` (outer PSOCK $\times$ inner threads).
+NCVROC provides a structured hierarchy of functions covering fixed-model evaluation, within-size selection, cross-size selection, procedure validation, and optimism estimation:
+
+| Analysis Goal | $K$-Fold CV | Leave-One-Out CV (LOOCV) |
+| :--- | :--- | :--- |
+| **Fixed model evaluation** (no selection) | `cv_sum_roc()` | `loocv_sum_roc()` |
+| **Within-size model selection** (single size $K$) | `cv_select_sum_roc()` | `loocv_select_sum_roc()` |
+| **Cross-size ordinary model selection** (multiple sizes) | `cross_size_cv()` | `cross_size_loocv()` |
+| **Selection-procedure validation** (nested CV) | `cross_size_nested_cv()` | — *(Not supported)* |
+| **Ordinary vs. Nested comparison** (optimism estimation) | `compare_cv_selection()` | *(Ordinary LOOCV vs. Nested $K$-fold)* |
 
 ---
 
-## What's new in NCVROC 0.14.0
+## What's new in NCVROC 0.16.0
 
-- **C++ Shared-Memory Multi-Threading (`parallel = "threads"`)**: Evaluates combinatorial candidate search spaces in parallel directly within the main R process using native C++ threads via `RcppParallel`.
-- **Zero Socket Startup Overhead**: Avoids socket process initialization, IPC serialization, and process-level data duplication.
-- **Deterministic Exact Results**: Produces identical results and rankings to single-threaded serial execution across all evaluation metrics and cutoff selection methods.
-- **Explicit Hybrid Concurrency Budgeting**: Nested CV can safely combine outer PSOCK workers with C++ threads while capping total concurrency to available CPU and CRAN limits.
-- **Cross-Platform Portability**: Built on `RcppParallel` and verified with clean compilation and full test suites under Windows.
-
----
-
-## What's new in NCVROC 0.12.0
-
-- **Chunk-Level Parallelization (`parallel = "chunks"`)**: Evaluate massive combinatorial candidate search spaces ($O(\binom{M}{K})$ candidate models) across multiple CPU socket workers in parallel.
-- **Clear Separation of Parallelism Levels**: Distinct parallel modes for `"outer"` (cross-validation folds) and `"chunks"` (combinatorial candidate chunks), preventing nested oversubscription.
-- **High-Performance Chunk-Based Streaming Search Engine**: Generates combinations on-the-fly via C++ mathematical unranking (`evaluate_combos_cpp_chunk()`) and performs streaming local Top-N candidate reduction, bypassing large R list allocations in memory.
-- **Persistent PSOCK Cluster Reuse**: In `nested_sum_roc(..., parallel = "chunks")`, a single PSOCK cluster is initialized once and reused across all outer cross-validation folds, eliminating repeated cluster startup/teardown overhead.
-- **Atomic RDS Writing & Robust Cache Validation**: Chunks are saved to temporary files and atomically renamed within the same directory; invalid or stale files are safely ignored.
-- **Exact Acceleration (No Approximation)**: Evaluates the full exhaustive combination space without candidate screening or heuristic pruning.
-- **Deterministic Exact Tie-Breaking**: Enforces 1-based `.global_combo_index` tracking to guarantee exact candidate ordering and numerical equivalence with serial execution even across chunk boundaries.
-- **100% Backward Compatibility**: `parallel = TRUE` resolves contextually to `"outer"` in nested CV (`ncvroc`, `nested_sum_roc`) and `"chunks"` in exhaustive search (`roc_bruteforce`, `exhaustive_sum_roc`); `parallel = FALSE` remains the default.
+- **Generalized Ordinary Cross-Validation Engine**:
+  - Supports arbitrary $2 \le K < N$ folds for $K$-fold cross-validation.
+  - Strict input validation: $K \ge N$ is rejected with an informative error directing users to `cv_method = "loocv"`.
+  - Dedicated Leave-One-Out Cross-Validation (LOOCV) engine (`loocv_sum_roc()`, `loocv_select_sum_roc()`, `cross_size_loocv()`) with single-repeat guarantee (`repeats = 1`).
+- **Dedicated Within-Size Model Selection Wrappers**:
+  - `cv_select_sum_roc()` and `loocv_select_sum_roc()` provide focused interfaces to select the optimal combination for a single specified model size (`item_count`).
+- **High-Performance Cutoff-Dependent Search Engine**:
+  - Pure C++ multi-threaded evaluation engine (`evaluate_combos_cv_cpp()`) powered by `RcppParallel`.
+  - Frequency table exact update: evaluates held-out folds by subtracting test frequencies from the full-data frequency table without full table reconstruction.
+  - Native support for both `parallel = "threads"` and `parallel = "chunks"` with zero silent serial fallback.
+- **Statistically Rigorous Repeated $K$-Fold Aggregation**:
+  - Each repeat $r \in \{1,\dots,R\}$ evaluates all $N$ held-out predictions independently. Summary metrics report the arithmetic mean and sample standard deviation across the $R$ repeat-level metrics without pooling $N \times R$ observations into a single artificial sample.
+- **Fixed Sum-Score AUC Mathematical Identity**:
+  - For a fixed unweighted sum-score candidate, the raw score has no fitted parameters. Therefore its pooled out-of-fold score vector is identical to the full-data score vector, and the corresponding AUC is identical to the apparent full-data AUC (theoretical repeat $\text{SD} = 0$).
 
 ---
 
@@ -70,13 +63,13 @@ remotes::install_github("soheidon/NCVROC")
 
 ---
 
-## Validation Workflows (v0.15.0)
+## Validation Workflows (v0.16.0)
 
-NCVROC provides dedicated functions for validating fixed sum-score models, performing cross-size model selection, and rigorously estimating model-selection optimism via nested cross-validation:
+NCVROC provides dedicated functions for validating fixed sum-score models, performing within-size and cross-size model selection, and rigorously estimating model-selection optimism via nested cross-validation:
 
-### A. Fixed-Model Cross-Validation (`cv_sum_roc`)
+### A. Fixed-Model Cross-Validation (`cv_sum_roc` / `loocv_sum_roc`)
 
-Evaluate an unweighted sum score of a predetermined item set using $K$-fold or repeated $K$-fold cross-validation:
+Evaluate an unweighted sum score of a predetermined item set using $K$-fold or leave-one-out cross-validation:
 
 ```r
 library(NCVROC)
@@ -87,19 +80,13 @@ cv_fit <- cv_sum_roc(
   outcome       = y,
   items         = c("Q1", "Q2", "Q3"),
   folds         = 5,
-  repeats       = 1,
+  repeats       = 3,
   cutoff_method = "youden",
   seed          = 42
 )
 print(cv_fit)
-```
 
-### B. Fixed-Model Leave-One-Out Cross-Validation (`loocv_sum_roc`)
-
-Evaluate a fixed sum score model with deterministic leave-one-out cross-validation:
-
-```r
-# Exact LOOCV for fixed scale
+# Deterministic LOOCV for fixed scale
 loo_fit <- loocv_sum_roc(
   data          = analysis_dat,
   outcome       = y,
@@ -109,22 +96,50 @@ loo_fit <- loocv_sum_roc(
 print(loo_fit)
 ```
 
-### C. Cross-Size Ordinary Model Selection (`cross_size_cv`)
+### B. Within-Size Model Selection (`cv_select_sum_roc` / `loocv_select_sum_roc`)
+
+Search all combinations of a single specified model size (e.g. all 3-item models) and select the single best model:
+
+```r
+# Select the best 3-item model among all combinations via 5-fold CV
+best_3item <- cv_select_sum_roc(
+  data             = analysis_dat,
+  outcome          = y,
+  items            = paste0("Q", 1:10),
+  item_count       = 3,
+  selection_metric = "youden",
+  folds            = 5,
+  seed             = 42
+)
+print(best_3item)
+```
+
+### C. Cross-Size Ordinary Model Selection (`cross_size_cv` / `cross_size_loocv`)
 
 Search the full combinatorial model space across multiple candidate sizes (e.g. 1 to 4 items) and select the single best model via ordinary (non-nested) cross-validation:
 
 ```r
-# Select the best model across 1 to 4 items
+# Select the best model across 1 to 4 items via 5-fold CV
 ord_selection <- cross_size_cv(
   data             = analysis_dat,
   outcome          = y,
-  items            = Q1:Q10,
+  items            = paste0("Q", 1:10),
   model_sizes      = 1:4,
-  selection_metric = "auc",
+  selection_metric = "youden",
   folds            = 5,
   seed             = 42
 )
 print(ord_selection)
+
+# Select the best model across 1 to 3 items via LOOCV
+loo_selection <- cross_size_loocv(
+  data             = analysis_dat,
+  outcome          = y,
+  items            = paste0("Q", 1:10),
+  model_sizes      = 1:3,
+  selection_metric = "youden"
+)
+print(loo_selection)
 ```
 
 ### D. Cross-Size Nested Cross-Validation (`cross_size_nested_cv`)
@@ -136,7 +151,7 @@ Assess the out-of-sample generalization performance of the entire model-selectio
 nested_val <- cross_size_nested_cv(
   data             = analysis_dat,
   outcome          = y,
-  items            = Q1:Q10,
+  items            = paste0("Q", 1:10),
   model_sizes      = 1:4,
   selection_metric = "auc",
   outer_folds      = 5,
@@ -157,7 +172,7 @@ Compare the apparent / ordinary cross-validation performance of the selected mod
 comp <- compare_cv_selection(
   data             = analysis_dat,
   outcome          = y,
-  items            = Q1:Q10,
+  items            = paste0("Q", 1:10),
   model_sizes      = 1:4,
   selection_metric = "auc",
   folds            = 5,

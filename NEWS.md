@@ -1,3 +1,44 @@
+# NCVROC 0.16.0
+
+## New cross-validation APIs
+
+- **Explicit ordinary K-fold and LOOCV model-selection APIs**:
+  - `cross_size_loocv()`: Dedicated wrapper for cross-size model selection using Leave-One-Out Cross-Validation (LOOCV).
+  - `cv_select_sum_roc()`: Dedicated wrapper for within-size combinatorial model selection using $K$-fold cross-validation.
+  - `loocv_select_sum_roc()`: Dedicated wrapper for within-size combinatorial model selection using LOOCV.
+
+## Generalized cross-validation
+
+- **Arbitrary $K$-fold and deterministic LOOCV**:
+  - Generalized $K$-fold CV engine to support arbitrary $2 \le K < N$ folds.
+  - Strict input validation: $K \ge N$ is rejected with an informative error directing users to `cv_method = "loocv"`.
+  - Formalized LOOCV execution with single-repeat enforcement (`repeats = 1`), minority class guard ($\ge 2$ positive and negative cases), and fold-level AUC handling.
+  - Full support for arbitrary and discontinuous `model_sizes` (e.g. `c(1, 3, 5)`).
+
+## Exact cutoff-dependent search & C++ acceleration
+
+- **C++ accelerated CV evaluator (`evaluate_combos_cv_cpp`)**:
+  - Pure C++ multi-threaded evaluation engine powered by `RcppParallel::parallelFor` for cutoff-dependent model selection (`selection_metric = "youden"`, `"accuracy"`, `"sensitivity"`, `"specificity"`).
+  - Bounded-memory design combining combinatorial block unranking with thread-local frequency buffers and exact frequency table updates.
+  - Full support for both `parallel = "threads"` and `parallel = "chunks"` with zero silent serial fallback.
+
+## Statistical semantics & aggregation policies
+
+- **Repeat-level metric aggregation (No $N \times R$ pooling)**:
+  - In repeated $K$-fold CV, performance metrics are computed independently on each repeat's $N$ out-of-fold predictions.
+  - Summary metrics report the arithmetic mean and sample standard deviation across the $R$ repeat-level metrics; pooling $N \times R$ observations into a single artificial sample is strictly avoided.
+  - S3 result objects include `$repeat_metrics` (per-repeat table) and `$cv_performance` (mean and SD summary).
+- **Fixed sum-score AUC mathematical identity**:
+  - For a fixed unweighted sum-score candidate, the raw score has no fitted parameters. Therefore its pooled out-of-fold score vector is identical to the full-data score vector, and the corresponding AUC is identical to the apparent full-data AUC (theoretical repeat $\text{SD} = 0$).
+
+## Validation and correctness
+
+- **Deterministic candidate ranking**:
+  - Strict tie-breaking chain: (1) primary selection metric, (2) `prefer_fewer_items = TRUE` (fewer items), (3) `.global_combo_index` (deterministic combination order).
+  - Mathematical exactness verified across `none`, `threads`, and `chunks` backends against independent brute-force reference loops.
+
+---
+
 # NCVROC 0.15.0
 
 ## New features

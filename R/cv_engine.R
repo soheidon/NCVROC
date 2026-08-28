@@ -26,6 +26,60 @@
   folds
 }
 
+#' Build stratified cross-validation folds
+#'
+#' Partitions binary outcome vector y into k stratified folds without reducing k.
+#'
+#' @param y Binary outcome vector (0/1).
+#' @param k Integer, number of folds (2 <= k < length(y)).
+#' @param repeats Integer, number of repeats.
+#' @param seed Integer or NULL, seed for reproducibility.
+#' @return Named list of test indices.
+#' @keywords internal
+#' @noRd
+.make_stratified_cv_folds <- function(y, k, repeats = 1L, seed = NULL) {
+  n <- length(y)
+  y_vals <- unique(y)
+  if (length(y_vals) != 2L) {
+    stop("`y` must contain exactly two unique classes.", call. = FALSE)
+  }
+  idx0 <- which(y == y_vals[1])
+  idx1 <- which(y == y_vals[2])
+  n0 <- length(idx0)
+  n1 <- length(idx1)
+
+  all_folds <- vector("list", k * repeats)
+  idx <- 1L
+
+  split_class_into_k <- function(shuffled_idx, n_total, k_folds, offset = 0L) {
+    if (n_total == 0L) {
+      return(replicate(k_folds, integer(0), simplify = FALSE))
+    }
+    fold_ids <- ((seq_len(n_total) - 1L + offset) %% k_folds) + 1L
+    lapply(seq_len(k_folds), function(f) shuffled_idx[fold_ids == f])
+  }
+
+  for (r in seq_len(repeats)) {
+    if (!is.null(seed)) {
+      set.seed(seed + r - 1L)
+    }
+    idx0_shuffled <- sample(idx0)
+    idx1_shuffled <- sample(idx1)
+
+    folds0 <- split_class_into_k(idx0_shuffled, n0, k, offset = 0L)
+    folds1 <- split_class_into_k(idx1_shuffled, n1, k, offset = n0 %% k)
+
+    for (f in seq_len(k)) {
+      name <- paste0("Rep", r, "_Fold", f)
+      all_folds[[idx]] <- c(folds0[[f]], folds1[[f]])
+      names(all_folds)[idx] <- name
+      idx <- idx + 1L
+    }
+  }
+
+  all_folds
+}
+
 #' Build cross-validation fold indices
 #'
 #' Unified builder for k-fold and LOOCV partitions.
@@ -46,35 +100,40 @@
                             stratified = TRUE,
                             seed = NULL) {
   cv_method <- match.arg(cv_method)
+  n <- length(y)
 
   if (cv_method == "loocv") {
     if (!is.null(repeats) && repeats > 1) {
-      stop("LOOCV does not support `repeats > 1` because the leave-one-out partition is deterministic and unique.",
+      stop("LOOCV is deterministic and unique; repeats > 1 is not supported.",
            call. = FALSE)
     }
-    return(.build_loocv_folds(length(y)))
+    n_pos <- sum(y == 1L)
+    n_neg <- sum(y == 0L)
+    if (min(n_pos, n_neg) < 2L) {
+      stop("LOOCV requires at least 2 positive and 2 negative cases so each training fold contains both classes for cutoff optimization.", call. = FALSE)
+    }
+    return(.build_loocv_folds(n))
   }
 
   # k-fold CV
-  if (!is.numeric(folds) || length(folds) != 1 || folds < 2 || folds != as.integer(folds)) {
-    stop("`folds` must be an integer >= 2.", call. = FALSE)
+  if (is.null(folds) || !is.numeric(folds) || length(folds) != 1L || is.na(folds) || !is.finite(folds) || folds != as.integer(folds)) {
+    stop("`folds` must be an integer-valued scalar.", call. = FALSE)
   }
   folds <- as.integer(folds)
 
-  if (!is.numeric(repeats) || length(repeats) != 1 || repeats < 1 || repeats != as.integer(repeats)) {
+  if (folds < 2L || folds >= n) {
+    stop("Under cv_method = 'kfold', folds must satisfy 2 <= folds < n. Use cv_method = 'loocv' for leave-one-out cross-validation.", call. = FALSE)
+  }
+
+  if (!is.numeric(repeats) || length(repeats) != 1 || is.na(repeats) || repeats < 1 || repeats != as.integer(repeats)) {
     stop("`repeats` must be a positive integer.", call. = FALSE)
   }
   repeats <- as.integer(repeats)
 
-  if (stratified) {
-    make_stratified_folds(y = y, k = folds, repeats = repeats, seed = seed)
+  res_folds <- if (stratified) {
+    .make_stratified_cv_folds(y = y, k = folds, repeats = repeats, seed = seed)
   } else {
     # Non-stratified k-fold splits
-    n <- length(y)
-    if (folds > n) {
-      warning("`folds` (", folds, ") exceeds sample size (", n, "). Reducing `folds` to ", n, ".", call. = FALSE)
-      folds <- n
-    }
     all_folds <- vector("list", folds * repeats)
     idx <- 1L
 
@@ -104,6 +163,17 @@
     }
     all_folds
   }
+
+  # Validate that every training fold contains both positive and negative cases
+  for (f_name in names(res_folds)) {
+    test_idx <- res_folds[[f_name]]
+    train_y <- y[-test_idx]
+    if (sum(train_y == 1L) == 0L || sum(train_y == 0L) == 0L) {
+      stop(sprintf("Training fold '%s' contains only one class. Cutoff optimization is impossible. Reduce `folds` or ensure sufficient cases per class.", f_name), call. = FALSE)
+    }
+  }
+
+  res_folds
 }
 
 #' Run fixed-model cross-validation
@@ -366,6 +436,10 @@ cv_sum_roc <- function(data,
            call. = FALSE)
     }
     repeats <- 1L
+  }
+
+  if (identical(positive_label, negative_label)) {
+    stop("`positive_label` and `negative_label` must be distinct.", call. = FALSE)
   }
 
   # ---- Prepare Data ----

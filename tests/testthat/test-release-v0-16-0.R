@@ -1,30 +1,33 @@
-# test-release-v0-15-0.R — Release sanity and integrity tests for v0.15.0
+# test-release-v0-16-0.R — Release sanity and integrity tests for v0.16.0
 
-test_that("Package version is 0.15.0 in DESCRIPTION and NEWS", {
+test_that("Package version is 0.16.0 in DESCRIPTION and NEWS", {
   desc_ver <- utils::packageVersion("NCVROC")
-  expect_equal(as.character(desc_ver), "0.15.0")
+  expect_equal(as.character(desc_ver), "0.16.0")
 
   news_file <- system.file("NEWS.md", package = "NCVROC")
   if (file.exists(news_file)) {
     news_lines <- readLines(news_file, n = 5)
-    expect_true(any(grepl("NCVROC 0.15.0", news_lines)))
+    expect_true(any(grepl("NCVROC 0.16.0", news_lines)))
   }
 })
 
-test_that("NAMESPACE exports only intended public API functions", {
+test_that("NAMESPACE exports all intended v0.16.0 public API functions", {
   ns_exports <- getNamespaceExports("NCVROC")
 
-  expected_v15_api <- c(
+  expected_v16_api <- c(
     "cv_sum_roc",
     "loocv_sum_roc",
+    "cv_select_sum_roc",
+    "loocv_select_sum_roc",
     "cross_size_cv",
+    "cross_size_loocv",
     "cross_size_nested_cv",
     "compare_cv_selection"
   )
-  expect_true(all(expected_v15_api %in% ns_exports))
+  expect_true(all(expected_v16_api %in% ns_exports))
 
   # Ensure no internal helpers leaked into exports
-  internal_patterns <- c("^\\.", "block_stream", "eval_single_combo", "resolve_model_sizes")
+  internal_patterns <- c("^\\.", "block_stream", "eval_single_combo", "resolve_model_sizes", "evaluate_combos_cv_cpp")
   for (pat in internal_patterns) {
     leaked <- grep(pat, ns_exports, value = TRUE)
     expect_length(leaked, 0L)
@@ -41,24 +44,30 @@ test_that("README validation workflow examples run without error (smoke test)", 
     Q4 = sample(0:2, 40, replace = TRUE)
   )
 
-  # Example A: cv_sum_roc
+  # Example A: cv_sum_roc & loocv_sum_roc
   cv_fit <- cv_sum_roc(analysis_dat, y, c("Q1", "Q2", "Q3"), folds = 3, repeats = 1, seed = 42)
   expect_s3_class(cv_fit, "cv_sum_roc_result")
 
-  # Example B: loocv_sum_roc
   loo_fit <- loocv_sum_roc(analysis_dat, y, c("Q1", "Q2", "Q3"))
   expect_s3_class(loo_fit, "cv_sum_roc_result")
 
-  # Example C: cross_size_cv
-  ord_fit <- cross_size_cv(analysis_dat, y, Q1:Q4, model_sizes = 1:2, folds = 3, seed = 42)
+  # Example B: cv_select_sum_roc
+  sel_fit <- cv_select_sum_roc(analysis_dat, y, paste0("Q", 1:4), item_count = 2, folds = 3, seed = 42)
+  expect_s3_class(sel_fit, "cv_select_sum_roc_result")
+
+  # Example C: cross_size_cv & cross_size_loocv
+  ord_fit <- cross_size_cv(analysis_dat, y, paste0("Q", 1:4), model_sizes = 1:2, folds = 3, seed = 42)
   expect_s3_class(ord_fit, "cross_size_cv_result")
 
+  ord_loo <- cross_size_loocv(analysis_dat, y, paste0("Q", 1:4), model_sizes = 1:2)
+  expect_s3_class(ord_loo, "cross_size_cv_result")
+
   # Example D: cross_size_nested_cv
-  nest_fit <- cross_size_nested_cv(analysis_dat, y, Q1:Q4, model_sizes = 1:2, outer_folds = 2, inner_folds = 2, outer_repeats = 1, seed = 42, progress = FALSE)
+  nest_fit <- cross_size_nested_cv(analysis_dat, y, paste0("Q", 1:4), model_sizes = 1:2, outer_folds = 2, inner_folds = 2, outer_repeats = 1, seed = 42, progress = FALSE)
   expect_s3_class(nest_fit, "cross_size_nested_cv_result")
 
   # Example E: compare_cv_selection
-  comp_fit <- compare_cv_selection(analysis_dat, y, Q1:Q4, model_sizes = 1:2, folds = 2, outer_folds = 2, inner_folds = 2, outer_repeats = 1, seed = 42, progress = FALSE)
+  comp_fit <- compare_cv_selection(analysis_dat, y, paste0("Q", 1:4), model_sizes = 1:2, folds = 2, outer_folds = 2, inner_folds = 2, outer_repeats = 1, seed = 42, progress = FALSE)
   expect_s3_class(comp_fit, "compare_cv_selection_result")
 })
 

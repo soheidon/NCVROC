@@ -532,6 +532,8 @@
   ".apply_model_to_test",
   ".count_total_combos",
   ".parse_itemset_string",
+  ".resolve_parallel_mode",
+  ".resolve_n_workers",
   "exhaustive_sum_roc",
   "validate_inputs",
   "make_stratified_folds",

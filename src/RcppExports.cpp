@@ -60,11 +60,32 @@ BEGIN_RCPP
     return rcpp_result_gen;
 END_RCPP
 }
+// evaluate_combos_cv_cpp
+DataFrame evaluate_combos_cv_cpp(NumericMatrix x, IntegerVector y, List combo_indices, List test_indices, int n_folds, int repeats, std::string cutoff_method, double sensitivity_min, double specificity_min, int num_threads);
+RcppExport SEXP _NCVROC_evaluate_combos_cv_cpp(SEXP xSEXP, SEXP ySEXP, SEXP combo_indicesSEXP, SEXP test_indicesSEXP, SEXP n_foldsSEXP, SEXP repeatsSEXP, SEXP cutoff_methodSEXP, SEXP sensitivity_minSEXP, SEXP specificity_minSEXP, SEXP num_threadsSEXP) {
+BEGIN_RCPP
+    Rcpp::RObject rcpp_result_gen;
+    Rcpp::RNGScope rcpp_rngScope_gen;
+    Rcpp::traits::input_parameter< NumericMatrix >::type x(xSEXP);
+    Rcpp::traits::input_parameter< IntegerVector >::type y(ySEXP);
+    Rcpp::traits::input_parameter< List >::type combo_indices(combo_indicesSEXP);
+    Rcpp::traits::input_parameter< List >::type test_indices(test_indicesSEXP);
+    Rcpp::traits::input_parameter< int >::type n_folds(n_foldsSEXP);
+    Rcpp::traits::input_parameter< int >::type repeats(repeatsSEXP);
+    Rcpp::traits::input_parameter< std::string >::type cutoff_method(cutoff_methodSEXP);
+    Rcpp::traits::input_parameter< double >::type sensitivity_min(sensitivity_minSEXP);
+    Rcpp::traits::input_parameter< double >::type specificity_min(specificity_minSEXP);
+    Rcpp::traits::input_parameter< int >::type num_threads(num_threadsSEXP);
+    rcpp_result_gen = Rcpp::wrap(evaluate_combos_cv_cpp(x, y, combo_indices, test_indices, n_folds, repeats, cutoff_method, sensitivity_min, specificity_min, num_threads));
+    return rcpp_result_gen;
+END_RCPP
+}
 
 static const R_CallMethodDef CallEntries[] = {
     {"_NCVROC_evaluate_combos_cpp", (DL_FUNC) &_NCVROC_evaluate_combos_cpp, 4},
     {"_NCVROC_evaluate_combos_cpp_chunk", (DL_FUNC) &_NCVROC_evaluate_combos_cpp_chunk, 7},
     {"_NCVROC_evaluate_combos_cpp_chunk_parallel", (DL_FUNC) &_NCVROC_evaluate_combos_cpp_chunk_parallel, 9},
+    {"_NCVROC_evaluate_combos_cv_cpp", (DL_FUNC) &_NCVROC_evaluate_combos_cv_cpp, 10},
     {NULL, NULL, 0}
 };
 
