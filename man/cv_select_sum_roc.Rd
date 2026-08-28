@@ -74,7 +74,10 @@ character vector, or numeric positions).}
 
 \item{seed}{Integer, random seed for reproducible fold generation.}
 
-\item{progress}{Logical, show progress bar (default `interactive()`).}
+\item{progress}{Logical, show progress bar and approximate remaining-time
+estimates (default \code{interactive()}). For serial evaluation, displays a
+progress bar and periodic approximate ETA. For parallel execution, reports
+execution start and completion.}
 }
 \value{
 An S3 object of class \code{c("cv_select_sum_roc_result", "cross_size_cv_result")}.

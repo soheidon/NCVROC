@@ -557,7 +557,8 @@
                                          specificity_min,
                                          cv_folds,
                                          repeats,
-                                         y) {
+                                         y,
+                                         progress = FALSE) {
   n_items_total <- length(item_names)
   has_constraints <- (!is.null(sensitivity_min) || !is.null(specificity_min))
 
@@ -567,6 +568,9 @@
   if (!has_constraints) {
     candidate_list <- vector("list", length(sizes))
     cum_offset <- 0L
+
+    prg <- .progress_make(length(sizes), enabled = progress)
+    on.exit(prg$close(), add = TRUE)
 
     for (si in seq_along(sizes)) {
       s <- sizes[si]
@@ -589,7 +593,11 @@
       res_s$.global_combo_index <- cum_offset + idx_s
       cum_offset <- cum_offset + choose(n_items_total, s)
       candidate_list[[si]] <- res_s
+
+      prg$tick()
+      prg$eta_message()
     }
+    prg$finish()
 
     merged_top <- do.call(rbind, candidate_list)
     ranked_top <- .order_and_rank_candidates(
@@ -987,7 +995,10 @@
 #' @param ci Logical, compute confidence intervals for full-data apparent metrics of final model (default `FALSE`).
 #' @param conf_level Numeric, confidence level (default 0.95).
 #' @param seed Integer, random seed for reproducible fold generation.
-#' @param progress Logical, show progress bar (default `interactive()`).
+#' @param progress Logical, show progress bar and approximate remaining-time
+#'   estimates (default \code{interactive()}). For serial evaluation, displays a
+#'   progress bar and periodic approximate ETA. For parallel execution, reports
+#'   execution start and completion.
 #'
 #' @return An S3 object of class `"cross_size_cv_result"`, containing:
 #' \describe{
@@ -1235,7 +1246,8 @@ cross_size_cv <- function(data,
       specificity_min    = specificity_min,
       cv_folds           = cv_folds,
       repeats            = repeats,
-      y                  = y
+      y                  = y,
+      progress           = progress
     )
 
     best_candidate <- auc_res$best_candidate
@@ -1487,7 +1499,13 @@ cross_size_cv <- function(data,
       local_buf
     }
 
+    if (isTRUE(progress)) {
+      message("Evaluating blocks in parallel...")
+    }
     block_results <- parallel::parLapply(cl, blocks, eval_block_psock)
+    if (isTRUE(progress)) {
+      message("All blocks complete.")
+    }
     for (b_res in block_results) {
       if (!is.null(b_res) && nrow(b_res) > 0L) {
         for (r_i in seq_len(nrow(b_res))) {
@@ -1521,13 +1539,10 @@ cross_size_cv <- function(data,
       cpp_threads <- 1L
     }
 
-    if (progress) {
-      pb <- utils::txtProgressBar(min = 0, max = n_blocks, style = 3)
-      on.exit(close(pb), add = TRUE)
-    }
+    prg <- .progress_make(n_blocks, enabled = progress)
+    on.exit(prg$close(), add = TRUE)
 
     for (b in seq_len(n_blocks)) {
-      if (progress) utils::setTxtProgressBar(pb, b)
       block_items <- blocks[[b]]
       indices_list <- lapply(block_items, function(x) x$items_0based)
       res_cpp <- evaluate_combos_cv_cpp(
@@ -1571,7 +1586,10 @@ cross_size_cv <- function(data,
           )
         }
       }
+      prg$tick()
+      prg$eta_message()
     }
+    prg$finish()
   }
 
   if (is.null(running_buffer) || nrow(running_buffer) == 0L) {
@@ -1887,7 +1905,10 @@ cross_size_loocv <- function(data,
 #' @param ci Logical, compute confidence intervals for full-data apparent metrics of final model (default `FALSE`).
 #' @param conf_level Numeric, confidence level (default 0.95).
 #' @param seed Integer, random seed for reproducible fold generation.
-#' @param progress Logical, show progress bar (default `interactive()`).
+#' @param progress Logical, show progress bar and approximate remaining-time
+#'   estimates (default \code{interactive()}). For serial evaluation, displays a
+#'   progress bar and periodic approximate ETA. For parallel execution, reports
+#'   execution start and completion.
 #'
 #' @return An S3 object of class \code{c("cv_select_sum_roc_result", "cross_size_cv_result")}.
 #'

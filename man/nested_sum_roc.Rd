@@ -109,7 +109,10 @@ execution configuration is authoritative), `"auto"` (benchmarks legal
 nested backends only when predicted serial runtime exceeds threshold), or
 `"always"` (always benchmarks legal backends for non-degenerate workloads).}
 
-\item{progress}{Logical, show progress bars? Default `TRUE`.}
+\item{progress}{Logical, show progress bars and approximate remaining-time
+estimates (default \code{TRUE}). For serial outer folds, displays a
+progress bar and periodic approximate ETA. For parallel outer folds, reports
+execution start and completion.}
 
 \item{verbose}{Logical, print progress messages? Default `TRUE`.}
 

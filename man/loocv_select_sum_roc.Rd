@@ -62,7 +62,10 @@ character vector, or numeric positions).}
 
 \item{conf_level}{Numeric, confidence level (default 0.95).}
 
-\item{progress}{Logical, show progress bar (default `interactive()`).}
+\item{progress}{Logical, show progress bar and approximate remaining-time
+estimates (default \code{interactive()}). For serial evaluation, displays a
+progress bar and periodic approximate ETA. For parallel execution, reports
+execution start and completion.}
 }
 \value{
 An S3 object of class \code{c("loocv_select_sum_roc_result", "cv_select_sum_roc_result", "cross_size_cv_result")}.

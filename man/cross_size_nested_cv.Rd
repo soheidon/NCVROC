@@ -99,7 +99,10 @@ nested backends only when predicted serial runtime exceeds threshold), or
 
 \item{seed}{Integer, random seed for reproducible fold generation.}
 
-\item{progress}{Logical, show progress bar (default `interactive()`).}
+\item{progress}{Logical, show progress bar and approximate remaining-time
+estimates (default \code{interactive()}). For serial outer folds, displays a
+progress bar and periodic approximate ETA. For parallel execution, reports
+execution start and completion.}
 
 \item{verbose}{Logical, print progress messages (default `FALSE`).}
 

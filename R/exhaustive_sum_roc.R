@@ -384,7 +384,10 @@
 #' @param n_workers Integer, number of worker processes (for `"chunks"`) or
 #'   threads (for `"threads"`), or `NULL` (default) for automatic detection.
 #'   Ignored when `parallel = FALSE` or `"none"`.
-#' @param progress Logical, show progress bar? Default `TRUE`.
+#' @param progress Logical, show progress bar and approximate remaining-time
+#'   estimates (default \code{TRUE}). For serial evaluation, displays a progress
+#'   bar and periodic approximate ETA. For parallel chunks or multi-threaded C++,
+#'   reports execution start and completion.
 #' @param chunk_start Internal: zero-based global combination index to start
 #'   from. When set together with `chunk_size`, only that range is evaluated.
 #' @param chunk_size Combinations per chunk (default 200000 when chunking).
@@ -569,6 +572,10 @@ exhaustive_sum_roc <- function(data,
     total_combos <- .count_total_combos(n_items, min_items, max_items)
     x_mat <- as.matrix(x[, items, drop = FALSE])
 
+    if (isTRUE(progress)) {
+      message("Evaluating ", total_combos, " combination(s)...")
+    }
+
     results <- .evaluate_chunk_serial(
       x_mat         = x_mat,
       y             = y,
@@ -585,6 +592,10 @@ exhaustive_sum_roc <- function(data,
     )
     results$.global_combo_index <- NULL
 
+    if (isTRUE(progress)) {
+      message("Evaluation complete.")
+    }
+
     results <- .order_and_rank_candidates(results, rank_by, prefer_fewer_items)
 
     if (!is.null(top_n)) {
@@ -594,6 +605,9 @@ exhaustive_sum_roc <- function(data,
   } else if (execution_parallel_mode == "chunks") {
     # --- Parallel Chunk Execution Path ---
     eff_chunk_size <- if (!is.null(chunk_size) && chunk_size > 0) as.integer(chunk_size) else 200000L
+    if (isTRUE(progress)) {
+      message("Evaluating chunks in parallel...")
+    }
     results <- .parallel_chunk_exhaustive(
       x                  = x,
       y                  = y,
@@ -612,6 +626,9 @@ exhaustive_sum_roc <- function(data,
       chunk_dir          = NULL,
       cl                 = NULL
     )
+    if (isTRUE(progress)) {
+      message("All chunks complete.")
+    }
 
   } else {
     # --- Full Sequential Evaluation Path ---
@@ -619,15 +636,19 @@ exhaustive_sum_roc <- function(data,
     n_combos <- length(combos)
 
     if (engine == "Rcpp") {
+      if (isTRUE(progress)) {
+        message("Evaluating ", n_combos, " combination(s)...")
+      }
       x_mat <- as.matrix(x[, items, drop = FALSE])
       combo_indices <- lapply(combos, function(v) match(v, items) - 1L)
       results <- evaluate_combos_cpp(x_mat, y, combo_indices, cutoff_method)
       results$items <- sapply(combos, format_items)
-    } else {
-      if (progress) {
-        pb <- utils::txtProgressBar(min = 0, max = n_combos, style = 3)
-        on.exit(close(pb), add = TRUE)
+      if (isTRUE(progress)) {
+        message("Evaluation complete.")
       }
+    } else {
+      prg <- .progress_make(n_combos, enabled = progress)
+      on.exit(prg$close(), add = TRUE)
 
       results <- vector("list", n_combos)
       for (i in seq_len(n_combos)) {
@@ -655,11 +676,11 @@ exhaustive_sum_roc <- function(data,
           stringsAsFactors = FALSE
         )
 
-        if (progress) {
-          utils::setTxtProgressBar(pb, i)
-        }
+        prg$tick()
+        prg$eta_message()
       }
 
+      prg$finish()
       results <- do.call(rbind, results)
     }
 

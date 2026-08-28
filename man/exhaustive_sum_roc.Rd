@@ -72,7 +72,10 @@ the current R process via RcppParallel. Default `FALSE`.}
 threads (for `"threads"`), or `NULL` (default) for automatic detection.
 Ignored when `parallel = FALSE` or `"none"`.}
 
-\item{progress}{Logical, show progress bar? Default `TRUE`.}
+\item{progress}{Logical, show progress bar and approximate remaining-time
+estimates (default \code{TRUE}). For serial evaluation, displays a progress
+bar and periodic approximate ETA. For parallel chunks or multi-threaded C++,
+reports execution start and completion.}
 
 \item{chunk_start}{Internal: zero-based global combination index to start
 from. When set together with `chunk_size`, only that range is evaluated.}

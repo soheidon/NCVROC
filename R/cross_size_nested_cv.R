@@ -225,7 +225,10 @@
 #'   nested backends only when predicted serial runtime exceeds threshold), or
 #'   `"always"` (always benchmarks legal backends for non-degenerate workloads).
 #' @param seed Integer, random seed for reproducible fold generation.
-#' @param progress Logical, show progress bar (default `interactive()`).
+#' @param progress Logical, show progress bar and approximate remaining-time
+#'   estimates (default \code{interactive()}). For serial outer folds, displays a
+#'   progress bar and periodic approximate ETA. For parallel execution, reports
+#'   execution start and completion.
 #' @param verbose Logical, print progress messages (default `FALSE`).
 #' @param outer_k Alias for `outer_folds`.
 #' @param inner_k Alias for `inner_folds`.
@@ -496,12 +499,16 @@ cross_size_nested_cv <- function(data,
       envir = environment()
     )
 
-    outer_results_list <- parallel::parLapply(cl, seq_len(n_outer_evals), eval_outer_fold)
-  } else {
-    if (progress && n_outer_evals > 1) {
-      pb <- utils::txtProgressBar(min = 0, max = n_outer_evals, style = 3)
-      on.exit(close(pb), add = TRUE)
+    if (verbose) {
+      message("Running ", n_outer_evals, " outer folds in parallel...")
     }
+    outer_results_list <- parallel::parLapply(cl, seq_len(n_outer_evals), eval_outer_fold)
+    if (verbose) {
+      message("All outer folds complete.")
+    }
+  } else {
+    prg <- .progress_make(n_outer_evals, enabled = progress && n_outer_evals > 1)
+    on.exit(prg$close(), add = TRUE)
 
     outer_results_list <- vector("list", n_outer_evals)
     for (f in seq_len(n_outer_evals)) {
@@ -510,10 +517,10 @@ cross_size_nested_cv <- function(data,
                     f, n_outer_evals, names(outer_fold_indices)[f]))
       }
       outer_results_list[[f]] <- eval_outer_fold(f)
-      if (progress && n_outer_evals > 1) {
-        utils::setTxtProgressBar(pb, f)
-      }
+      prg$tick()
+      prg$eta_message()
     }
+    prg$finish()
   }
 
   # ---- Aggregate Outer Test Results ----

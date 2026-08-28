@@ -709,7 +709,10 @@
 #'   execution configuration is authoritative), `"auto"` (benchmarks legal
 #'   nested backends only when predicted serial runtime exceeds threshold), or
 #'   `"always"` (always benchmarks legal backends for non-degenerate workloads).
-#' @param progress Logical, show progress bars? Default `TRUE`.
+#' @param progress Logical, show progress bars and approximate remaining-time
+#'   estimates (default \code{TRUE}). For serial outer folds, displays a
+#'   progress bar and periodic approximate ETA. For parallel outer folds, reports
+#'   execution start and completion.
 #' @param verbose Logical, print progress messages? Default `TRUE`.
 #' @param return Character, `"full"` (all details) or `"summary"` (summary
 #'   only). Only `"full"` is implemented in v0.1.
@@ -1014,7 +1017,13 @@ nested_sum_roc <- function(data,
       )
     }
 
+    if (verbose) {
+      message("Running ", n_folds, " outer folds in parallel...")
+    }
     per_fold <- parallel::parLapply(cl, seq_len(n_folds), fold_worker)
+    if (verbose) {
+      message("All outer folds complete.")
+    }
 
   } else if (parallel_mode == "chunks" && actual_workers > 1L) {
     # Persistent chunk cluster reused across all outer folds
@@ -1036,6 +1045,9 @@ nested_sum_roc <- function(data,
     if (length(available_chunk_syms) > 0) {
       parallel::clusterExport(cl_chunk, varlist = available_chunk_syms, envir = ns)
     }
+
+    prg <- .progress_make(n_folds, enabled = progress)
+    on.exit(prg$close(), add = TRUE)
 
     per_fold <- vector("list", n_folds)
     for (i in seq_len(n_folds)) {
@@ -1066,10 +1078,16 @@ nested_sum_roc <- function(data,
         parallel_inner      = "none",
         n_workers_inner     = 1L
       )
+      prg$tick()
+      prg$eta_message()
     }
+    prg$finish()
 
   } else if (parallel_mode %in% c("threads", "hybrid")) {
     # Sequential outer folds with multi-threaded C++ inner exhaustive evaluation
+    prg <- .progress_make(n_folds, enabled = progress)
+    on.exit(prg$close(), add = TRUE)
+
     per_fold <- vector("list", n_folds)
     for (i in seq_len(n_folds)) {
       per_fold[[i]] <- .evaluate_single_outer_fold(
@@ -1099,9 +1117,15 @@ nested_sum_roc <- function(data,
         parallel_inner      = "threads",
         n_workers_inner     = if (parallel_mode == "hybrid") actual_threads_per_worker else actual_workers
       )
+      prg$tick()
+      prg$eta_message()
     }
+    prg$finish()
 
   } else {
+    prg <- .progress_make(n_folds, enabled = progress)
+    on.exit(prg$close(), add = TRUE)
+
     per_fold <- vector("list", n_folds)
     for (i in seq_len(n_folds)) {
       per_fold[[i]] <- .evaluate_single_outer_fold(
@@ -1131,7 +1155,10 @@ nested_sum_roc <- function(data,
         parallel_inner      = "none",
         n_workers_inner     = 1L
       )
+      prg$tick()
+      prg$eta_message()
     }
+    prg$finish()
   }
 
   # ---- Aggregate results ----

@@ -94,7 +94,10 @@ or `"chunks"` (PSOCK cluster).}
 
 \item{seed}{Integer, random seed for reproducible fold generation.}
 
-\item{progress}{Logical, show progress bar (default `interactive()`).}
+\item{progress}{Logical, show progress bar and approximate remaining-time
+estimates (default \code{interactive()}). For serial evaluation, displays a
+progress bar and periodic approximate ETA. For parallel execution, reports
+execution start and completion.}
 }
 \value{
 An S3 object of class `"cross_size_cv_result"`, containing:

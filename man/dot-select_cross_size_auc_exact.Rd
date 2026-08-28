@@ -19,7 +19,8 @@
   specificity_min,
   cv_folds,
   repeats,
-  y
+  y,
+  progress = FALSE
 )
 }
 \description{
