@@ -114,6 +114,7 @@
     engine             = engine,
     parallel           = inner_parallel,
     n_workers          = inner_workers,
+    tuning             = "off",
     ci                 = FALSE,
     seed               = seed,
     progress           = FALSE
@@ -219,13 +220,21 @@
 #'   - `"hybrid"`: outer CV folds use socket workers (`n_workers`), and each worker uses multi-threaded C++ (`threads_per_worker`).
 #' @param n_workers Integer, number of worker processes or threads (default `NULL` = auto).
 #' @param threads_per_worker Integer, threads per PSOCK worker in `"hybrid"` mode (default 1).
+#' @param tuning Automatic execution-planning mode: `"off"` (default, manual
+#'   execution configuration is authoritative), `"auto"` (benchmarks legal
+#'   nested backends only when predicted serial runtime exceeds threshold), or
+#'   `"always"` (always benchmarks legal backends for non-degenerate workloads).
 #' @param seed Integer, random seed for reproducible fold generation.
 #' @param progress Logical, show progress bar (default `interactive()`).
 #' @param verbose Logical, print progress messages (default `FALSE`).
 #' @param outer_k Alias for `outer_folds`.
 #' @param inner_k Alias for `inner_folds`.
 #'
-#' @return An S3 object of class `"cross_size_nested_cv_result"`.
+#' @return An S3 object of class `"cross_size_nested_cv_result"`. When
+#'   \code{tuning = "auto"} or \code{"always"}, \code{settings$execution_plan}
+#'   contains planning metadata detailing the selected execution backend and
+#'   approximate runtime estimates. \code{tuning = "off"} attaches no execution
+#'   plan metadata.
 #'
 #' @export
 cross_size_nested_cv <- function(data,
@@ -251,6 +260,7 @@ cross_size_nested_cv <- function(data,
                                  parallel           = FALSE,
                                  n_workers          = NULL,
                                  threads_per_worker = 1L,
+                                 tuning             = "off",
                                  seed               = NULL,
                                  progress           = interactive(),
                                  verbose            = FALSE,
@@ -268,6 +278,7 @@ cross_size_nested_cv <- function(data,
   selection_metric <- match.arg(selection_metric)
   cutoff_method    <- match.arg(cutoff_method)
   engine           <- match.arg(engine)
+  tuning           <- match.arg(tuning, c("off", "auto", "always"))
 
   # ---- Validate constraints ----
   if (!is.null(sensitivity_min)) {
@@ -343,26 +354,64 @@ cross_size_nested_cv <- function(data,
   n_outer_evals   <- length(outer_fold_indices)
   effective_folds <- n_outer_evals %/% outer_repeats
 
-  # ---- Resolve Worker Budget ----
-  if (parallel_mode == "hybrid") {
-    hybrid_budget <- .resolve_hybrid_budget(n_workers, threads_per_worker, n_outer_evals)
-    n_workers_res <- hybrid_budget$n_workers
-    threads_per_worker_res <- hybrid_budget$threads_per_worker
-  } else {
-    n_workers_res <- if (parallel_mode != "none") {
-      .resolve_n_workers(
-        parallel  = parallel_mode,
-        n_workers = n_workers,
-        n_folds   = if (parallel_mode == "outer") n_outer_evals else NULL
-      )
-    } else {
-      1L
-    }
-    threads_per_worker_res <- 1L
-  }
-
   # Deterministically precompute seeds for each outer fold
   fold_seeds <- if (!is.null(seed)) seed + seq_len(n_outer_evals) * 1000L else rep(list(NULL), n_outer_evals)
+
+  # ---- Resolve Worker Budget ----
+  execution_metadata <- NULL
+  if (!identical(tuning, "off")) {
+    planned <- .planner_cross_size_nested_cv_controller(
+      dat_prep                   = dat_prep,
+      y                          = y,
+      outcome_name               = outcome_name,
+      item_names                 = item_names,
+      sizes                      = sizes,
+      outer_fold_indices         = outer_fold_indices,
+      inner_folds                = inner_folds,
+      inner_repeats              = inner_repeats,
+      stratified                 = stratified,
+      selection_metric           = selection_metric,
+      cutoff_method              = cutoff_method,
+      sensitivity_min            = sensitivity_min,
+      specificity_min            = specificity_min,
+      prefer_fewer_items         = prefer_fewer_items,
+      positive_label             = positive_label,
+      negative_label             = negative_label,
+      engine                     = engine,
+      tuning                     = tuning,
+      manual_parallel_mode       = parallel_mode,
+      manual_n_workers           = n_workers,
+      manual_threads_per_worker  = threads_per_worker,
+      fold_seeds                 = fold_seeds
+    )
+    execution_metadata <- planned$metadata
+    parallel_mode <- planned$plan$parallel[[1L]]
+    n_workers_res <- if (!is.null(planned$plan$outer_workers)) planned$plan$outer_workers[[1L]] else planned$plan$n_workers[[1L]]
+    threads_per_worker_res <- if (!is.null(planned$plan$threads_per_worker)) planned$plan$threads_per_worker[[1L]] else 1L
+    if (parallel_mode == "threads") {
+      n_workers_res <- 1L
+    }
+    if (isTRUE(planned$warn)) {
+      warning(execution_metadata$fallback_reason, call. = FALSE)
+    }
+  } else {
+    if (parallel_mode == "hybrid") {
+      hybrid_budget <- .resolve_hybrid_budget(n_workers, threads_per_worker, n_outer_evals)
+      n_workers_res <- hybrid_budget$n_workers
+      threads_per_worker_res <- hybrid_budget$threads_per_worker
+    } else {
+      n_workers_res <- if (parallel_mode != "none") {
+        .resolve_n_workers(
+          parallel  = parallel_mode,
+          n_workers = n_workers,
+          n_folds   = if (parallel_mode == "outer") n_outer_evals else NULL
+        )
+      } else {
+        1L
+      }
+      threads_per_worker_res <- 1L
+    }
+  }
 
   # ---- Helper to evaluate a single outer fold ----
   eval_outer_fold <- function(f) {
@@ -532,26 +581,30 @@ cross_size_nested_cv <- function(data,
       cutoff_distribution                  = cv_cutoff_dist,
       outer_predictions                    = outer_predictions_df,
       model_sizes                          = sizes,
-      settings = list(
-        outcome_name       = outcome_name,
-        item_names         = item_names,
-        model_sizes        = sizes,
-        outer_folds        = outer_folds,
-        effective_folds    = effective_folds,
-        outer_repeats      = outer_repeats,
-        inner_folds        = inner_folds,
-        inner_repeats      = inner_repeats,
-        selection_metric   = selection_metric,
-        cutoff_method      = cutoff_method,
-        sensitivity_min    = sensitivity_min,
-        specificity_min    = specificity_min,
-        prefer_fewer_items = prefer_fewer_items,
-        stratified         = stratified,
-        engine             = engine,
-        parallel           = parallel_mode,
-        n_workers          = n_workers_res,
-        threads_per_worker = threads_per_worker_res,
-        seed               = seed
+      settings = c(
+        list(
+          outcome_name       = outcome_name,
+          item_names         = item_names,
+          model_sizes        = sizes,
+          outer_folds        = outer_folds,
+          effective_folds    = effective_folds,
+          outer_repeats      = outer_repeats,
+          inner_folds        = inner_folds,
+          inner_repeats      = inner_repeats,
+          selection_metric   = selection_metric,
+          cutoff_method      = cutoff_method,
+          sensitivity_min    = sensitivity_min,
+          specificity_min    = specificity_min,
+          prefer_fewer_items = prefer_fewer_items,
+          stratified         = stratified,
+          engine             = engine,
+          parallel           = parallel_mode,
+          n_workers          = n_workers_res,
+          threads_per_worker = threads_per_worker_res,
+          tuning             = tuning,
+          seed               = seed
+        ),
+        if (!identical(tuning, "off")) list(execution_plan = execution_metadata) else list()
       )
     ),
     class = "cross_size_nested_cv_result"

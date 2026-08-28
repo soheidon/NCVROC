@@ -26,6 +26,7 @@ nested_sum_roc(
   parallel = FALSE,
   n_workers = NULL,
   threads_per_worker = 1L,
+  tuning = "off",
   progress = TRUE,
   verbose = TRUE,
   return = c("full", "summary"),
@@ -103,6 +104,11 @@ The effective value may be reduced according to the CPU budget, resolved
 outer worker count, and `_R_CHECK_LIMIT_CORES_`. For other modes this must
 remain 1.}
 
+\item{tuning}{Automatic execution-planning mode: `"off"` (default, manual
+execution configuration is authoritative), `"auto"` (benchmarks legal
+nested backends only when predicted serial runtime exceeds threshold), or
+`"always"` (always benchmarks legal backends for non-degenerate workloads).}
+
 \item{progress}{Logical, show progress bars? Default `TRUE`.}
 
 \item{verbose}{Logical, print progress messages? Default `TRUE`.}
@@ -122,7 +128,9 @@ An object of class `"ncvroc_result"`, a list with elements:
   \item{selected_models}{character vector of selected item sets per fold.}
   \item{selected_model_frequency}{data.frame of item-set selection counts.}
   \item{outer_predictions}{data.frame of all out-of-fold predictions.}
-  \item{settings}{list of all argument values.}
+  \item{settings}{list of all argument values. When \code{tuning = "auto"} or
+    \code{"always"}, includes \code{execution_plan} metadata detailing the selected execution backend
+    and approximate runtime estimates. \code{tuning = "off"} attaches no execution plan metadata.}
 }
 \description{
 Performs nested cross-validation to evaluate and select item combinations

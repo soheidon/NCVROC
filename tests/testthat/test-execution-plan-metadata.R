@@ -41,7 +41,7 @@
   "tuning_budget_exhausted"
 )
 
-test_that("common metadata schema fields are identical across exhaustive and cross_size_cv", {
+test_that("common metadata schema fields are identical across all four APIs", {
   d <- .metadata_test_data(5L)
 
   ex_res <- exhaustive_sum_roc(
@@ -57,19 +57,46 @@ test_that("common metadata schema fields are identical across exhaustive and cro
   )
   cv_meta <- cv_res$settings$execution_plan
 
+  nested_res <- nested_sum_roc(
+    data = d, outcome = "y", items = paste0("Q", 1:5),
+    min_items = 1, max_items = 2, outer_k = 3, inner_k = 2,
+    seed = 42, tuning = "auto", progress = FALSE, verbose = FALSE
+  )
+  nested_meta <- nested_res$settings$execution_plan
+
+  cross_nested_res <- cross_size_nested_cv(
+    data = d, outcome = "y", items = paste0("Q", 1:5),
+    min_items = 1, max_items = 2, outer_folds = 3, inner_folds = 2,
+    outer_repeats = 1, inner_repeats = 1,
+    seed = 42, tuning = "auto", progress = FALSE, verbose = FALSE
+  )
+  cross_nested_meta <- cross_nested_res$settings$execution_plan
+
   expect_type(ex_meta, "list")
   expect_type(cv_meta, "list")
+  expect_type(nested_meta, "list")
+  expect_type(cross_nested_meta, "list")
 
-  # Both must contain all common metadata fields
+  # All 4 must contain all 28 common metadata fields
   expect_true(all(.COMMON_METADATA_FIELDS %in% names(ex_meta)))
   expect_true(all(.COMMON_METADATA_FIELDS %in% names(cv_meta)))
+  expect_true(all(.COMMON_METADATA_FIELDS %in% names(nested_meta)))
+  expect_true(all(.COMMON_METADATA_FIELDS %in% names(cross_nested_meta)))
 
   # Target APIs are accurately stamped
   expect_identical(ex_meta$target_api, "exhaustive_sum_roc")
   expect_identical(cv_meta$target_api, "cross_size_cv")
+  expect_identical(nested_meta$target_api, "nested_sum_roc")
+  expect_identical(cross_nested_meta$target_api, "cross_size_nested_cv")
 
   # CV adds CV-specific fields
   expect_true(all(c("cv_method", "k", "repeats", "n_folds_total") %in% names(cv_meta)))
+
+  # Nested APIs add nested-specific fields
+  nested_specific_fields <- c("outer_folds", "inner_folds", "outer_repeats", "inner_repeats",
+                              "n_outer_tasks", "selected_outer_workers", "selected_threads_per_worker")
+  expect_true(all(nested_specific_fields %in% names(nested_meta)))
+  expect_true(all(nested_specific_fields %in% names(cross_nested_meta)))
 })
 
 test_that("tuning='off' preserves exact legacy return structure with zero metadata", {

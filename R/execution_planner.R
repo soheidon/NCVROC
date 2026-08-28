@@ -448,38 +448,62 @@
 #' @noRd
 .planner_select_plan <- function(benchmark_table,
                                  tolerance = .PLANNER_SELECTION_TOLERANCE,
-                                 fallback_plan = NULL) {
+                                 fallback_plan = NULL,
+                                 allow_nested = FALSE) {
   if (!is.data.frame(benchmark_table) ||
       !all(c("parallel", "n_workers", "resource_count", "median_elapsed") %in%
            names(benchmark_table))) {
     stop("`benchmark_table` is missing required plan-selection columns.",
          call. = FALSE)
   }
-  if (!is.numeric(tolerance) || length(tolerance) != 1L || is.na(tolerance) ||
+  if (!is.numeric(tolerance) || length(tolerance) != 1L || anyNA(tolerance) ||
       tolerance < 0 || !is.finite(tolerance)) {
     stop("`tolerance` must be a non-negative finite number.", call. = FALSE)
   }
-  benchmark_table <- .planner_validate_flat_plan(
-    benchmark_table,
-    argument_name = "benchmark_table"
-  )
-  if (is.null(benchmark_table$status)) {
-    benchmark_table$status <- ifelse(is.finite(benchmark_table$median_elapsed),
-                                     "ok", "failed")
-  }
-  if (is.null(benchmark_table$backend_priority)) {
-    benchmark_table$backend_priority <- match(
-      benchmark_table$parallel, c("none", "threads", "chunks")
+  if (isTRUE(allow_nested)) {
+    benchmark_table <- .planner_validate_nested_plan(
+      benchmark_table,
+      argument_name = "benchmark_table"
     )
-  }
-  if (is.null(benchmark_table$plan_id)) {
-    benchmark_table$plan_id <- paste0(
-      benchmark_table$parallel, "_", benchmark_table$n_workers
+    if (is.null(benchmark_table$status)) {
+      benchmark_table$status <- ifelse(is.finite(benchmark_table$median_elapsed),
+                                       "ok", "failed")
+    }
+    if (is.null(benchmark_table$backend_priority)) {
+      benchmark_table$backend_priority <- match(
+        benchmark_table$parallel, c("none", "threads", "outer", "chunks", "hybrid")
+      )
+    }
+    if (is.null(benchmark_table$plan_id)) {
+      benchmark_table$plan_id <- paste0(
+        benchmark_table$parallel, "_", benchmark_table$n_workers
+      )
+    }
+    if (!is.null(fallback_plan)) {
+      fallback_plan <- .planner_validate_nested_fallback_plan(fallback_plan)
+    }
+  } else {
+    benchmark_table <- .planner_validate_flat_plan(
+      benchmark_table,
+      argument_name = "benchmark_table"
     )
-  }
-
-  if (!is.null(fallback_plan)) {
-    fallback_plan <- .planner_validate_fallback_plan(fallback_plan)
+    if (is.null(benchmark_table$status)) {
+      benchmark_table$status <- ifelse(is.finite(benchmark_table$median_elapsed),
+                                       "ok", "failed")
+    }
+    if (is.null(benchmark_table$backend_priority)) {
+      benchmark_table$backend_priority <- match(
+        benchmark_table$parallel, c("none", "threads", "chunks")
+      )
+    }
+    if (is.null(benchmark_table$plan_id)) {
+      benchmark_table$plan_id <- paste0(
+        benchmark_table$parallel, "_", benchmark_table$n_workers
+      )
+    }
+    if (!is.null(fallback_plan)) {
+      fallback_plan <- .planner_validate_fallback_plan(fallback_plan)
+    }
   }
 
   successful <- benchmark_table[
@@ -541,6 +565,41 @@
   )
 }
 
+.planner_validate_nested_plan <- function(plan, argument_name = "plan") {
+  required <- c("parallel", "n_workers", "resource_count")
+  if (!is.data.frame(plan) || !all(required %in% names(plan))) {
+    stop(sprintf("`%s` must be a data.frame with `parallel`, `n_workers`, and `resource_count`.",
+                 argument_name),
+         call. = FALSE)
+  }
+  n_plan <- nrow(plan)
+  parallel_mode <- plan$parallel
+  if (!is.character(parallel_mode) || length(parallel_mode) != n_plan ||
+      anyNA(parallel_mode) || any(!(parallel_mode %in% c("none", "threads", "outer", "chunks", "hybrid")))) {
+    stop(sprintf("`%s$parallel` must contain only valid execution modes.",
+                 argument_name),
+         call. = FALSE)
+  }
+  for (name in c("n_workers", "resource_count")) {
+    value <- plan[[name]]
+    if (!is.numeric(value) || length(value) != n_plan || anyNA(value) ||
+        any(!is.finite(value)) || any(value != floor(value)) ||
+        any(value < 1L) || any(value > .Machine$integer.max)) {
+      stop(sprintf("`%s$%s` must contain positive R-sized integers.",
+                   argument_name, name),
+           call. = FALSE)
+    }
+  }
+  plan
+}
+
+.planner_validate_nested_fallback_plan <- function(fallback_plan) {
+  if (!is.data.frame(fallback_plan) || nrow(fallback_plan) != 1L) {
+    stop("`fallback_plan` must be a one-row data.frame.", call. = FALSE)
+  }
+  .planner_validate_nested_plan(fallback_plan, argument_name = "fallback_plan")
+}
+
 #' Validate one or more legal flat execution plans without repairing them
 #'
 #' @keywords internal
@@ -576,7 +635,7 @@
           (n_workers != 1L | resource_count != 1L)) ||
       any(parallel_mode != "none" & n_workers != resource_count)) {
     stop(sprintf("`%s` must describe only legal flat execution plans.",
-                 argument_name),
+                  argument_name),
          call. = FALSE)
   }
   plan
@@ -1381,6 +1440,806 @@
   outcome
 }
 
+# ============================================================================
+# Nested / Hybrid Execution Planner Primitives (Phase 2)
+# ============================================================================
+
+.PLANNER_NESTED_PILOT_BUDGET <- 32L
+
+#' Resolve the manual execution plan for a nested CV workload
+#'
+#' @keywords internal
+#' @noRd
+.planner_manual_nested_plan <- function(parallel_mode, n_workers, threads_per_worker, n_outer_tasks) {
+  if (identical(parallel_mode, "none") || isFALSE(parallel_mode)) {
+    return(data.frame(
+      plan_id = "none_1",
+      parallel = "none",
+      n_workers = 1L,
+      outer_workers = 1L,
+      threads_per_worker = 1L,
+      resource_count = 1L,
+      backend_priority = 1L,
+      stringsAsFactors = FALSE
+    ))
+  }
+  if (identical(parallel_mode, "hybrid")) {
+    hybrid_budget <- .resolve_hybrid_budget(n_workers, threads_per_worker, n_outer_tasks, warn = FALSE)
+    return(data.frame(
+      plan_id = sprintf("hybrid_%dx%d", hybrid_budget$n_workers, hybrid_budget$threads_per_worker),
+      parallel = "hybrid",
+      n_workers = as.integer(hybrid_budget$n_workers),
+      outer_workers = as.integer(hybrid_budget$n_workers),
+      threads_per_worker = as.integer(hybrid_budget$threads_per_worker),
+      resource_count = as.integer(hybrid_budget$total_parallelism),
+      backend_priority = 5L,
+      stringsAsFactors = FALSE
+    ))
+  }
+  if (identical(parallel_mode, "outer")) {
+    workers <- .resolve_n_workers(parallel = "outer", n_workers = n_workers, n_folds = n_outer_tasks)
+    return(data.frame(
+      plan_id = paste0("outer_", workers),
+      parallel = "outer",
+      n_workers = as.integer(workers),
+      outer_workers = as.integer(workers),
+      threads_per_worker = 1L,
+      resource_count = as.integer(workers),
+      backend_priority = 3L,
+      stringsAsFactors = FALSE
+    ))
+  }
+  if (identical(parallel_mode, "threads")) {
+    workers <- .resolve_n_workers(parallel = "threads", n_workers = n_workers)
+    return(data.frame(
+      plan_id = paste0("threads_", workers),
+      parallel = "threads",
+      n_workers = as.integer(workers),
+      outer_workers = 1L,
+      threads_per_worker = as.integer(workers),
+      resource_count = as.integer(workers),
+      backend_priority = 2L,
+      stringsAsFactors = FALSE
+    ))
+  }
+  # chunks
+  workers <- .resolve_n_workers(parallel = "chunks", n_workers = n_workers)
+  data.frame(
+    plan_id = paste0("chunks_", workers),
+    parallel = "chunks",
+    n_workers = as.integer(workers),
+    outer_workers = 1L,
+    threads_per_worker = 1L,
+    resource_count = as.integer(workers),
+    backend_priority = 4L,
+    stringsAsFactors = FALSE
+  )
+}
+
+#' Generate a compact legal plan table for nested / hybrid workloads
+#'
+#' @keywords internal
+#' @noRd
+.planner_generate_nested_legal_plans <- function(
+    api = c("nested_sum_roc", "cross_size_nested_cv"),
+    available_resources = NULL,
+    user_n_workers = NULL,
+    user_threads_per_worker = 1L,
+    n_outer_tasks = 5L,
+    inner_candidate_tasks = 100L,
+    engine = c("Rcpp", "R"),
+    is_chunks_allowed = TRUE,
+    is_hybrid_allowed = TRUE) {
+  api <- match.arg(api)
+  engine <- match.arg(engine)
+  cap <- .planner_resource_cap(available_resources = available_resources,
+                               user_n_workers = NULL,
+                               task_count = NULL)
+
+  plans <- list(data.frame(
+    plan_id = "none_1",
+    parallel = "none",
+    n_workers = 1L,
+    outer_workers = 1L,
+    threads_per_worker = 1L,
+    resource_count = 1L,
+    backend_priority = 1L,
+    stringsAsFactors = FALSE
+  ))
+
+  # 1. Threads plans (only if engine == Rcpp, priority = 2L)
+  if (engine == "Rcpp") {
+    thread_cap <- min(cap, as.integer(inner_candidate_tasks))
+    if (!is.null(user_n_workers)) thread_cap <- min(thread_cap, as.integer(user_n_workers))
+    thread_levels <- sort(unique(c(2L, 4L, thread_cap)))
+    thread_levels <- thread_levels[thread_levels >= 2L & thread_levels <= thread_cap]
+    if (length(thread_levels) > 0L) {
+      plans[[length(plans) + 1L]] <- data.frame(
+        plan_id = paste0("threads_", thread_levels),
+        parallel = "threads",
+        n_workers = thread_levels,
+        outer_workers = 1L,
+        threads_per_worker = thread_levels,
+        resource_count = thread_levels,
+        backend_priority = 2L,
+        stringsAsFactors = FALSE
+      )
+    }
+  }
+
+  # 2. Outer PSOCK plans (priority = 3L)
+  outer_cap <- min(cap, as.integer(n_outer_tasks))
+  if (!is.null(user_n_workers)) outer_cap <- min(outer_cap, as.integer(user_n_workers))
+  outer_levels <- sort(unique(c(2L, 4L, outer_cap)))
+  outer_levels <- outer_levels[outer_levels >= 2L & outer_levels <= outer_cap]
+  if (length(outer_levels) > 0L) {
+    plans[[length(plans) + 1L]] <- data.frame(
+      plan_id = paste0("outer_", outer_levels),
+      parallel = "outer",
+      n_workers = outer_levels,
+      outer_workers = outer_levels,
+      threads_per_worker = 1L,
+      resource_count = outer_levels,
+      backend_priority = 3L,
+      stringsAsFactors = FALSE
+    )
+  }
+
+  # 3. Chunks plans (if allowed, priority = 4L)
+  if (is_chunks_allowed) {
+    chunk_cap <- min(cap, as.integer(inner_candidate_tasks))
+    if (!is.null(user_n_workers)) chunk_cap <- min(chunk_cap, as.integer(user_n_workers))
+    chunk_levels <- sort(unique(c(2L, 4L, chunk_cap)))
+    chunk_levels <- chunk_levels[chunk_levels >= 2L & chunk_levels <= chunk_cap]
+    if (length(chunk_levels) > 0L) {
+      plans[[length(plans) + 1L]] <- data.frame(
+        plan_id = paste0("chunks_", chunk_levels),
+        parallel = "chunks",
+        n_workers = chunk_levels,
+        outer_workers = 1L,
+        threads_per_worker = 1L,
+        resource_count = chunk_levels,
+        backend_priority = 4L,
+        stringsAsFactors = FALSE
+      )
+    }
+  }
+
+  # 4. Hybrid plans (if engine == Rcpp and is_hybrid_allowed, priority = 5L)
+  if (engine == "Rcpp" && is_hybrid_allowed && cap >= 4L && n_outer_tasks >= 2L && inner_candidate_tasks >= 2L) {
+    candidate_pairs <- list()
+    for (K in c(2L, 4L, min(cap %/% 2L, as.integer(n_outer_tasks)))) {
+      if (K >= 2L && K <= n_outer_tasks) {
+        max_T <- min(cap %/% K, as.integer(inner_candidate_tasks))
+        if (!is.null(user_threads_per_worker) && user_threads_per_worker > 1L) {
+          max_T <- min(max_T, as.integer(user_threads_per_worker))
+        }
+        if (max_T >= 2L) {
+          candidate_pairs[[length(candidate_pairs) + 1L]] <- c(K = as.integer(K), T = as.integer(max_T))
+        }
+      }
+    }
+    if (length(candidate_pairs) > 0L) {
+      pairs_df <- do.call(rbind, lapply(candidate_pairs, function(p) {
+        data.frame(
+          plan_id = sprintf("hybrid_%dx%d", p["K"], p["T"]),
+          parallel = "hybrid",
+          n_workers = as.integer(p["K"]),
+          outer_workers = as.integer(p["K"]),
+          threads_per_worker = as.integer(p["T"]),
+          resource_count = as.integer(p["K"] * p["T"]),
+          backend_priority = 5L,
+          stringsAsFactors = FALSE
+        )
+      }))
+      pairs_df <- pairs_df[!duplicated(pairs_df$plan_id), , drop = FALSE]
+      plans[[length(plans) + 1L]] <- pairs_df
+    }
+  }
+
+  result <- do.call(rbind, plans)
+  rownames(result) <- NULL
+  result
+}
+
+#' Top-level execution planner controller for nested_sum_roc
+#'
+#' @keywords internal
+#' @noRd
+.planner_nested_sum_roc_controller <- function(
+    full_data, y, items, outcome_col, min_items, max_items,
+    positive_label, negative_label, cutoff_method,
+    preselect_top_n, preselect_by, selection_criterion,
+    outer_k, inner_k, outer_repeats, inner_repeats,
+    stratified, seed, engine, tuning,
+    manual_parallel_mode, manual_n_workers, manual_threads_per_worker,
+    outer_folds, resource_detector = .get_max_workers,
+    threshold = .PLANNER_AUTO_RUNTIME_THRESHOLD,
+    clock = proc.time) {
+
+  model_sizes <- as.integer(min_items:max_items)
+  workload <- .planner_count_workload(length(items), model_sizes)
+  n_outer_tasks <- length(outer_folds)
+  manual_plan <- .planner_manual_nested_plan(
+    manual_parallel_mode, manual_n_workers, manual_threads_per_worker, n_outer_tasks
+  )
+
+  metadata <- list(
+    planner_version             = .PLANNER_VERSION,
+    target_api                  = "nested_sum_roc",
+    tuning_mode                 = tuning,
+    tuning_performed            = TRUE,
+    backend_benchmark_performed = FALSE,
+    total_candidates            = workload$total_candidates,
+    candidate_count_by_size     = workload$candidate_count_by_size,
+    micro_pilot_candidates      = list(total = 0L, by_size = integer()),
+    micro_pilot_elapsed         = NA_real_,
+    estimated_serial_runtime    = NA_real_,
+    auto_runtime_threshold      = threshold,
+    benchmark_table             = data.frame(),
+    selected_parallel           = manual_plan$parallel[[1L]],
+    selected_n_workers          = manual_plan$n_workers[[1L]],
+    selected_resource_count     = manual_plan$resource_count[[1L]],
+    estimated_runtime           = NA_real_,
+    runtime_estimation_method   = "size_stratified_candidate_cost",
+    selection_tolerance         = .PLANNER_SELECTION_TOLERANCE,
+    decision_reason             = NA_character_,
+    fallback_reason             = NA_character_,
+    planner_elapsed             = NA_real_,
+    benchmark_repeat_count      = integer(),
+    warmup_performed            = FALSE,
+    manual_parallel_requested   = manual_parallel_mode,
+    manual_n_workers_requested  = manual_n_workers,
+    environment_summary         = .planner_environment_summary(),
+    tuning_budget_seconds       = NA_real_,
+    tuning_budget_exhausted     = FALSE,
+    outer_folds                 = as.integer(outer_k),
+    inner_folds                 = as.integer(inner_k),
+    outer_repeats               = as.integer(outer_repeats),
+    inner_repeats               = as.integer(inner_repeats),
+    n_outer_tasks               = as.integer(n_outer_tasks),
+    selected_outer_workers      = manual_plan$outer_workers[[1L]],
+    selected_threads_per_worker = manual_plan$threads_per_worker[[1L]]
+  )
+
+  started <- clock()
+
+  outcome <- tryCatch(.planner_with_preserved_rng({
+    pilot <- .planner_make_pilot_candidates(
+      length(items), model_sizes, .PLANNER_NESTED_PILOT_BUDGET
+    )
+    metadata$micro_pilot_candidates <- list(
+      total = as.integer(nrow(pilot)),
+      by_size = as.integer(table(factor(pilot$model_size, levels = model_sizes)))
+    )
+    names(metadata$micro_pilot_candidates$by_size) <- as.character(model_sizes)
+
+    # 1. Serial pilot timing over complete nested fold structure
+    pilot_start <- clock()
+    pilot_by_size <- vector("list", length(model_sizes))
+    for (si in seq_along(model_sizes)) {
+      msize <- model_sizes[[si]]
+      sub_pilot <- pilot[pilot$model_size == msize, , drop = FALSE]
+      t0 <- clock()
+      # Run serial evaluation across all outer folds for this candidate size
+      for (f_i in seq_along(outer_folds)) {
+        f_test <- outer_folds[[f_i]]
+        f_train <- setdiff(seq_along(y), f_test)
+        x_tr <- full_data[f_train, items, drop = FALSE]
+        y_tr <- y[f_train]
+        in_folds <- make_stratified_folds(y_tr, k = inner_k, repeats = inner_repeats, seed = seed)
+        for (ci in seq_len(nrow(sub_pilot))) {
+          combo_items <- items[sub_pilot$combination[[ci]] + 1L]
+          for (f_in in seq_along(in_folds)) {
+            in_test <- in_folds[[f_in]]
+            in_train <- setdiff(seq_len(nrow(x_tr)), in_test)
+            sc_tr <- rowSums(x_tr[in_train, combo_items, drop = FALSE])
+            fr_tr <- compute_score_frequencies(sc_tr, y_tr[in_train])
+            c_opt <- find_optimal_cutoff(
+              compute_roc_metrics_from_table(fr_tr$pos_counts, fr_tr$neg_counts),
+              method = cutoff_method
+            )
+          }
+        }
+      }
+      elapsed_s <- max(0, as.numeric((clock() - t0)[["elapsed"]]))
+      pilot_by_size[[si]] <- data.frame(
+        model_size = msize,
+        n_candidates = nrow(sub_pilot),
+        elapsed = elapsed_s,
+        stringsAsFactors = FALSE
+      )
+    }
+    pilot_timings_df <- do.call(rbind, pilot_by_size)
+    metadata$micro_pilot_elapsed <- max(0, as.numeric((clock() - pilot_start)[["elapsed"]]))
+
+    estimate <- .planner_estimate_runtime(workload, pilot_timings_df)
+    metadata$estimated_serial_runtime <- estimate$estimated_serial_runtime
+    metadata$runtime_estimation_method <- estimate$runtime_estimation_method
+
+    if (!is.finite(metadata$estimated_serial_runtime)) {
+      metadata$fallback_reason <- "runtime estimate unavailable; using manual plan"
+      metadata$decision_reason <- metadata$fallback_reason
+      return(list(plan = manual_plan, metadata = metadata, warn = TRUE))
+    }
+
+    # 2. Resource detection and legal plan generation
+    detected <- tryCatch(resource_detector(), error = function(e) NA_integer_)
+    if (!.planner_is_integer_valued(detected) || detected < 1L) {
+      detected <- .get_max_workers()
+    }
+
+    inner_tasks <- max(1L, ceiling(workload$total_candidates / 1000L))
+    all_plans <- .planner_generate_nested_legal_plans(
+      api = "nested_sum_roc",
+      available_resources = detected,
+      user_n_workers = manual_n_workers,
+      user_threads_per_worker = manual_threads_per_worker,
+      n_outer_tasks = n_outer_tasks,
+      inner_candidate_tasks = inner_tasks,
+      engine = engine,
+      is_chunks_allowed = identical(manual_parallel_mode, "chunks"),
+      is_hybrid_allowed = (engine == "Rcpp")
+    )
+
+    degenerate <- nrow(all_plans) <= 1L || all(all_plans$parallel == "none")
+    should <- if (identical(tuning, "always")) {
+      !degenerate
+    } else {
+      !degenerate && (metadata$estimated_serial_runtime >= threshold)
+    }
+
+    if (!should) {
+      metadata$decision_reason <- if (degenerate) {
+        "degenerate workload; using manual plan"
+      } else {
+        .planner_should_benchmark(metadata$estimated_serial_runtime, threshold)$reason
+      }
+      return(list(plan = manual_plan, metadata = metadata, warn = FALSE))
+    }
+
+    # 3. Benchmark legal plans on pilot candidates over complete nested structure
+    metadata$backend_benchmark_performed <- TRUE
+    raw_timings <- vector("list", nrow(all_plans))
+
+    for (p_idx in seq_len(nrow(all_plans))) {
+      p_row <- all_plans[p_idx, , drop = FALSE]
+      t_run_start <- clock()
+      err_msg <- NA_character_
+      bench_ok <- TRUE
+
+      tryCatch({
+        p_mode <- p_row$parallel[[1L]]
+        p_outer_w <- p_row$outer_workers[[1L]]
+        p_threads_w <- p_row$threads_per_worker[[1L]]
+
+        if (p_mode == "none") {
+          for (f_i in seq_along(outer_folds)) {
+            .evaluate_single_outer_fold(
+              i = f_i, outer_folds = outer_folds, full_data = full_data, y = y,
+              n_total = length(y), items = items, outcome_col = outcome_col,
+              min_items = min_items, max_items = max_items,
+              positive_label = positive_label, negative_label = negative_label,
+              cutoff_method = cutoff_method, preselect_top_n = min(nrow(pilot), preselect_top_n),
+              preselect_by = preselect_by, selection_criterion = selection_criterion,
+              inner_k = inner_k, inner_repeats = inner_repeats,
+              use_streaming_ncv = FALSE, engine = engine, seed = seed,
+              progress = FALSE, verbose = FALSE, cl_chunk = NULL,
+              parallel_inner = "none", n_workers_inner = 1L
+            )
+          }
+        } else if (p_mode %in% c("outer", "hybrid") && p_outer_w > 1L) {
+          cl_bench <- parallel::makePSOCKcluster(p_outer_w)
+          on.exit(try(parallel::stopCluster(cl_bench), silent = TRUE), add = TRUE)
+          lib_paths <- .libPaths()
+          parallel::clusterExport(cl_bench, "lib_paths", envir = environment())
+          parallel::clusterEvalQ(cl_bench, {
+            .libPaths(lib_paths)
+            if (requireNamespace("NCVROC", quietly = TRUE)) try(library(NCVROC), silent = TRUE)
+            NULL
+          })
+          ns <- asNamespace("NCVROC")
+          available_symbols <- intersect(.OUTER_WORKER_EXPORT_SYMBOLS, ls(ns, all.names = TRUE))
+          parallel::clusterExport(cl_bench, varlist = available_symbols, envir = ns)
+
+          parallel::parLapply(cl_bench, seq_along(outer_folds), function(i) {
+            .evaluate_single_outer_fold(
+              i = i, outer_folds = outer_folds, full_data = full_data, y = y,
+              n_total = length(y), items = items, outcome_col = outcome_col,
+              min_items = min_items, max_items = max_items,
+              positive_label = positive_label, negative_label = negative_label,
+              cutoff_method = cutoff_method, preselect_top_n = min(nrow(pilot), preselect_top_n),
+              preselect_by = preselect_by, selection_criterion = selection_criterion,
+              inner_k = inner_k, inner_repeats = inner_repeats,
+              use_streaming_ncv = FALSE, engine = engine, seed = seed,
+              progress = FALSE, verbose = FALSE, cl_chunk = NULL,
+              parallel_inner = if (p_mode == "hybrid") "threads" else "none",
+              n_workers_inner = if (p_mode == "hybrid") p_threads_w else 1L
+            )
+          })
+          parallel::stopCluster(cl_bench)
+        } else if (p_mode == "threads") {
+          for (f_i in seq_along(outer_folds)) {
+            .evaluate_single_outer_fold(
+              i = f_i, outer_folds = outer_folds, full_data = full_data, y = y,
+              n_total = length(y), items = items, outcome_col = outcome_col,
+              min_items = min_items, max_items = max_items,
+              positive_label = positive_label, negative_label = negative_label,
+              cutoff_method = cutoff_method, preselect_top_n = min(nrow(pilot), preselect_top_n),
+              preselect_by = preselect_by, selection_criterion = selection_criterion,
+              inner_k = inner_k, inner_repeats = inner_repeats,
+              use_streaming_ncv = FALSE, engine = engine, seed = seed,
+              progress = FALSE, verbose = FALSE, cl_chunk = NULL,
+              parallel_inner = "threads", n_workers_inner = p_threads_w
+            )
+          }
+        }
+      }, error = function(e) {
+        bench_ok <<- FALSE
+        err_msg <<- conditionMessage(e)
+      })
+
+      t_run_elapsed <- max(0, as.numeric((clock() - t_run_start)[["elapsed"]]))
+      raw_timings[[p_idx]] <- data.frame(
+        plan_id = p_row$plan_id[[1L]],
+        parallel = p_row$parallel[[1L]],
+        n_workers = p_row$n_workers[[1L]],
+        outer_workers = p_row$outer_workers[[1L]],
+        threads_per_worker = p_row$threads_per_worker[[1L]],
+        resource_count = p_row$resource_count[[1L]],
+        backend_priority = p_row$backend_priority[[1L]],
+        elapsed = t_run_elapsed,
+        success = bench_ok,
+        failure_reason = err_msg,
+        stringsAsFactors = FALSE
+      )
+    }
+
+    all_raw <- do.call(rbind, raw_timings)
+    bench_table <- .planner_aggregate_timings(all_raw)
+    extra_cols <- unique(all_raw[, c("plan_id", "outer_workers", "threads_per_worker"), drop = FALSE])
+    bench_table <- merge(bench_table, extra_cols, by = "plan_id", all.x = TRUE, sort = FALSE)
+    metadata$benchmark_table <- bench_table
+
+    selected <- .planner_select_plan(bench_table, tolerance = .PLANNER_SELECTION_TOLERANCE, fallback_plan = manual_plan, allow_nested = TRUE)
+    chosen_plan <- selected$selected_plan
+    metadata$selected_parallel <- chosen_plan$parallel[[1L]]
+    metadata$selected_n_workers <- chosen_plan$n_workers[[1L]]
+    metadata$selected_resource_count <- chosen_plan$resource_count[[1L]]
+    metadata$selected_outer_workers <- if (!is.null(chosen_plan$outer_workers)) chosen_plan$outer_workers[[1L]] else chosen_plan$n_workers[[1L]]
+    metadata$selected_threads_per_worker <- if (!is.null(chosen_plan$threads_per_worker)) chosen_plan$threads_per_worker[[1L]] else 1L
+
+    metadata$fallback_reason <- selected$fallback_reason
+    metadata$decision_reason <- if (is.na(selected$fallback_reason)) {
+      "selected near-best benchmark plan"
+    } else {
+      selected$fallback_reason
+    }
+
+    list(
+      plan = chosen_plan,
+      metadata = metadata,
+      warn = !is.na(selected$fallback_reason)
+    )
+  }), error = function(e) {
+    list(
+      plan = manual_plan,
+      metadata = within(metadata, {
+        fallback_reason <- paste("planner failure; using manual plan:", conditionMessage(e))
+        decision_reason <- fallback_reason
+      }),
+      warn = TRUE
+    )
+  })
+
+  outcome$metadata$planner_elapsed <- max(0, as.numeric((clock() - started)[["elapsed"]]))
+  outcome
+}
+
+#' Top-level execution planner controller for cross_size_nested_cv
+#'
+#' @keywords internal
+#' @noRd
+.planner_cross_size_nested_cv_controller <- function(
+    dat_prep, y, outcome_name, item_names, sizes,
+    outer_fold_indices, inner_folds, inner_repeats,
+    stratified, selection_metric, cutoff_method,
+    sensitivity_min, specificity_min, prefer_fewer_items,
+    positive_label, negative_label, engine, tuning,
+    manual_parallel_mode, manual_n_workers, manual_threads_per_worker,
+    fold_seeds, resource_detector = .get_max_workers,
+    threshold = .PLANNER_AUTO_RUNTIME_THRESHOLD,
+    clock = proc.time) {
+
+  workload <- .planner_count_workload(length(item_names), sizes)
+  n_outer_tasks <- length(outer_fold_indices)
+  manual_plan <- .planner_manual_nested_plan(
+    manual_parallel_mode, manual_n_workers, manual_threads_per_worker, n_outer_tasks
+  )
+
+  metadata <- list(
+    planner_version             = .PLANNER_VERSION,
+    target_api                  = "cross_size_nested_cv",
+    tuning_mode                 = tuning,
+    tuning_performed            = TRUE,
+    backend_benchmark_performed = FALSE,
+    total_candidates            = workload$total_candidates,
+    candidate_count_by_size     = workload$candidate_count_by_size,
+    micro_pilot_candidates      = list(total = 0L, by_size = integer()),
+    micro_pilot_elapsed         = NA_real_,
+    estimated_serial_runtime    = NA_real_,
+    auto_runtime_threshold      = threshold,
+    benchmark_table             = data.frame(),
+    selected_parallel           = manual_plan$parallel[[1L]],
+    selected_n_workers          = manual_plan$n_workers[[1L]],
+    selected_resource_count     = manual_plan$resource_count[[1L]],
+    estimated_runtime           = NA_real_,
+    runtime_estimation_method   = "size_stratified_candidate_cost",
+    selection_tolerance         = .PLANNER_SELECTION_TOLERANCE,
+    decision_reason             = NA_character_,
+    fallback_reason             = NA_character_,
+    planner_elapsed             = NA_real_,
+    benchmark_repeat_count      = integer(),
+    warmup_performed            = FALSE,
+    manual_parallel_requested   = manual_parallel_mode,
+    manual_n_workers_requested  = manual_n_workers,
+    environment_summary         = .planner_environment_summary(),
+    tuning_budget_seconds       = NA_real_,
+    tuning_budget_exhausted     = FALSE,
+    outer_folds                 = as.integer(inner_folds),
+    inner_folds                 = as.integer(inner_folds),
+    outer_repeats               = 1L,
+    inner_repeats               = as.integer(inner_repeats),
+    n_outer_tasks               = as.integer(n_outer_tasks),
+    selected_outer_workers      = manual_plan$outer_workers[[1L]],
+    selected_threads_per_worker = manual_plan$threads_per_worker[[1L]]
+  )
+
+  started <- clock()
+
+  outcome <- tryCatch(.planner_with_preserved_rng({
+    pilot <- .planner_make_pilot_candidates(
+      length(item_names), sizes, .PLANNER_NESTED_PILOT_BUDGET
+    )
+    metadata$micro_pilot_candidates <- list(
+      total = as.integer(nrow(pilot)),
+      by_size = as.integer(table(factor(pilot$model_size, levels = sizes)))
+    )
+    names(metadata$micro_pilot_candidates$by_size) <- as.character(sizes)
+
+    # 1. Serial pilot timing across complete outer folds
+    pilot_start <- clock()
+    pilot_by_size <- vector("list", length(sizes))
+    for (si in seq_along(sizes)) {
+      msize <- sizes[[si]]
+      sub_pilot <- pilot[pilot$model_size == msize, , drop = FALSE]
+      t0 <- clock()
+      for (f_i in seq_along(outer_fold_indices)) {
+        f_test <- outer_fold_indices[[f_i]]
+        f_train <- setdiff(seq_along(y), f_test)
+        x_tr <- as.matrix(dat_prep[f_train, item_names, drop = FALSE])
+        y_tr <- y[f_train]
+        in_cv_folds <- .make_stratified_cv_folds(
+          y = y_tr, k = inner_folds, repeats = inner_repeats, seed = fold_seeds[[f_i]]
+        )
+        for (ci in seq_len(nrow(sub_pilot))) {
+          combo_cols <- sub_pilot$combination[[ci]] + 1L
+          sc <- rowSums(x_tr[, combo_cols, drop = FALSE])
+          for (f_in in seq_along(in_cv_folds)) {
+            in_te <- in_cv_folds[[f_in]]
+            in_tr <- setdiff(seq_len(nrow(x_tr)), in_te)
+            fr_tr <- compute_score_frequencies(sc[in_tr], y_tr[in_tr])
+          }
+        }
+      }
+      elapsed_s <- max(0, as.numeric((clock() - t0)[["elapsed"]]))
+      pilot_by_size[[si]] <- data.frame(
+        model_size = msize,
+        n_candidates = nrow(sub_pilot),
+        elapsed = elapsed_s,
+        stringsAsFactors = FALSE
+      )
+    }
+    pilot_timings_df <- do.call(rbind, pilot_by_size)
+    metadata$micro_pilot_elapsed <- max(0, as.numeric((clock() - pilot_start)[["elapsed"]]))
+
+    estimate <- .planner_estimate_runtime(workload, pilot_timings_df)
+    metadata$estimated_serial_runtime <- estimate$estimated_serial_runtime
+    metadata$runtime_estimation_method <- estimate$runtime_estimation_method
+
+    if (!is.finite(metadata$estimated_serial_runtime)) {
+      metadata$fallback_reason <- "runtime estimate unavailable; using manual plan"
+      metadata$decision_reason <- metadata$fallback_reason
+      return(list(plan = manual_plan, metadata = metadata, warn = TRUE))
+    }
+
+    # 2. Resource detection and legal plan generation
+    detected <- tryCatch(resource_detector(), error = function(e) NA_integer_)
+    if (!.planner_is_integer_valued(detected) || detected < 1L) {
+      detected <- .get_max_workers()
+    }
+
+    inner_tasks <- max(1L, ceiling(workload$total_candidates / 1000L))
+    all_plans <- .planner_generate_nested_legal_plans(
+      api = "cross_size_nested_cv",
+      available_resources = detected,
+      user_n_workers = manual_n_workers,
+      user_threads_per_worker = manual_threads_per_worker,
+      n_outer_tasks = n_outer_tasks,
+      inner_candidate_tasks = inner_tasks,
+      engine = engine,
+      is_chunks_allowed = FALSE,
+      is_hybrid_allowed = (engine == "Rcpp")
+    )
+
+    degenerate <- nrow(all_plans) <= 1L || all(all_plans$parallel == "none")
+    should <- if (identical(tuning, "always")) {
+      !degenerate
+    } else {
+      !degenerate && (metadata$estimated_serial_runtime >= threshold)
+    }
+
+    if (!should) {
+      metadata$decision_reason <- if (degenerate) {
+        "degenerate workload; using manual plan"
+      } else {
+        .planner_should_benchmark(metadata$estimated_serial_runtime, threshold)$reason
+      }
+      return(list(plan = manual_plan, metadata = metadata, warn = FALSE))
+    }
+
+    # 3. Benchmark legal plans on pilot candidates over complete nested structure
+    metadata$backend_benchmark_performed <- TRUE
+    raw_timings <- vector("list", nrow(all_plans))
+
+    for (p_idx in seq_len(nrow(all_plans))) {
+      p_row <- all_plans[p_idx, , drop = FALSE]
+      t_run_start <- clock()
+      err_msg <- NA_character_
+      bench_ok <- TRUE
+
+      tryCatch({
+        p_mode <- p_row$parallel[[1L]]
+        p_outer_w <- p_row$outer_workers[[1L]]
+        p_threads_w <- p_row$threads_per_worker[[1L]]
+
+        if (p_mode == "none") {
+          for (f_i in seq_along(outer_fold_indices)) {
+            test_idx <- outer_fold_indices[[f_i]]
+            train_idx <- setdiff(seq_len(nrow(dat_prep)), test_idx)
+            .evaluate_cross_size_outer_fold(
+              train_data = dat_prep[train_idx, , drop = FALSE],
+              test_data = dat_prep[test_idx, , drop = FALSE],
+              train_y = y[train_idx], test_y = y[test_idx],
+              outcome_name = outcome_name, item_names = item_names,
+              sizes = sizes, inner_folds = inner_folds, inner_repeats = inner_repeats,
+              stratified = stratified, selection_metric = selection_metric,
+              cutoff_method = cutoff_method, sensitivity_min = sensitivity_min,
+              specificity_min = specificity_min, prefer_fewer_items = prefer_fewer_items,
+              positive_label = positive_label, negative_label = negative_label,
+              engine = engine, parallel_mode = "none", n_workers_res = 1L,
+              threads_per_worker = 1L, seed = fold_seeds[[f_i]],
+              fold_name = paste0("Fold", f_i), rep_id = 1L, f_id = f_i, test_idx = test_idx
+            )
+          }
+        } else if (p_mode %in% c("outer", "hybrid") && p_outer_w > 1L) {
+          cl_bench <- parallel::makePSOCKcluster(p_outer_w)
+          on.exit(try(parallel::stopCluster(cl_bench), silent = TRUE), add = TRUE)
+          lib_paths <- .libPaths()
+          parallel::clusterExport(cl_bench, "lib_paths", envir = environment())
+          parallel::clusterEvalQ(cl_bench, {
+            .libPaths(lib_paths)
+            if (requireNamespace("NCVROC", quietly = TRUE)) try(library(NCVROC), silent = TRUE)
+            NULL
+          })
+          ns <- asNamespace("NCVROC")
+          available_symbols <- intersect(.CROSS_SIZE_OUTER_EXPORT_SYMBOLS, ls(ns, all.names = TRUE))
+          parallel::clusterExport(cl_bench, varlist = available_symbols, envir = ns)
+
+          parallel::parLapply(cl_bench, seq_along(outer_fold_indices), function(f_i) {
+            test_idx <- outer_fold_indices[[f_i]]
+            train_idx <- setdiff(seq_len(nrow(dat_prep)), test_idx)
+            .evaluate_cross_size_outer_fold(
+              train_data = dat_prep[train_idx, , drop = FALSE],
+              test_data = dat_prep[test_idx, , drop = FALSE],
+              train_y = y[train_idx], test_y = y[test_idx],
+              outcome_name = outcome_name, item_names = item_names,
+              sizes = sizes, inner_folds = inner_folds, inner_repeats = inner_repeats,
+              stratified = stratified, selection_metric = selection_metric,
+              cutoff_method = cutoff_method, sensitivity_min = sensitivity_min,
+              specificity_min = specificity_min, prefer_fewer_items = prefer_fewer_items,
+              positive_label = positive_label, negative_label = negative_label,
+              engine = engine,
+              parallel_mode = if (p_mode == "hybrid") "hybrid" else "none",
+              n_workers_res = if (p_mode == "hybrid") p_threads_w else 1L,
+              threads_per_worker = if (p_mode == "hybrid") p_threads_w else 1L,
+              seed = fold_seeds[[f_i]],
+              fold_name = paste0("Fold", f_i), rep_id = 1L, f_id = f_i, test_idx = test_idx
+            )
+          })
+          parallel::stopCluster(cl_bench)
+        } else if (p_mode == "threads") {
+          for (f_i in seq_along(outer_fold_indices)) {
+            test_idx <- outer_fold_indices[[f_i]]
+            train_idx <- setdiff(seq_len(nrow(dat_prep)), test_idx)
+            .evaluate_cross_size_outer_fold(
+              train_data = dat_prep[train_idx, , drop = FALSE],
+              test_data = dat_prep[test_idx, , drop = FALSE],
+              train_y = y[train_idx], test_y = y[test_idx],
+              outcome_name = outcome_name, item_names = item_names,
+              sizes = sizes, inner_folds = inner_folds, inner_repeats = inner_repeats,
+              stratified = stratified, selection_metric = selection_metric,
+              cutoff_method = cutoff_method, sensitivity_min = sensitivity_min,
+              specificity_min = specificity_min, prefer_fewer_items = prefer_fewer_items,
+              positive_label = positive_label, negative_label = negative_label,
+              engine = engine, parallel_mode = "threads", n_workers_res = p_threads_w,
+              threads_per_worker = 1L, seed = fold_seeds[[f_i]],
+              fold_name = paste0("Fold", f_i), rep_id = 1L, f_id = f_i, test_idx = test_idx
+            )
+          }
+        }
+      }, error = function(e) {
+        bench_ok <<- FALSE
+        err_msg <<- conditionMessage(e)
+      })
+
+      t_run_elapsed <- max(0, as.numeric((clock() - t_run_start)[["elapsed"]]))
+      raw_timings[[p_idx]] <- data.frame(
+        plan_id = p_row$plan_id[[1L]],
+        parallel = p_row$parallel[[1L]],
+        n_workers = p_row$n_workers[[1L]],
+        outer_workers = p_row$outer_workers[[1L]],
+        threads_per_worker = p_row$threads_per_worker[[1L]],
+        resource_count = p_row$resource_count[[1L]],
+        backend_priority = p_row$backend_priority[[1L]],
+        elapsed = t_run_elapsed,
+        success = bench_ok,
+        failure_reason = err_msg,
+        stringsAsFactors = FALSE
+      )
+    }
+
+    all_raw <- do.call(rbind, raw_timings)
+    bench_table <- .planner_aggregate_timings(all_raw)
+    extra_cols <- unique(all_raw[, c("plan_id", "outer_workers", "threads_per_worker"), drop = FALSE])
+    bench_table <- merge(bench_table, extra_cols, by = "plan_id", all.x = TRUE, sort = FALSE)
+    metadata$benchmark_table <- bench_table
+
+    selected <- .planner_select_plan(bench_table, tolerance = .PLANNER_SELECTION_TOLERANCE, fallback_plan = manual_plan, allow_nested = TRUE)
+    chosen_plan <- selected$selected_plan
+    metadata$selected_parallel <- chosen_plan$parallel[[1L]]
+    metadata$selected_n_workers <- chosen_plan$n_workers[[1L]]
+    metadata$selected_resource_count <- chosen_plan$resource_count[[1L]]
+    metadata$selected_outer_workers <- if (!is.null(chosen_plan$outer_workers)) chosen_plan$outer_workers[[1L]] else chosen_plan$n_workers[[1L]]
+    metadata$selected_threads_per_worker <- if (!is.null(chosen_plan$threads_per_worker)) chosen_plan$threads_per_worker[[1L]] else 1L
+
+    metadata$fallback_reason <- selected$fallback_reason
+    metadata$decision_reason <- if (is.na(selected$fallback_reason)) {
+      "selected near-best benchmark plan"
+    } else {
+      selected$fallback_reason
+    }
+
+    list(
+      plan = chosen_plan,
+      metadata = metadata,
+      warn = !is.na(selected$fallback_reason)
+    )
+  }), error = function(e) {
+    list(
+      plan = manual_plan,
+      metadata = within(metadata, {
+        fallback_reason <- paste("planner failure; using manual plan:", conditionMessage(e))
+        decision_reason <- fallback_reason
+      }),
+      warn = TRUE
+    )
+  })
+
+  outcome$metadata$planner_elapsed <- max(0, as.numeric((clock() - started)[["elapsed"]]))
+  outcome
+}
+
 #' Format automatic execution plan metadata as human-readable text
 #'
 #' @param x An execution plan metadata list or an S3 object containing one.
@@ -1431,6 +2290,18 @@
   if (!is.null(metadata$cv_method)) {
     lines <- c(lines, sprintf("Cross-Validation Method:  %s (k = %d, repeats = %d)",
                             metadata$cv_method, metadata$k, metadata$repeats))
+  }
+  if (!is.null(metadata$outer_folds)) {
+    lines <- c(lines, sprintf("Nested CV Structure:      %d-fold outer x %d repeat(s), %d-fold inner",
+                              metadata$outer_folds,
+                              if (!is.null(metadata$outer_repeats)) metadata$outer_repeats else 1L,
+                              metadata$inner_folds))
+    if (identical(metadata$selected_parallel, "hybrid")) {
+      lines <- c(lines, sprintf("Hybrid Allocation:        %d outer workers x %d threads = %d total resources",
+                                if (!is.null(metadata$selected_outer_workers)) metadata$selected_outer_workers else metadata$selected_n_workers,
+                                if (!is.null(metadata$selected_threads_per_worker)) metadata$selected_threads_per_worker else 1L,
+                                metadata$selected_resource_count))
+    }
   }
   paste(lines, collapse = "\n")
 }

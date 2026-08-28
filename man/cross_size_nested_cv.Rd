@@ -28,6 +28,7 @@ cross_size_nested_cv(
   parallel = FALSE,
   n_workers = NULL,
   threads_per_worker = 1L,
+  tuning = "off",
   seed = NULL,
   progress = interactive(),
   verbose = FALSE,
@@ -91,6 +92,11 @@ If `NULL`, resolved from `min_items:max_items` or `item_count`.}
 
 \item{threads_per_worker}{Integer, threads per PSOCK worker in `"hybrid"` mode (default 1).}
 
+\item{tuning}{Automatic execution-planning mode: `"off"` (default, manual
+execution configuration is authoritative), `"auto"` (benchmarks legal
+nested backends only when predicted serial runtime exceeds threshold), or
+`"always"` (always benchmarks legal backends for non-degenerate workloads).}
+
 \item{seed}{Integer, random seed for reproducible fold generation.}
 
 \item{progress}{Logical, show progress bar (default `interactive()`).}
@@ -102,7 +108,11 @@ If `NULL`, resolved from `min_items:max_items` or `item_count`.}
 \item{inner_k}{Alias for `inner_folds`.}
 }
 \value{
-An S3 object of class `"cross_size_nested_cv_result"`.
+An S3 object of class `"cross_size_nested_cv_result"`. When
+  \code{tuning = "auto"} or \code{"always"}, \code{settings$execution_plan}
+  contains planning metadata detailing the selected execution backend and
+  approximate runtime estimates. \code{tuning = "off"} attaches no execution
+  plan metadata.
 }
 \description{
 Performs nested cross-validation where the full candidate model space across

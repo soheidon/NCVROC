@@ -705,6 +705,10 @@
 #'   The effective value may be reduced according to the CPU budget, resolved
 #'   outer worker count, and `_R_CHECK_LIMIT_CORES_`. For other modes this must
 #'   remain 1.
+#' @param tuning Automatic execution-planning mode: `"off"` (default, manual
+#'   execution configuration is authoritative), `"auto"` (benchmarks legal
+#'   nested backends only when predicted serial runtime exceeds threshold), or
+#'   `"always"` (always benchmarks legal backends for non-degenerate workloads).
 #' @param progress Logical, show progress bars? Default `TRUE`.
 #' @param verbose Logical, print progress messages? Default `TRUE`.
 #' @param return Character, `"full"` (all details) or `"summary"` (summary
@@ -719,7 +723,9 @@
 #'   \item{selected_models}{character vector of selected item sets per fold.}
 #'   \item{selected_model_frequency}{data.frame of item-set selection counts.}
 #'   \item{outer_predictions}{data.frame of all out-of-fold predictions.}
-#'   \item{settings}{list of all argument values.}
+#'   \item{settings}{list of all argument values. When \code{tuning = "auto"} or
+#'     \code{"always"}, includes \code{execution_plan} metadata detailing the selected execution backend
+#'     and approximate runtime estimates. \code{tuning = "off"} attaches no execution plan metadata.}
 #'
 #' @examples
 #' set.seed(42)
@@ -756,6 +762,7 @@ nested_sum_roc <- function(data,
                            parallel = FALSE,
                            n_workers = NULL,
                            threads_per_worker = 1L,
+                           tuning = "off",
                            progress = TRUE,
                            verbose = TRUE,
                            return = c("full", "summary"),
@@ -768,6 +775,7 @@ nested_sum_roc <- function(data,
   # ---- Argument validation ----
   cutoff_method      <- match.arg(cutoff_method)
   return             <- match.arg(return)
+  tuning             <- match.arg(tuning, c("off", "auto", "always"))
 
   valid_metrics <- c("auc", "youden", "sensitivity", "specificity")
   if (!preselect_by %in% valid_metrics) {
@@ -855,32 +863,77 @@ nested_sum_roc <- function(data,
   n_folds <- length(outer_folds)
 
   # ---- Resolve parallel execution ----
-  hybrid_budget <- if (parallel_mode == "hybrid") {
-    .resolve_hybrid_budget(n_workers, threads_per_worker, n_folds)
+  execution_metadata <- NULL
+  if (!identical(tuning, "off")) {
+    planned <- .planner_nested_sum_roc_controller(
+      full_data                 = full_data,
+      y                         = y,
+      items                     = items,
+      outcome_col               = outcome_col,
+      min_items                 = min_items,
+      max_items                 = max_items,
+      positive_label            = positive_label,
+      negative_label            = negative_label,
+      cutoff_method             = cutoff_method,
+      preselect_top_n           = preselect_top_n,
+      preselect_by              = preselect_by,
+      selection_criterion       = selection_criterion,
+      outer_k                   = outer_k,
+      inner_k                   = inner_k,
+      outer_repeats             = outer_repeats,
+      inner_repeats             = inner_repeats,
+      stratified                = stratified,
+      seed                      = seed,
+      engine                    = engine,
+      tuning                    = tuning,
+      manual_parallel_mode      = parallel_mode,
+      manual_n_workers          = n_workers,
+      manual_threads_per_worker = threads_per_worker,
+      outer_folds               = outer_folds
+    )
+    execution_metadata <- planned$metadata
+    parallel_mode <- planned$plan$parallel[[1L]]
+    actual_workers <- if (!is.null(planned$plan$outer_workers)) planned$plan$outer_workers[[1L]] else planned$plan$n_workers[[1L]]
+    actual_threads_per_worker <- if (!is.null(planned$plan$threads_per_worker)) planned$plan$threads_per_worker[[1L]] else 1L
+    if (parallel_mode == "threads") {
+      actual_workers <- 1L
+    }
+    if (parallel_mode == "hybrid") {
+      settings$effective_outer_workers <- actual_workers
+      settings$effective_threads_per_worker <- actual_threads_per_worker
+      settings$effective_total_parallelism <- as.integer(actual_workers * actual_threads_per_worker)
+    }
+    if (isTRUE(planned$warn)) {
+      warning(execution_metadata$fallback_reason, call. = FALSE)
+    }
   } else {
-    NULL
-  }
-  actual_workers <- if (parallel_mode == "outer") {
-    .resolve_n_workers(parallel = TRUE, n_workers = n_workers, n_folds = n_folds)
-  } else if (parallel_mode == "hybrid") {
-    hybrid_budget$n_workers
-  } else if (parallel_mode %in% c("chunks", "threads")) {
-    .resolve_n_workers(parallel = TRUE, n_workers = n_workers)
-  } else {
-    1L
-  }
-  actual_threads_per_worker <- if (parallel_mode == "hybrid") {
-    hybrid_budget$threads_per_worker
-  } else {
-    1L
-  }
-  if (parallel_mode == "hybrid") {
-    settings$requested_outer_workers <- if (is.null(n_workers)) NA_integer_ else n_workers
-    settings$requested_threads_per_worker <- threads_per_worker
-    settings$effective_outer_workers <- actual_workers
-    settings$effective_threads_per_worker <- actual_threads_per_worker
-    settings$effective_total_parallelism <- hybrid_budget$total_parallelism
-    settings$effective_max_cores <- hybrid_budget$max_cores
+    hybrid_budget <- if (parallel_mode == "hybrid") {
+      .resolve_hybrid_budget(n_workers, threads_per_worker, n_folds)
+    } else {
+      NULL
+    }
+    actual_workers <- if (parallel_mode == "outer") {
+      .resolve_n_workers(parallel = TRUE, n_workers = n_workers, n_folds = n_folds)
+    } else if (parallel_mode == "hybrid") {
+      hybrid_budget$n_workers
+    } else if (parallel_mode %in% c("chunks", "threads")) {
+      .resolve_n_workers(parallel = TRUE, n_workers = n_workers)
+    } else {
+      1L
+    }
+    actual_threads_per_worker <- if (parallel_mode == "hybrid") {
+      hybrid_budget$threads_per_worker
+    } else {
+      1L
+    }
+    if (parallel_mode == "hybrid") {
+      settings$requested_outer_workers <- if (is.null(n_workers)) NA_integer_ else n_workers
+      settings$requested_threads_per_worker <- threads_per_worker
+      settings$effective_outer_workers <- actual_workers
+      settings$effective_threads_per_worker <- actual_threads_per_worker
+      settings$effective_total_parallelism <- hybrid_budget$total_parallelism
+      settings$effective_max_cores <- hybrid_budget$max_cores
+    }
   }
 
   # ---- Determine if nested CV needs streaming ----
@@ -1127,6 +1180,9 @@ nested_sum_roc <- function(data,
   rownames(all_predictions) <- NULL
 
   # Build result
+  if (!identical(tuning, "off")) {
+    settings$execution_plan <- execution_metadata
+  }
   result <- list(
     summary                  = summary_df,
     outer_results            = per_fold,
