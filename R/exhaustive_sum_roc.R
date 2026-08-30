@@ -14,7 +14,8 @@
   "compute_roc_metrics_from_table",
   "find_optimal_cutoff",
   ".write_chunk_rds",
-  ".order_and_rank_candidates"
+  ".order_and_rank_candidates",
+  ".materialize_candidate_items"
 )
 
 #' Pure serial evaluation of a single combination chunk
@@ -87,14 +88,6 @@
         chunk_size = as.integer(chunk_size)
       )
     }
-    items_vec <- character(n_this_chunk)
-    for (gi in seq_len(n_this_chunk)) {
-      global_rank <- as.double(chunk_start) + (gi - 1L)
-      resolved <- .resolve_global_combination_rank(n_items, min_items, max_items, global_rank)
-      idx <- .combination_unrank(n_items, resolved$k, resolved$rank_within_k)
-      items_vec[gi] <- format_items(items[idx + 1L])
-    }
-    results$items <- items_vec
   } else {
     combo_chunk <- .enumerate_combinations_chunk(
       items, min_items, max_items, chunk_start, chunk_size
@@ -193,8 +186,8 @@
   )
 
   if (isTRUE(task$save_rds) && !is.null(task$chunk_dir)) {
-    # Remove internal column before writing to RDS
-    clean_res <- chunk_res
+    # Materialize items for written chunk RDS
+    clean_res <- .materialize_candidate_items(chunk_res, items, min_items, max_items)
     clean_res$.global_combo_index <- NULL
     rds_path <- .write_chunk_rds(clean_res, task$chunk_dir, task$chunk_idx)
 
@@ -258,14 +251,19 @@
   n_chunks <- ceiling(total_combos / chunk_size)
 
   if (n_chunks <= 1L) {
-    # Only 1 chunk: evaluate sequentially
-    x_mat <- as.matrix(x[, items, drop = FALSE])
     res <- .evaluate_chunk_serial(
-      x_mat, y, items, min_items, max_items, cutoff_method,
-      chunk_start = 0, chunk_size = chunk_size, engine = engine
+      x_mat         = x,
+      y             = y,
+      items         = items,
+      min_items     = min_items,
+      max_items     = max_items,
+      cutoff_method = cutoff_method,
+      chunk_start   = 0.0,
+      chunk_size    = total_combos,
+      engine        = engine
     )
     if (save_rds && !is.null(chunk_dir)) {
-      clean_res <- res
+      clean_res <- .materialize_candidate_items(res, items, min_items, max_items)
       clean_res$.global_combo_index <- NULL
       .write_chunk_rds(clean_res, chunk_dir, 0L)
     }
@@ -273,6 +271,7 @@
     if (!is.null(top_n) && top_n > 0 && nrow(res) > top_n) {
       res <- utils::head(res, top_n)
     }
+    res <- .materialize_candidate_items(res, items, min_items, max_items)
     res$.global_combo_index <- NULL
     return(res)
   }
@@ -368,6 +367,7 @@
     ordered_res <- utils::head(ordered_res, top_n)
   }
 
+  ordered_res <- .materialize_candidate_items(ordered_res, items, min_items, max_items)
   ordered_res$.global_combo_index <- NULL
   rownames(ordered_res) <- NULL
 
@@ -430,6 +430,7 @@
 #'   estimated runtime and otherwise falls back to the manual configuration.
 #'   Runtime estimates use observed pilot timings; a two-point affine estimate is
 #'   used when suitable measurements are available. Default `"off"`.
+#' @param progress_callback Optional internal callback function receiving progress updates.
 #'
 #' @details
 #' When `ci = TRUE`, confidence intervals are calculated after ranking and
@@ -498,7 +499,8 @@ exhaustive_sum_roc <- function(data,
                                progress = TRUE,
                                chunk_start = NULL,
                                chunk_size = NULL,
-                               tuning = "off") {
+                               tuning = "off",
+                               progress_callback = NULL) {
 
   # ---- Argument validation ----
   cutoff_method <- match.arg(cutoff_method)
@@ -595,6 +597,7 @@ exhaustive_sum_roc <- function(data,
       n_neg         = n_neg,
       num_threads   = threads_for_chunk
     )
+    results <- .materialize_candidate_items(results, items, min_items, max_items)
     # Remove internal tracking column for public return
     results$.global_combo_index <- NULL
 
@@ -608,30 +611,100 @@ exhaustive_sum_roc <- function(data,
     total_combos <- .count_total_combos(n_items, min_items, max_items)
     x_mat <- as.matrix(x[, items, drop = FALSE])
 
-    if (isTRUE(progress)) {
-      message("Evaluating ", total_combos, " combination(s)...")
-    }
+    if (!is.null(top_n) && top_n > 0) {
+      # In-C++ Streaming Top-N Fast Path (bounded memory, O(top_n) allocation)
+      has_cb <- is.function(progress_callback)
+      active_prog <- isTRUE(progress) || has_cb
+      batch_size <- .progress_batch_size(total_combos, target_batches = 20L, minimum = 2500L, maximum = 200000L)
+      if (is.na(batch_size)) batch_size <- 200000L
 
-    results <- if (isTRUE(progress)) {
-      .evaluate_exhaustive_batched(
+      if (total_combos > batch_size) {
+        n_batches <- ceiling(total_combos / batch_size)
+        prg <- if (!has_cb && isTRUE(progress)) {
+          p <- .progress_make(total_combos, label = "NCVROC", enabled = TRUE, progress_mode = "exact")
+          on.exit(p$close(), add = TRUE)
+          p
+        } else NULL
+
+        batch_results <- vector("list", n_batches)
+        for (b in seq_len(n_batches)) {
+          b_start <- as.double((b - 1L) * batch_size)
+          b_size  <- as.integer(min(as.double(batch_size), as.double(total_combos) - b_start))
+          batch_results[[b]] <- evaluate_combos_cpp_chunk_parallel_topn(
+            x                  = x_mat,
+            y                  = y,
+            min_items          = min_items,
+            max_items          = max_items,
+            cutoff_method      = cutoff_method,
+            rank_by            = rank_by,
+            top_n              = as.integer(top_n),
+            prefer_fewer_items = prefer_fewer_items,
+            chunk_start        = b_start,
+            chunk_size         = b_size,
+            num_threads        = eff_n_threads
+          )
+          if (has_cb) {
+            progress_callback(b_size)
+          } else if (!is.null(prg)) {
+            prg$tick(b_size)
+            prg$eta_message()
+          }
+        }
+        if (!is.null(prg)) prg$finish()
+        combined <- do.call(rbind, batch_results)
+        results <- .order_and_rank_candidates(combined, rank_by, prefer_fewer_items)
+        results <- utils::head(results, top_n)
+      } else {
+        prg <- if (!has_cb && isTRUE(progress)) {
+          p <- .progress_make(total_combos, label = "NCVROC", enabled = TRUE, progress_mode = "exact")
+          on.exit(p$close(), add = TRUE)
+          p
+        } else NULL
+
+        results <- evaluate_combos_cpp_chunk_parallel_topn(
+          x                  = x_mat,
+          y                  = y,
+          min_items          = min_items,
+          max_items          = max_items,
+          cutoff_method      = cutoff_method,
+          rank_by            = rank_by,
+          top_n              = as.integer(top_n),
+          prefer_fewer_items = prefer_fewer_items,
+          chunk_start        = 0.0,
+          chunk_size         = as.integer(total_combos),
+          num_threads        = eff_n_threads
+        )
+        if (has_cb) {
+          progress_callback(total_combos)
+        } else if (!is.null(prg)) {
+          prg$tick(total_combos)
+          prg$finish()
+        }
+      }
+    } else if (isTRUE(progress)) {
+      results <- .evaluate_exhaustive_batched(
         x_mat, y, items, min_items, max_items, cutoff_method, total_combos,
         engine, n_pos, n_neg, eff_n_threads,
         batch_size = .progress_batch_size(total_combos),
         progress = TRUE
       )
+      results <- .order_and_rank_candidates(results, rank_by, prefer_fewer_items)
+      if (!is.null(top_n)) {
+        results <- utils::head(results, top_n)
+      }
     } else {
-      .evaluate_chunk_serial(
+      results <- .evaluate_chunk_serial(
         x_mat, y, items, min_items, max_items, cutoff_method, 0.0, total_combos,
         engine, n_pos, n_neg, eff_n_threads
       )
+      results <- .order_and_rank_candidates(results, rank_by, prefer_fewer_items)
+      if (!is.null(top_n)) {
+        results <- utils::head(results, top_n)
+      }
     }
+
+    results <- .materialize_candidate_items(results, items, min_items, max_items)
     results$.global_combo_index <- NULL
-
-    results <- .order_and_rank_candidates(results, rank_by, prefer_fewer_items)
-
-    if (!is.null(top_n)) {
-      results <- utils::head(results, top_n)
-    }
 
   } else if (execution_parallel_mode == "chunks") {
     # --- Parallel Chunk Execution Path ---
@@ -668,19 +741,96 @@ exhaustive_sum_roc <- function(data,
 
     if (engine == "Rcpp") {
       x_mat <- as.matrix(x[, items, drop = FALSE])
-      results <- if (isTRUE(progress)) {
-        .evaluate_exhaustive_batched(
+      if (!is.null(top_n) && top_n > 0) {
+        has_cb <- is.function(progress_callback)
+        active_prog <- isTRUE(progress) || has_cb
+        batch_size <- .progress_batch_size(n_combos, target_batches = 20L, minimum = 2500L, maximum = 200000L)
+        if (is.na(batch_size)) batch_size <- 200000L
+
+        if (n_combos > batch_size) {
+          n_batches <- ceiling(n_combos / batch_size)
+          prg <- if (!has_cb && isTRUE(progress)) {
+            p <- .progress_make(n_combos, label = "NCVROC", enabled = TRUE, progress_mode = "exact")
+            on.exit(p$close(), add = TRUE)
+            p
+          } else NULL
+
+          batch_results <- vector("list", n_batches)
+          for (b in seq_len(n_batches)) {
+            b_start <- as.double((b - 1L) * batch_size)
+            b_size  <- as.integer(min(as.double(batch_size), as.double(n_combos) - b_start))
+            batch_results[[b]] <- evaluate_combos_cpp_chunk_parallel_topn(
+              x                  = x_mat,
+              y                  = y,
+              min_items          = min_items,
+              max_items          = max_items,
+              cutoff_method      = cutoff_method,
+              rank_by            = rank_by,
+              top_n              = as.integer(top_n),
+              prefer_fewer_items = prefer_fewer_items,
+              chunk_start        = b_start,
+              chunk_size         = b_size,
+              num_threads        = 1L
+            )
+            if (has_cb) {
+              progress_callback(b_size)
+            } else if (!is.null(prg)) {
+              prg$tick(b_size)
+              prg$eta_message()
+            }
+          }
+          if (!is.null(prg)) prg$finish()
+          combined <- do.call(rbind, batch_results)
+          results <- .order_and_rank_candidates(combined, rank_by, prefer_fewer_items)
+          results <- utils::head(results, top_n)
+        } else {
+          prg <- if (!has_cb && isTRUE(progress)) {
+            p <- .progress_make(n_combos, label = "NCVROC", enabled = TRUE, progress_mode = "exact")
+            on.exit(p$close(), add = TRUE)
+            p
+          } else NULL
+
+          results <- evaluate_combos_cpp_chunk_parallel_topn(
+            x                  = x_mat,
+            y                  = y,
+            min_items          = min_items,
+            max_items          = max_items,
+            cutoff_method      = cutoff_method,
+            rank_by            = rank_by,
+            top_n              = as.integer(top_n),
+            prefer_fewer_items = prefer_fewer_items,
+            chunk_start        = 0.0,
+            chunk_size         = as.integer(n_combos),
+            num_threads        = 1L
+          )
+          if (has_cb) {
+            progress_callback(n_combos)
+          } else if (!is.null(prg)) {
+            prg$tick(n_combos)
+            prg$finish()
+          }
+        }
+      } else if (isTRUE(progress)) {
+        results <- .evaluate_exhaustive_batched(
           x_mat, y, items, min_items, max_items, cutoff_method, n_combos,
           engine, n_pos, n_neg, num_threads = 1L,
           batch_size = .progress_batch_size(n_combos),
           progress = TRUE
         )
+        results <- .order_and_rank_candidates(results, rank_by, prefer_fewer_items)
+        if (!is.null(top_n)) {
+          results <- utils::head(results, top_n)
+        }
       } else {
         combo_indices <- lapply(combos, function(v) match(v, items) - 1L)
-        out <- evaluate_combos_cpp(x_mat, y, combo_indices, cutoff_method)
-        out$items <- sapply(combos, format_items)
-        out
+        results <- evaluate_combos_cpp(x_mat, y, combo_indices, cutoff_method)
+        results$.global_combo_index <- seq_len(n_combos)
+        results <- .order_and_rank_candidates(results, rank_by, prefer_fewer_items)
+        if (!is.null(top_n)) {
+          results <- utils::head(results, top_n)
+        }
       }
+      results <- .materialize_candidate_items(results, items, min_items, max_items)
       results$.global_combo_index <- NULL
     } else {
       prg <- .progress_make(n_combos, enabled = progress)
@@ -718,12 +868,14 @@ exhaustive_sum_roc <- function(data,
 
       prg$finish()
       results <- do.call(rbind, results)
-    }
 
-    results <- .order_and_rank_candidates(results, rank_by, prefer_fewer_items)
+      results <- .order_and_rank_candidates(results, rank_by, prefer_fewer_items)
 
-    if (!is.null(top_n)) {
-      results <- utils::head(results, top_n)
+      if (!is.null(top_n)) {
+        results <- utils::head(results, top_n)
+      }
+      results <- .materialize_candidate_items(results, items, min_items, max_items)
+      results$.global_combo_index <- NULL
     }
   }
 

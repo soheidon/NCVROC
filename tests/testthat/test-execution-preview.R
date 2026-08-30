@@ -81,13 +81,15 @@ test_that("print and format methods for ncvroc_execution_plan return human-reada
 
   formatted <- format(plan)
   expect_type(formatted, "character")
-  expect_match(formatted, "NCVROC Execution Plan & Runtime Preview")
+  expect_match(formatted, "NCVROC Execution Plan")
   expect_match(formatted, "Workflow: cross_size_cv")
   expect_match(formatted, "Total Candidates:")
-  expect_match(formatted, "Selected Execution Plan")
+  expect_match(formatted, "Suggested Configuration")
+  expect_false(grepl("Initial Serial Estimate", formatted))
+  expect_false(grepl("Estimated Runtime", formatted))
 
   # Print should run cleanly
-  expect_output(print(plan), "NCVROC Execution Plan & Runtime Preview")
+  expect_output(print(plan), "NCVROC Execution Plan")
 })
 
 test_that("plot.ncvroc_execution_plan generates base R plots without error", {

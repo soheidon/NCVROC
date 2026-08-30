@@ -47,6 +47,7 @@
 
 #' Evaluate a single outer fold in cross-size nested cross-validation
 #'
+#' @param progress_callback Optional callback function receiving progress increment counts.
 #' @keywords internal
 .evaluate_cross_size_outer_fold <- function(train_data,
                                             test_data,
@@ -73,7 +74,8 @@
                                             fold_name = "Fold1",
                                             rep_id = 1L,
                                             f_id = 1L,
-                                            test_idx = seq_len(nrow(test_data))) {
+                                            test_idx = seq_len(nrow(test_data)),
+                                            progress_callback = NULL) {
   # Inner parallel setting per outer fold (strict oversubscription prevention)
   inner_parallel <- if (parallel_mode == "threads") {
     "threads"
@@ -117,7 +119,8 @@
     tuning             = "off",
     ci                 = FALSE,
     seed               = seed,
-    progress           = FALSE
+    progress           = FALSE,
+    progress_callback  = progress_callback
   )
 
   selected_model_str <- inner_fit$final_selected_model$items
@@ -420,7 +423,7 @@ cross_size_nested_cv <- function(data,
   }
 
   # ---- Helper to evaluate a single outer fold ----
-  eval_outer_fold <- function(f) {
+  eval_outer_fold <- function(f, progress_callback = NULL) {
     fold_name <- names(outer_fold_indices)[f]
     test_idx  <- outer_fold_indices[[f]]
     train_idx <- setdiff(seq_len(n_total), test_idx)
@@ -464,7 +467,8 @@ cross_size_nested_cv <- function(data,
       fold_name          = fold_name,
       rep_id             = rep_id,
       f_id               = f_id,
-      test_idx           = test_idx
+      test_idx           = test_idx,
+      progress_callback  = progress_callback
     )
   }
 
@@ -502,28 +506,40 @@ cross_size_nested_cv <- function(data,
       envir = environment()
     )
 
+    prg <- .progress_make(
+      n_outer_evals,
+      label = "NCVROC",
+      enabled = progress,
+      progress_mode = "exact",
+      unit = "outer folds complete"
+    )
     if (verbose) {
       message("Running ", n_outer_evals, " outer folds in parallel...")
     }
     outer_results_list <- parallel::parLapply(cl, seq_len(n_outer_evals), eval_outer_fold)
+    prg$finish()
     if (verbose) {
       message("All outer folds complete.")
     }
   } else {
-    prg <- .progress_make(n_outer_evals, enabled = progress && n_outer_evals > 1)
-    on.exit(prg$close(), add = TRUE)
-
+    total_candidates_all_sizes <- sum(vapply(sizes, function(s) choose(n_items_total, s), numeric(1)))
     outer_results_list <- vector("list", n_outer_evals)
     for (f in seq_len(n_outer_evals)) {
       if (verbose) {
         cat(sprintf("Evaluating outer fold %d/%d (%s)...\n",
                     f, n_outer_evals, names(outer_fold_indices)[f]))
       }
-      outer_results_list[[f]] <- eval_outer_fold(f)
-      prg$tick()
-      prg$eta_message()
+      prg_f <- .progress_make(
+        total_candidates_all_sizes,
+        label = sprintf("NCVROC [Fold %d/%d]", f, n_outer_evals),
+        enabled = progress,
+        progress_mode = "exact",
+        unit = "candidates"
+      )
+      cb_f <- if (progress) function(n_done) prg_f$tick(n_done) else NULL
+      outer_results_list[[f]] <- eval_outer_fold(f, progress_callback = cb_f)
+      prg_f$finish()
     }
-    prg$finish()
   }
 
   # ---- Aggregate Outer Test Results ----
@@ -681,4 +697,134 @@ print.cross_size_nested_cv_result <- function(x, ...) {
 #' @export
 summary.cross_size_nested_cv_result <- function(object, ...) {
   print(object, ...)
+}
+
+#' Plot Cross-Size Nested Cross-Validation Results
+#'
+#' Renders diagnostic plots of outer-test generalization performance,
+#' model size selection frequencies, and top selected item combinations.
+#'
+#' @param x An object of class `"cross_size_nested_cv_result"`.
+#' @param which Plot type to display: `"all"` (3-panel overview),
+#'   `"performance"` (outer-fold AUC test distribution),
+#'   `"model_size"` (model size selection frequency barplot),
+#'   or `"combinations"` (top selected item combinations barplot). Default `"all"`.
+#' @param metric Performance metric to plot when `which = "performance"` or in the performance panel of `"all"`. Default `"auc"`.
+#' @param ... Additional arguments passed to base graphics functions.
+#' @return Invisibly returns `x`.
+#' @export
+plot.cross_size_nested_cv_result <- function(x, which = c("all", "performance", "model_size", "combinations"), metric = "auc", ...) {
+  which <- match.arg(which)
+
+  plot_perf <- function() {
+    outer_col <- paste0("outer_", metric)
+    if (!outer_col %in% names(x$outer_fold_results)) {
+      outer_col <- "outer_auc"
+      metric <- "auc"
+    }
+    vals <- x$outer_fold_results[[outer_col]]
+    vals <- vals[is.finite(vals)]
+
+    if (length(vals) == 0L) {
+      graphics::plot.new()
+      graphics::text(0.5, 0.5, paste0("No valid ", metric, " values available"))
+      return()
+    }
+
+    metric_label <- toupper(metric)
+    graphics::stripchart(
+      vals,
+      method   = "jitter",
+      vertical = TRUE,
+      pch      = 21,
+      bg       = "steelblue",
+      cex      = 1.3,
+      xlab     = "",
+      ylab     = metric_label,
+      main     = paste0("Outer-Fold Test ", metric_label),
+      xaxt     = "n",
+      ...
+    )
+    mean_val <- mean(vals, na.rm = TRUE)
+    graphics::abline(h = mean_val, col = "red", lty = 2, lwd = 2)
+    if (metric == "auc") {
+      graphics::abline(h = 0.5, col = "gray50", lty = 3)
+      graphics::legend("bottomleft",
+        legend = c(sprintf("Mean = %.3f", mean_val), "Chance = 0.5"),
+        col    = c("red", "gray50"), lty = c(2, 3), lwd = c(2, 1),
+        cex    = 0.85, bg = "white"
+      )
+    } else {
+      graphics::legend("bottomleft",
+        legend = sprintf("Mean = %.3f", mean_val),
+        col    = "red", lty = 2, lwd = 2,
+        cex    = 0.85, bg = "white"
+      )
+    }
+  }
+
+  plot_msize <- function() {
+    mf <- x$model_size_selection_frequency
+    if (is.null(mf) || nrow(mf) == 0L) {
+      graphics::plot.new()
+      graphics::text(0.5, 0.5, "No model size frequency data available")
+      return()
+    }
+    graphics::barplot(
+      height    = rev(mf$frequency * 100),
+      names.arg = rev(paste0(mf$n_items, " items")),
+      horiz     = TRUE,
+      las       = 1,
+      xlab      = "Selection Frequency (%)",
+      main      = "Model Size Selection",
+      col       = "darkolivegreen3",
+      border    = NA,
+      xlim      = c(0, max(100, max(mf$frequency * 100, na.rm = TRUE))),
+      ...
+    )
+  }
+
+  plot_combos <- function() {
+    cf <- x$item_combination_selection_frequency
+    if (is.null(cf) || nrow(cf) == 0L) {
+      graphics::plot.new()
+      graphics::text(0.5, 0.5, "No combination frequency data available")
+      return()
+    }
+    n_show <- min(8L, nrow(cf))
+    cf_sub <- cf[seq_len(n_show), , drop = FALSE]
+
+    graphics::barplot(
+      height    = rev(cf_sub$frequency * 100),
+      names.arg = rev(cf_sub$items),
+      horiz     = TRUE,
+      las       = 1,
+      xlab      = "Selection Frequency (%)",
+      main      = "Top Selected Combinations",
+      col       = "coral",
+      border    = NA,
+      xlim      = c(0, max(100, max(cf_sub$frequency * 100, na.rm = TRUE))),
+      ...
+    )
+  }
+
+  if (which == "all") {
+    old_par <- graphics::par(mfrow = c(1, 3), mar = c(4.5, 6, 3, 1))
+    on.exit(graphics::par(old_par), add = TRUE)
+    plot_perf()
+    plot_msize()
+    plot_combos()
+  } else if (which == "performance") {
+    plot_perf()
+  } else if (which == "model_size") {
+    old_par <- graphics::par(mar = c(4.5, 6, 3, 1))
+    on.exit(graphics::par(old_par), add = TRUE)
+    plot_msize()
+  } else if (which == "combinations") {
+    old_par <- graphics::par(mar = c(4.5, 10, 3, 1))
+    on.exit(graphics::par(old_par), add = TRUE)
+    plot_combos()
+  }
+
+  invisible(x)
 }

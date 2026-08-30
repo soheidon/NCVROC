@@ -292,6 +292,7 @@
 #'
 #' @param parallel Parallel mode for inner exhaustive search (e.g. "threads" or "none").
 #' @param n_workers Number of workers/threads for inner evaluation.
+#' @param progress_callback Optional callback function receiving progress increment counts.
 #' @return A data.frame of at most `top_n` rows in the standard exhaustive_sum_roc format.
 #' @keywords internal
 .streaming_top_n_exhaustive <- function(data,
@@ -306,7 +307,8 @@
                                          top_n,
                                          engine,
                                          parallel = "none",
-                                         n_workers = NULL) {
+                                         n_workers = NULL,
+                                         progress_callback = NULL) {
   validated <- validate_inputs(data, outcome, items, positive_label, negative_label)
   x     <- validated$data
   y     <- validated$y
@@ -338,6 +340,7 @@
       parallel          = parallel,
       n_workers         = n_workers,
       progress          = FALSE,
+      progress_callback = progress_callback,
       chunk_start       = chunk_start,
       chunk_size        = chunk_size
     )
@@ -397,7 +400,8 @@
                                         verbose,
                                         cl_chunk = NULL,
                                         parallel_inner = "none",
-                                        n_workers_inner = NULL) {
+                                        n_workers_inner = NULL,
+                                        progress_callback = NULL) {
   test_idx  <- outer_folds[[i]]
   train_idx <- setdiff(seq_len(n_total), test_idx)
   fold_name <- names(outer_folds)[i]
@@ -426,37 +430,39 @@
     )
   } else if (use_streaming_ncv) {
     candidates <- .streaming_top_n_exhaustive(
-      data             = full_data[train_idx, , drop = FALSE],
-      outcome          = outcome_col,
-      items            = items,
-      min_items        = min_items,
-      max_items        = max_items,
-      positive_label   = positive_label,
-      negative_label   = negative_label,
-      cutoff_method    = cutoff_method,
-      rank_by          = preselect_by,
-      top_n            = preselect_top_n,
-      engine           = engine,
-      parallel         = parallel_inner,
-      n_workers        = n_workers_inner
+      data              = full_data[train_idx, , drop = FALSE],
+      outcome           = outcome_col,
+      items             = items,
+      min_items         = min_items,
+      max_items         = max_items,
+      positive_label    = positive_label,
+      negative_label    = negative_label,
+      cutoff_method     = cutoff_method,
+      rank_by           = preselect_by,
+      top_n             = preselect_top_n,
+      engine            = engine,
+      parallel          = parallel_inner,
+      n_workers         = n_workers_inner,
+      progress_callback = progress_callback
     )
   } else {
     candidates <- exhaustive_sum_roc(
-      data             = full_data[train_idx, , drop = FALSE],
-      outcome          = outcome_col,
-      items            = items,
-      min_items        = min_items,
-      max_items        = max_items,
-      positive_label   = positive_label,
-      negative_label   = negative_label,
-      cutoff_method    = cutoff_method,
-      rank_by          = preselect_by,
-      top_n            = NULL,
+      data              = full_data[train_idx, , drop = FALSE],
+      outcome           = outcome_col,
+      items             = items,
+      min_items         = min_items,
+      max_items         = max_items,
+      positive_label    = positive_label,
+      negative_label    = negative_label,
+      cutoff_method     = cutoff_method,
+      rank_by           = preselect_by,
+      top_n             = NULL,
       prefer_fewer_items = TRUE,
-      engine           = engine,
-      parallel         = parallel_inner,
-      n_workers        = n_workers_inner,
-      progress         = FALSE
+      engine            = engine,
+      parallel          = parallel_inner,
+      n_workers         = n_workers_inner,
+      progress          = FALSE,
+      progress_callback = progress_callback
     )
   }
 
@@ -1019,10 +1025,18 @@ nested_sum_roc <- function(data,
       )
     }
 
+    prg <- .progress_make(
+      n_folds,
+      label = "NCVROC",
+      enabled = progress,
+      progress_mode = "exact",
+      unit = "outer folds complete"
+    )
     if (verbose) {
       message("Running ", n_folds, " outer folds in parallel...")
     }
     per_fold <- parallel::parLapply(cl, seq_len(n_folds), fold_worker)
+    prg$finish()
     if (verbose) {
       message("All outer folds complete.")
     }
@@ -1048,11 +1062,17 @@ nested_sum_roc <- function(data,
       parallel::clusterExport(cl_chunk, varlist = available_chunk_syms, envir = ns)
     }
 
-    prg <- .progress_make(n_folds, enabled = progress)
-    on.exit(prg$close(), add = TRUE)
-
+    total_combos <- .count_total_combos(length(items), min_items, max_items)
     per_fold <- vector("list", n_folds)
     for (i in seq_len(n_folds)) {
+      prg_i <- .progress_make(
+        total_combos,
+        label = sprintf("NCVROC [Fold %d/%d]", i, n_folds),
+        enabled = progress,
+        progress_mode = "exact",
+        unit = "candidates"
+      )
+      cb_i <- if (progress) function(n_done) prg_i$tick(n_done) else NULL
       per_fold[[i]] <- .evaluate_single_outer_fold(
         i                   = i,
         outer_folds         = outer_folds,
@@ -1074,24 +1094,28 @@ nested_sum_roc <- function(data,
         use_streaming_ncv   = use_streaming_ncv,
         engine              = engine,
         seed                = seed,
-        progress            = progress && verbose,
+        progress            = FALSE,
         verbose             = verbose,
         cl_chunk            = cl_chunk,
         parallel_inner      = "none",
-        n_workers_inner     = 1L
+        n_workers_inner     = 1L,
+        progress_callback   = cb_i
       )
-      prg$tick()
-      prg$eta_message()
+      prg_i$finish()
     }
-    prg$finish()
 
   } else if (parallel_mode %in% c("threads", "hybrid")) {
-    # Sequential outer folds with multi-threaded C++ inner exhaustive evaluation
-    prg <- .progress_make(n_folds, enabled = progress)
-    on.exit(prg$close(), add = TRUE)
-
+    total_combos <- .count_total_combos(length(items), min_items, max_items)
     per_fold <- vector("list", n_folds)
     for (i in seq_len(n_folds)) {
+      prg_i <- .progress_make(
+        total_combos,
+        label = sprintf("NCVROC [Fold %d/%d]", i, n_folds),
+        enabled = progress,
+        progress_mode = "exact",
+        unit = "candidates"
+      )
+      cb_i <- if (progress) function(n_done) prg_i$tick(n_done) else NULL
       per_fold[[i]] <- .evaluate_single_outer_fold(
         i                   = i,
         outer_folds         = outer_folds,
@@ -1113,23 +1137,28 @@ nested_sum_roc <- function(data,
         use_streaming_ncv   = use_streaming_ncv,
         engine              = engine,
         seed                = seed,
-        progress            = progress && verbose,
+        progress            = FALSE,
         verbose             = verbose,
         cl_chunk            = NULL,
         parallel_inner      = "threads",
-        n_workers_inner     = if (parallel_mode == "hybrid") actual_threads_per_worker else actual_workers
+        n_workers_inner     = if (parallel_mode == "hybrid") actual_threads_per_worker else actual_workers,
+        progress_callback   = cb_i
       )
-      prg$tick()
-      prg$eta_message()
+      prg_i$finish()
     }
-    prg$finish()
 
   } else {
-    prg <- .progress_make(n_folds, enabled = progress)
-    on.exit(prg$close(), add = TRUE)
-
+    total_combos <- .count_total_combos(length(items), min_items, max_items)
     per_fold <- vector("list", n_folds)
     for (i in seq_len(n_folds)) {
+      prg_i <- .progress_make(
+        total_combos,
+        label = sprintf("NCVROC [Fold %d/%d]", i, n_folds),
+        enabled = progress,
+        progress_mode = "exact",
+        unit = "candidates"
+      )
+      cb_i <- if (progress) function(n_done) prg_i$tick(n_done) else NULL
       per_fold[[i]] <- .evaluate_single_outer_fold(
         i                   = i,
         outer_folds         = outer_folds,
@@ -1151,16 +1180,15 @@ nested_sum_roc <- function(data,
         use_streaming_ncv   = use_streaming_ncv,
         engine              = engine,
         seed                = seed,
-        progress            = progress && verbose,
+        progress            = FALSE,
         verbose             = verbose,
         cl_chunk            = NULL,
         parallel_inner      = "none",
-        n_workers_inner     = 1L
+        n_workers_inner     = 1L,
+        progress_callback   = cb_i
       )
-      prg$tick()
-      prg$eta_message()
+      prg_i$finish()
     }
-    prg$finish()
   }
 
   # ---- Aggregate results ----

@@ -24,7 +24,8 @@ exhaustive_sum_roc(
   progress = TRUE,
   chunk_start = NULL,
   chunk_size = NULL,
-  tuning = "off"
+  tuning = "off",
+  progress_callback = NULL
 )
 }
 \arguments{
@@ -91,6 +92,8 @@ same safe planning process. A sweep is budgeted to at most 5 percent of the
 estimated runtime and otherwise falls back to the manual configuration.
 Runtime estimates use observed pilot timings; a two-point affine estimate is
 used when suitable measurements are available. Default `"off"`.}
+
+\item{progress_callback}{Optional internal callback function receiving progress updates.}
 }
 \value{
 A data.frame with columns: `rank`, `items` (comma-separated string),

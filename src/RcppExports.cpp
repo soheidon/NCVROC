@@ -60,6 +60,28 @@ BEGIN_RCPP
     return rcpp_result_gen;
 END_RCPP
 }
+// evaluate_combos_cpp_chunk_parallel_topn
+DataFrame evaluate_combos_cpp_chunk_parallel_topn(NumericMatrix x, IntegerVector y, int min_items, int max_items, std::string cutoff_method, std::string rank_by, int top_n, bool prefer_fewer_items, double chunk_start, int chunk_size, int num_threads, std::size_t grain_size);
+RcppExport SEXP _NCVROC_evaluate_combos_cpp_chunk_parallel_topn(SEXP xSEXP, SEXP ySEXP, SEXP min_itemsSEXP, SEXP max_itemsSEXP, SEXP cutoff_methodSEXP, SEXP rank_bySEXP, SEXP top_nSEXP, SEXP prefer_fewer_itemsSEXP, SEXP chunk_startSEXP, SEXP chunk_sizeSEXP, SEXP num_threadsSEXP, SEXP grain_sizeSEXP) {
+BEGIN_RCPP
+    Rcpp::RObject rcpp_result_gen;
+    Rcpp::RNGScope rcpp_rngScope_gen;
+    Rcpp::traits::input_parameter< NumericMatrix >::type x(xSEXP);
+    Rcpp::traits::input_parameter< IntegerVector >::type y(ySEXP);
+    Rcpp::traits::input_parameter< int >::type min_items(min_itemsSEXP);
+    Rcpp::traits::input_parameter< int >::type max_items(max_itemsSEXP);
+    Rcpp::traits::input_parameter< std::string >::type cutoff_method(cutoff_methodSEXP);
+    Rcpp::traits::input_parameter< std::string >::type rank_by(rank_bySEXP);
+    Rcpp::traits::input_parameter< int >::type top_n(top_nSEXP);
+    Rcpp::traits::input_parameter< bool >::type prefer_fewer_items(prefer_fewer_itemsSEXP);
+    Rcpp::traits::input_parameter< double >::type chunk_start(chunk_startSEXP);
+    Rcpp::traits::input_parameter< int >::type chunk_size(chunk_sizeSEXP);
+    Rcpp::traits::input_parameter< int >::type num_threads(num_threadsSEXP);
+    Rcpp::traits::input_parameter< std::size_t >::type grain_size(grain_sizeSEXP);
+    rcpp_result_gen = Rcpp::wrap(evaluate_combos_cpp_chunk_parallel_topn(x, y, min_items, max_items, cutoff_method, rank_by, top_n, prefer_fewer_items, chunk_start, chunk_size, num_threads, grain_size));
+    return rcpp_result_gen;
+END_RCPP
+}
 // evaluate_combos_cpp_sparse_parallel
 DataFrame evaluate_combos_cpp_sparse_parallel(NumericMatrix x, IntegerVector y, int min_items, int max_items, std::string cutoff_method, NumericVector global_ranks, int num_threads);
 RcppExport SEXP _NCVROC_evaluate_combos_cpp_sparse_parallel(SEXP xSEXP, SEXP ySEXP, SEXP min_itemsSEXP, SEXP max_itemsSEXP, SEXP cutoff_methodSEXP, SEXP global_ranksSEXP, SEXP num_threadsSEXP) {
@@ -140,6 +162,7 @@ static const R_CallMethodDef CallEntries[] = {
     {"_NCVROC_evaluate_combos_cpp", (DL_FUNC) &_NCVROC_evaluate_combos_cpp, 4},
     {"_NCVROC_evaluate_combos_cpp_chunk", (DL_FUNC) &_NCVROC_evaluate_combos_cpp_chunk, 7},
     {"_NCVROC_evaluate_combos_cpp_chunk_parallel", (DL_FUNC) &_NCVROC_evaluate_combos_cpp_chunk_parallel, 9},
+    {"_NCVROC_evaluate_combos_cpp_chunk_parallel_topn", (DL_FUNC) &_NCVROC_evaluate_combos_cpp_chunk_parallel_topn, 12},
     {"_NCVROC_evaluate_combos_cpp_sparse_parallel", (DL_FUNC) &_NCVROC_evaluate_combos_cpp_sparse_parallel, 7},
     {"_NCVROC_evaluate_combos_cv_cpp", (DL_FUNC) &_NCVROC_evaluate_combos_cv_cpp, 11},
     {"_NCVROC_evaluate_candidate_stability_cv_cpp", (DL_FUNC) &_NCVROC_evaluate_candidate_stability_cv_cpp, 8},

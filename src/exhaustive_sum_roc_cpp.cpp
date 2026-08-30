@@ -7,6 +7,7 @@
 #include <RcppParallel.h>
 #include <map>
 #include <vector>
+#include <queue>
 #include <algorithm>
 #include <cmath>
 
@@ -863,6 +864,352 @@ DataFrame evaluate_combos_cpp_chunk_parallel(
   );
 }
 
+
+// ---------------------------------------------------------------------------
+// Streaming Top-N Parallel Evaluator
+// Bounded-memory evaluation using thread-local min-heaps in parallelReduce
+// ---------------------------------------------------------------------------
+
+struct CandidateRecord {
+  double global_rank;
+  int n_items;
+  double auc;
+  double cutoff;
+  double sensitivity;
+  double specificity;
+  double youden;
+  double accuracy;
+  double ppv;
+  double npv;
+  int n_positive;
+  int n_negative;
+};
+
+enum RankMetric {
+  RANK_AUC = 0,
+  RANK_YOUDEN = 1,
+  RANK_SENSITIVITY = 2,
+  RANK_SPECIFICITY = 3,
+  RANK_ACCURACY = 4
+};
+
+static inline double get_candidate_metric(const CandidateRecord& c, RankMetric rm) {
+  switch (rm) {
+    case RANK_AUC: return c.auc;
+    case RANK_YOUDEN: return c.youden;
+    case RANK_SENSITIVITY: return c.sensitivity;
+    case RANK_SPECIFICITY: return c.specificity;
+    case RANK_ACCURACY: return c.accuracy;
+  }
+  return c.auc;
+}
+
+struct CandidateComparator {
+  RankMetric rank_metric;
+  bool prefer_fewer_items;
+
+  CandidateComparator(RankMetric rm, bool pfi) : rank_metric(rm), prefer_fewer_items(pfi) {}
+
+  // Returns true if "a" is strictly BETTER than "b" in candidate ranking.
+  // In std::priority_queue, this establishes a min-heap where the WORST candidate in the top-N set sits at top().
+  bool operator()(const CandidateRecord& a, const CandidateRecord& b) const {
+    double ma = get_candidate_metric(a, rank_metric);
+    double mb = get_candidate_metric(b, rank_metric);
+
+    bool a_nan = std::isnan(ma);
+    bool b_nan = std::isnan(mb);
+    if (a_nan && !b_nan) return false; // b is better
+    if (!a_nan && b_nan) return true;  // a is better
+    if (!a_nan && !b_nan && ma != mb) {
+      return ma > mb; // higher metric is better
+    }
+
+    if (prefer_fewer_items && a.n_items != b.n_items) {
+      return a.n_items < b.n_items; // fewer items is better
+    }
+
+    return a.global_rank < b.global_rank; // smaller global rank is better
+  }
+};
+
+struct TopNEvaluatorWorker : public RcppParallel::Worker {
+  const double* x_ptr;
+  const int* y_ptr;
+  int n;
+  int n_cols;
+  int min_items;
+  int n_k;
+  const std::vector<double>& level_starts;
+  int total_pos;
+  int total_neg;
+  int total_n;
+  CutoffMethod cutoff_method;
+  double chunk_start;
+  const double* explicit_ranks;
+  int top_n;
+  CandidateComparator comp;
+
+  // Thread-local min-heap
+  std::priority_queue<CandidateRecord, std::vector<CandidateRecord>, CandidateComparator> heap;
+
+  // Primary constructor
+  TopNEvaluatorWorker(
+      const double* x_ptr,
+      const int* y_ptr,
+      int n,
+      int n_cols,
+      int min_items,
+      int n_k,
+      const std::vector<double>& level_starts,
+      int total_pos,
+      int total_neg,
+      int total_n,
+      CutoffMethod cutoff_method,
+      double chunk_start,
+      int top_n,
+      RankMetric rm,
+      bool prefer_fewer_items
+  ) : x_ptr(x_ptr), y_ptr(y_ptr), n(n), n_cols(n_cols), min_items(min_items),
+      n_k(n_k), level_starts(level_starts), total_pos(total_pos), total_neg(total_neg),
+      total_n(total_n), cutoff_method(cutoff_method), chunk_start(chunk_start),
+      explicit_ranks(NULL), top_n(top_n), comp(rm, prefer_fewer_items),
+      heap(comp) {}
+
+  // Split constructor for RcppParallel::parallelReduce
+  TopNEvaluatorWorker(const TopNEvaluatorWorker& other, RcppParallel::Split)
+    : x_ptr(other.x_ptr), y_ptr(other.y_ptr), n(other.n), n_cols(other.n_cols),
+      min_items(other.min_items), n_k(other.n_k), level_starts(other.level_starts),
+      total_pos(other.total_pos), total_neg(other.total_neg), total_n(other.total_n),
+      cutoff_method(other.cutoff_method), chunk_start(other.chunk_start),
+      explicit_ranks(other.explicit_ranks), top_n(other.top_n), comp(other.comp),
+      heap(other.comp) {}
+
+  void operator()(std::size_t begin, std::size_t end) {
+    ThreadLocalBuffer buf(n);
+    for (std::size_t gi = begin; gi < end; gi++) {
+      double global_rank = explicit_ranks ? explicit_ranks[gi] : chunk_start + (double)gi;
+      int n_items_val = 0;
+      double auc_val = 0.0, cutoff_val = 0.0, sens_val = 0.0, spec_val = 0.0;
+      double youden_val = 0.0, acc_val = 0.0, ppv_val = 0.0, npv_val = 0.0;
+
+      evaluate_single_candidate(
+        global_rank,
+        x_ptr,
+        y_ptr,
+        n,
+        n_cols,
+        min_items,
+        n_k,
+        level_starts,
+        total_pos,
+        total_neg,
+        total_n,
+        cutoff_method,
+        buf,
+        n_items_val,
+        auc_val,
+        cutoff_val,
+        sens_val,
+        spec_val,
+        youden_val,
+        acc_val,
+        ppv_val,
+        npv_val
+      );
+
+      CandidateRecord cand;
+      cand.global_rank = global_rank;
+      cand.n_items = n_items_val;
+      cand.auc = auc_val;
+      cand.cutoff = cutoff_val;
+      cand.sensitivity = sens_val;
+      cand.specificity = spec_val;
+      cand.youden = youden_val;
+      cand.accuracy = acc_val;
+      cand.ppv = ppv_val;
+      cand.npv = npv_val;
+      cand.n_positive = total_pos;
+      cand.n_negative = total_neg;
+
+      if ((int)heap.size() < top_n) {
+        heap.push(cand);
+      } else if (comp(cand, heap.top())) {
+        heap.pop();
+        heap.push(cand);
+      }
+    }
+  }
+
+  void join(const TopNEvaluatorWorker& other) {
+    auto other_heap = other.heap;
+    while (!other_heap.empty()) {
+      const CandidateRecord& cand = other_heap.top();
+      if ((int)heap.size() < top_n) {
+        heap.push(cand);
+      } else if (comp(cand, heap.top())) {
+        heap.pop();
+        heap.push(cand);
+      }
+      other_heap.pop();
+    }
+  }
+};
+
+// [[Rcpp::export]]
+DataFrame evaluate_combos_cpp_chunk_parallel_topn(
+    NumericMatrix x,           // rows=subjects, cols=items
+    IntegerVector y,           // 0/1 outcome, length = nrow(x)
+    int min_items,             // minimum items per combination
+    int max_items,             // maximum items per combination
+    std::string cutoff_method, // "youden" or "closest_topleft"
+    std::string rank_by,       // "auc", "youden", "sensitivity", "specificity", "accuracy"
+    int top_n,                 // number of top models to retain
+    bool prefer_fewer_items,   // prefer smaller models on ties
+    double chunk_start,        // zero-based global combination index
+    int chunk_size,            // number of combos to evaluate
+    int num_threads = -1,      // scoped thread count (-1 = default)
+    std::size_t grain_size = 1000 // scheduler grain size
+) {
+  if (chunk_size <= 0) {
+    stop("chunk_size must be a positive integer.");
+  }
+  if (chunk_start < 0.0 || !std::isfinite(chunk_start)) {
+    stop("chunk_start must be a non-negative finite number.");
+  }
+
+  int n = x.nrow();
+  int n_cols = x.ncol();
+
+  CutoffMethod cm;
+  if (cutoff_method == "youden") {
+    cm = CUTOFF_YOUDEN;
+  } else if (cutoff_method == "closest_topleft") {
+    cm = CUTOFF_CLOSEST_TOPLEFT;
+  } else {
+    stop("Unknown cutoff_method: %s", cutoff_method.c_str());
+  }
+
+  RankMetric rm;
+  if (rank_by == "auc") {
+    rm = RANK_AUC;
+  } else if (rank_by == "youden") {
+    rm = RANK_YOUDEN;
+  } else if (rank_by == "sensitivity") {
+    rm = RANK_SENSITIVITY;
+  } else if (rank_by == "specificity") {
+    rm = RANK_SPECIFICITY;
+  } else if (rank_by == "accuracy") {
+    rm = RANK_ACCURACY;
+  } else {
+    stop("Unknown rank_by metric: %s", rank_by.c_str());
+  }
+
+  if (top_n < 1) top_n = 1;
+  if (max_items > n_cols) max_items = n_cols;
+  if (min_items > max_items) min_items = max_items;
+  if (min_items < 1) min_items = 1;
+
+  int n_k = max_items - min_items + 1;
+  std::vector<double> level_sizes(n_k);
+  std::vector<double> level_starts(n_k);
+  double total = 0.0;
+  for (int ki = 0; ki < n_k; ki++) {
+    int k = min_items + ki;
+    level_sizes[ki] = binom(n_cols, k);
+    level_starts[ki] = total;
+    total += level_sizes[ki];
+  }
+
+  if (chunk_start < 0 || chunk_start >= total) {
+    stop("chunk_start is outside the combination range.");
+  }
+
+  double chunk_end = chunk_start + (double)chunk_size;
+  if (chunk_end > total) chunk_end = total;
+  int actual_size = (int)(chunk_end - chunk_start);
+
+  int total_pos = 0, total_neg = 0;
+  for (int i = 0; i < n; i++) {
+    if (y[i] == 1) total_pos++; else total_neg++;
+  }
+  int total_n = total_pos + total_neg;
+
+  const double* x_ptr = &x[0];
+  const int* y_ptr = &y[0];
+
+  TopNEvaluatorWorker worker(
+    x_ptr,
+    y_ptr,
+    n,
+    n_cols,
+    min_items,
+    n_k,
+    level_starts,
+    total_pos,
+    total_neg,
+    total_n,
+    cm,
+    chunk_start,
+    top_n,
+    rm,
+    prefer_fewer_items
+  );
+
+  RcppParallel::parallelReduce(0, (std::size_t)actual_size, worker, grain_size, num_threads);
+
+  // Extract from worker.heap (pops from worst to best in top-N)
+  std::vector<CandidateRecord> top_list;
+  while (!worker.heap.empty()) {
+    top_list.push_back(worker.heap.top());
+    worker.heap.pop();
+  }
+  std::reverse(top_list.begin(), top_list.end()); // Now sorted strictly rank 1 to rank N
+
+  int res_n = top_list.size();
+  IntegerVector out_n_items(res_n);
+  NumericVector out_auc(res_n);
+  NumericVector out_cutoff(res_n);
+  NumericVector out_sensitivity(res_n);
+  NumericVector out_specificity(res_n);
+  NumericVector out_youden(res_n);
+  NumericVector out_accuracy(res_n);
+  NumericVector out_ppv(res_n);
+  NumericVector out_npv(res_n);
+  IntegerVector out_n_positive(res_n);
+  IntegerVector out_n_negative(res_n);
+  NumericVector out_g_idx(res_n);
+
+  for (int i = 0; i < res_n; i++) {
+    const CandidateRecord& c = top_list[i];
+    out_n_items[i]     = c.n_items;
+    out_auc[i]         = c.auc;
+    out_cutoff[i]      = c.cutoff;
+    out_sensitivity[i] = c.sensitivity;
+    out_specificity[i] = c.specificity;
+    out_youden[i]      = c.youden;
+    out_accuracy[i]    = c.accuracy;
+    out_ppv[i]         = c.ppv;
+    out_npv[i]         = c.npv;
+    out_n_positive[i]  = c.n_positive;
+    out_n_negative[i]  = c.n_negative;
+    out_g_idx[i]       = c.global_rank + 1.0; // 1-based global combination index
+  }
+
+  return DataFrame::create(
+    _["n_items"]             = out_n_items,
+    _["auc"]                 = out_auc,
+    _["cutoff"]              = out_cutoff,
+    _["sensitivity"]         = out_sensitivity,
+    _["specificity"]         = out_specificity,
+    _["youden"]              = out_youden,
+    _["accuracy"]            = out_accuracy,
+    _["ppv"]                 = out_ppv,
+    _["npv"]                 = out_npv,
+    _["n_positive"]          = out_n_positive,
+    _["n_negative"]          = out_n_negative,
+    _[".global_combo_index"] = out_g_idx
+  );
+}
 // [[Rcpp::export]]
 DataFrame evaluate_combos_cpp_sparse_parallel(
     NumericMatrix x,

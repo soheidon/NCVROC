@@ -6,8 +6,9 @@
 \usage{
 .stream_top_n_from_chunks(
   chunk_dir,
-  rank_by = c("youden", "auc", "sensitivity", "specificity", "accuracy", "ppv", "npv"),
+  rank_by = "auc",
   top_n = 20,
+  prefer_fewer_items = TRUE,
   sensitivity = NULL,
   specificity = NULL,
   auc = NULL,

@@ -241,6 +241,8 @@
           num_threads   = 1L
         )
 
+        chunk_res <- .materialize_candidate_items(chunk_res, item_names, min_items = size, max_items = size)
+
         .order_and_rank_candidates(
           df                 = chunk_res,
           rank_by            = "auc",
@@ -281,6 +283,8 @@
           n_neg         = n_neg,
           num_threads   = num_threads
         )
+
+        chunk_res <- .materialize_candidate_items(chunk_res, item_names, min_items = size, max_items = size)
 
         ord <- .order_and_rank_candidates(
           df                 = chunk_res,
@@ -542,6 +546,7 @@
 
 #' Memory-safe exact cross-size AUC model selector
 #'
+#' @param progress_callback Optional callback function receiving progress increment counts.
 #' @keywords internal
 .select_cross_size_auc_exact <- function(data,
                                          outcome_name,
@@ -558,7 +563,8 @@
                                          cv_folds,
                                          repeats,
                                          y,
-                                         progress = FALSE) {
+                                         progress = FALSE,
+                                         progress_callback = NULL) {
   n_items_total <- length(item_names)
   has_constraints <- (!is.null(sensitivity_min) || !is.null(specificity_min))
 
@@ -569,11 +575,29 @@
     candidate_list <- vector("list", length(sizes))
     cum_offset <- 0L
 
-    prg <- .progress_make(length(sizes), enabled = progress)
-    on.exit(prg$close(), add = TRUE)
+    total_candidates_all_sizes <- sum(vapply(sizes, function(s) choose(n_items_total, s), numeric(1)))
+    show_exact_progress <- isTRUE(progress) && !is.function(progress_callback) && !identical(parallel_mode, "chunks")
+    prg <- if (show_exact_progress) {
+      p <- .progress_make(total_candidates_all_sizes, label = "NCVROC", enabled = TRUE,
+                          progress_mode = "exact", unit = "candidates")
+      on.exit(p$close(), add = TRUE)
+      p
+    } else NULL
+
+    cb <- if (is.function(progress_callback)) {
+      progress_callback
+    } else if (show_exact_progress) function(n_done) {
+      prg$tick(n_done)
+      prg$eta_message()
+    } else NULL
+
+    if (isTRUE(progress) && identical(parallel_mode, "chunks")) {
+      message("Evaluating chunks in parallel...")
+    }
 
     for (si in seq_along(sizes)) {
       s <- sizes[si]
+      n_cand_s <- choose(n_items_total, s)
       res_s <- exhaustive_sum_roc(
         data               = data,
         outcome            = outcome_name,
@@ -587,17 +611,19 @@
         engine             = engine,
         parallel           = parallel_mode,
         n_workers          = n_workers_res,
-        progress           = FALSE
+        progress           = FALSE,
+        progress_callback  = cb
       )
       idx_s <- if (".global_combo_index" %in% names(res_s)) res_s$.global_combo_index else seq_len(nrow(res_s))
       res_s$.global_combo_index <- cum_offset + idx_s
-      cum_offset <- cum_offset + choose(n_items_total, s)
+      cum_offset <- cum_offset + n_cand_s
       candidate_list[[si]] <- res_s
-
-      prg$tick()
-      prg$eta_message()
     }
-    prg$finish()
+    if (show_exact_progress) {
+      prg$finish()
+    } else if (isTRUE(progress) && identical(parallel_mode, "chunks")) {
+      message("All chunks complete.")
+    }
 
     merged_top <- do.call(rbind, candidate_list)
     ranked_top <- .order_and_rank_candidates(
@@ -772,7 +798,7 @@
         cv_cutoff_sd        = if (length(cutoffs_vec) > 1) stats::sd(cutoffs_vec) else 0,
         cutoff              = cand_i$cutoff,
         constraint_pass     = TRUE,
-        .global_combo_index = cand_i$.global_combo_index,
+        .global_combo_index = if (!is.null(cand_i$.global_combo_index)) cand_i$.global_combo_index else 0L,
         stringsAsFactors    = FALSE
       )
 
@@ -1004,6 +1030,7 @@
 #'   completed candidate counts at block boundaries. The PSOCK `"chunks"` path
 #'   reports only truthful start and successful completion, with no percentage or
 #'   ETA. Approximate ETA is based only on observed progress. `FALSE` is silent.
+#' @param progress_callback Optional callback function receiving progress increment counts (internal use).
 #'
 #' @return An S3 object of class `"cross_size_cv_result"`, containing:
 #' \describe{
@@ -1069,7 +1096,8 @@ cross_size_cv <- function(data,
                           ci                 = FALSE,
                           conf_level         = 0.95,
                           seed               = NULL,
-                          progress           = interactive()) {
+                          progress           = interactive(),
+                          progress_callback  = NULL) {
   # ---- NSE Column Resolution ----
   env <- parent.frame()
   outcome_name <- .resolve_outcome(substitute(outcome), env)
@@ -1252,7 +1280,8 @@ cross_size_cv <- function(data,
       cv_folds           = cv_folds,
       repeats            = repeats,
       y                  = y,
-      progress           = progress
+      progress           = progress,
+      progress_callback  = progress_callback
     )
 
     best_candidate <- auc_res$best_candidate
@@ -1402,41 +1431,40 @@ cross_size_cv <- function(data,
   sens_min <- if (is.null(sensitivity_min)) -1.0 else as.numeric(sensitivity_min)
   spec_min <- if (is.null(specificity_min)) -1.0 else as.numeric(specificity_min)
 
-  # Build combo plan
-  combo_plan <- list()
+  # Build lightweight chunk descriptors without enumerating combinations into RAM
+  block_size <- 2000L
+  block_descriptors <- list()
   cum_offset <- 0L
+  block_idx <- 0L
   for (si in seq_along(sizes)) {
     s <- sizes[si]
     n_combos_s <- choose(n_items_total, s)
-    for (gi in seq_len(n_combos_s)) {
-      combo_0based <- .combination_unrank(n_items_total, s, gi - 1L)
-      combo_plan[[length(combo_plan) + 1L]] <- list(
-        items_0based = combo_0based,
-        items_names  = item_names[combo_0based + 1L],
+    n_blocks_s <- ceiling(n_combos_s / block_size)
+    for (bi in seq_len(n_blocks_s)) {
+      start_0based <- (bi - 1L) * block_size
+      len <- min(block_size, n_combos_s - start_0based)
+      block_descriptors[[length(block_descriptors) + 1L]] <- list(
+        block_index  = block_idx,
         s            = s,
-        gi           = gi,
+        start_0based = start_0based,
+        len          = len,
         cum_offset   = cum_offset
       )
+      block_idx <- block_idx + 1L
     }
     cum_offset <- cum_offset + n_combos_s
   }
 
-  n_plan <- length(combo_plan)
+  n_plan <- length(block_descriptors)
 
   if (parallel_mode == "chunks" && n_plan > 1L && n_workers_res > 1L) {
     .NCVROC_ROUTING_COUNTERS$chunk_psock_count <- .NCVROC_ROUTING_COUNTERS$chunk_psock_count + 1L
     .NCVROC_ROUTING_COUNTERS$strategy2_chunks_count <- .NCVROC_ROUTING_COUNTERS$strategy2_chunks_count + 1L
 
-    chunk_batch_size <- max(1L, ceiling(n_plan / (n_workers_res * 4L)))
-    n_batches <- ceiling(n_plan / chunk_batch_size)
-    blocks <- vector("list", n_batches)
-    for (b in seq_len(n_batches)) {
-      b_start <- (b - 1L) * chunk_batch_size + 1L
-      b_end   <- min(n_plan, b * chunk_batch_size)
-      blocks[[b]] <- combo_plan[b_start:b_end]
-    }
+    chunk_dir <- .make_chunk_dir(prefix = "ncvroc_s2_")
+    on.exit(unlink(chunk_dir, recursive = TRUE, force = TRUE), add = TRUE)
 
-    actual_workers <- min(as.integer(n_workers_res), as.integer(n_batches))
+    actual_workers <- min(as.integer(n_workers_res), as.integer(n_plan))
     cl <- parallel::makePSOCKcluster(actual_workers)
     on.exit(parallel::stopCluster(cl), add = TRUE)
 
@@ -1457,12 +1485,14 @@ cross_size_cv <- function(data,
     parallel::clusterExport(
       cl,
       varlist = c("dat_mat", "y_int", "test_indices_0based", "n_folds_total", "repeats", "cutoff_method",
-                  "sens_min", "spec_min", "metric_col", "top_n", "prefer_fewer_items"),
+                  "sens_min", "spec_min", "metric_col", "top_n", "prefer_fewer_items", "n_items_total", "item_names", "chunk_dir"),
       envir = environment()
     )
 
-    eval_block_psock <- function(block_items) {
-      indices_list <- lapply(block_items, function(x) x$items_0based)
+    eval_block_psock <- function(desc) {
+      indices_list <- lapply(seq_len(desc$len) - 1L, function(off) {
+        .combination_unrank(n_items_total, desc$s, desc$start_0based + off)
+      })
       res_cpp <- evaluate_combos_cv_cpp(
         x               = dat_mat,
         y               = y_int,
@@ -1478,67 +1508,57 @@ cross_size_cv <- function(data,
       local_buf <- NULL
       valid_idx <- which(res_cpp$valid == 1L)
       if (length(valid_idx) > 0L) {
-        for (vi in valid_idx) {
-          info <- block_items[[vi]]
-          cand_row <- data.frame(
-            items                  = format_items(info$items_names),
-            n_items                = info$s,
-            cv_auc                 = res_cpp$cv_auc[vi],
-            cv_sensitivity         = res_cpp$cv_sensitivity[vi],
-            cv_specificity         = res_cpp$cv_specificity[vi],
-            cv_youden              = res_cpp$cv_youden[vi],
-            cv_accuracy            = res_cpp$cv_accuracy[vi],
-            cv_ppv                 = res_cpp$cv_ppv[vi],
-            cv_npv                 = res_cpp$cv_npv[vi],
-            cv_cutoff_mean         = res_cpp$cv_cutoff_mean[vi],
-            cv_cutoff_sd           = res_cpp$cv_cutoff_sd[vi],
-            final_full_data_cutoff = res_cpp$final_full_data_cutoff[vi],
-            .global_combo_index    = info$cum_offset + info$gi,
-            stringsAsFactors       = FALSE
-          )
-          local_buf <- .update_running_top_n(
-            buffer             = local_buf,
-            candidate_row      = cand_row,
-            metric_col         = metric_col,
-            top_n              = top_n,
-            prefer_fewer_items = prefer_fewer_items
-          )
-        }
+        block_df <- data.frame(
+          n_items                  = rep.int(desc$s, length(valid_idx)),
+          combination_index_0based = desc$start_0based + valid_idx - 1L,
+          cv_auc                   = res_cpp$cv_auc[valid_idx],
+          cv_sensitivity           = res_cpp$cv_sensitivity[valid_idx],
+          cv_specificity           = res_cpp$cv_specificity[valid_idx],
+          cv_youden                = res_cpp$cv_youden[valid_idx],
+          cv_accuracy              = res_cpp$cv_accuracy[valid_idx],
+          cv_ppv                   = res_cpp$cv_ppv[valid_idx],
+          cv_npv                   = res_cpp$cv_npv[valid_idx],
+          cv_cutoff_mean           = res_cpp$cv_cutoff_mean[valid_idx],
+          cv_cutoff_sd             = res_cpp$cv_cutoff_sd[valid_idx],
+          final_full_data_cutoff   = res_cpp$final_full_data_cutoff[valid_idx],
+          .global_combo_index      = desc$cum_offset + desc$start_0based + valid_idx,
+          stringsAsFactors         = FALSE
+        )
+        ranked_block <- .order_and_rank_candidates(
+          df                 = block_df,
+          rank_by            = metric_col,
+          prefer_fewer_items = prefer_fewer_items
+        )
+        local_buf <- utils::head(ranked_block, top_n)
       }
-      local_buf
+      # Atomic chunk write via existing .write_chunk_rds() helper
+      if (!is.null(local_buf) && nrow(local_buf) > 0L) {
+        .write_chunk_rds(local_buf, chunk_dir, desc$block_index)
+        list(block_index = desc$block_index, n_rows = nrow(local_buf))
+      } else {
+        list(block_index = desc$block_index, n_rows = 0L)
+      }
     }
 
     if (isTRUE(progress)) {
       message("Evaluating blocks in parallel...")
     }
-    block_results <- parallel::parLapply(cl, blocks, eval_block_psock)
+    receipts <- parallel::parLapply(cl, block_descriptors, eval_block_psock)
     if (isTRUE(progress)) {
       message("All blocks complete.")
     }
-    for (b_res in block_results) {
-      if (!is.null(b_res) && nrow(b_res) > 0L) {
-        for (r_i in seq_len(nrow(b_res))) {
-          running_buffer <- .update_running_top_n(
-            buffer             = running_buffer,
-            candidate_row      = b_res[r_i, , drop = FALSE],
-            metric_col         = metric_col,
-            top_n              = top_n,
-            prefer_fewer_items = prefer_fewer_items
-          )
-        }
-      }
+
+    chunk_files <- .list_chunk_files(chunk_dir)
+    if (length(chunk_files) > 0L) {
+      running_buffer <- .stream_top_n_from_chunks(
+        chunk_dir          = chunk_dir,
+        rank_by            = metric_col,
+        top_n              = top_n,
+        prefer_fewer_items = prefer_fewer_items
+      )
     }
   } else {
     # Threads / Serial C++ batch processing
-    block_size <- 2000L
-    n_blocks <- ceiling(n_plan / block_size)
-    blocks <- vector("list", n_blocks)
-    for (b in seq_len(n_blocks)) {
-      b_start <- (b - 1L) * block_size + 1L
-      b_end   <- min(n_plan, b * block_size)
-      blocks[[b]] <- combo_plan[b_start:b_end]
-    }
-
     if (parallel_mode == "threads") {
       .NCVROC_ROUTING_COUNTERS$threads_count <- .NCVROC_ROUTING_COUNTERS$threads_count + 1L
       .NCVROC_ROUTING_COUNTERS$strategy2_threads_count <- .NCVROC_ROUTING_COUNTERS$strategy2_threads_count + 1L
@@ -1548,13 +1568,15 @@ cross_size_cv <- function(data,
       cpp_threads <- 1L
     }
 
-    prg <- .progress_make(n_plan, label = "NCVROC", enabled = progress,
+    prg <- .progress_make(total_combos, label = "NCVROC", enabled = progress,
                           progress_mode = "exact")
     on.exit(prg$close(), add = TRUE)
 
-    for (b in seq_len(n_blocks)) {
-      block_items <- blocks[[b]]
-      indices_list <- lapply(block_items, function(x) x$items_0based)
+    for (b in seq_len(n_plan)) {
+      desc <- block_descriptors[[b]]
+      indices_list <- lapply(seq_len(desc$len) - 1L, function(off) {
+        .combination_unrank(n_items_total, desc$s, desc$start_0based + off)
+      })
       res_cpp <- evaluate_combos_cv_cpp(
         x               = dat_mat,
         y               = y_int,
@@ -1569,34 +1591,39 @@ cross_size_cv <- function(data,
       )
       valid_idx <- which(res_cpp$valid == 1L)
       if (length(valid_idx) > 0L) {
-        for (vi in valid_idx) {
-          info <- block_items[[vi]]
-          cand_row <- data.frame(
-            items                  = format_items(info$items_names),
-            n_items                = info$s,
-            cv_auc                 = res_cpp$cv_auc[vi],
-            cv_sensitivity         = res_cpp$cv_sensitivity[vi],
-            cv_specificity         = res_cpp$cv_specificity[vi],
-            cv_youden              = res_cpp$cv_youden[vi],
-            cv_accuracy            = res_cpp$cv_accuracy[vi],
-            cv_ppv                 = res_cpp$cv_ppv[vi],
-            cv_npv                 = res_cpp$cv_npv[vi],
-            cv_cutoff_mean         = res_cpp$cv_cutoff_mean[vi],
-            cv_cutoff_sd           = res_cpp$cv_cutoff_sd[vi],
-            final_full_data_cutoff = res_cpp$final_full_data_cutoff[vi],
-            .global_combo_index    = info$cum_offset + info$gi,
-            stringsAsFactors       = FALSE
-          )
-          running_buffer <- .update_running_top_n(
-            buffer             = running_buffer,
-            candidate_row      = cand_row,
-            metric_col         = metric_col,
-            top_n              = top_n,
+        block_df <- data.frame(
+          n_items                  = rep.int(desc$s, length(valid_idx)),
+          combination_index_0based = desc$start_0based + valid_idx - 1L,
+          cv_auc                   = res_cpp$cv_auc[valid_idx],
+          cv_sensitivity           = res_cpp$cv_sensitivity[valid_idx],
+          cv_specificity           = res_cpp$cv_specificity[valid_idx],
+          cv_youden                = res_cpp$cv_youden[valid_idx],
+          cv_accuracy              = res_cpp$cv_accuracy[valid_idx],
+          cv_ppv                   = res_cpp$cv_ppv[valid_idx],
+          cv_npv                   = res_cpp$cv_npv[valid_idx],
+          cv_cutoff_mean           = res_cpp$cv_cutoff_mean[valid_idx],
+          cv_cutoff_sd             = res_cpp$cv_cutoff_sd[valid_idx],
+          final_full_data_cutoff   = res_cpp$final_full_data_cutoff[valid_idx],
+          .global_combo_index      = desc$cum_offset + desc$start_0based + valid_idx,
+          stringsAsFactors         = FALSE
+        )
+        ranked_block <- .order_and_rank_candidates(
+          df                 = block_df,
+          rank_by            = metric_col,
+          prefer_fewer_items = prefer_fewer_items
+        )
+        block_top <- utils::head(ranked_block, top_n)
+        combined_buf <- if (is.null(running_buffer)) block_top else rbind(running_buffer, block_top)
+        running_buffer <- utils::head(
+          .order_and_rank_candidates(
+            df                 = combined_buf,
+            rank_by            = metric_col,
             prefer_fewer_items = prefer_fewer_items
-          )
-        }
+          ),
+          top_n
+        )
       }
-      prg$tick(length(block_items))
+      prg$tick(desc$len)
       prg$eta_message()
     }
     prg$finish()
@@ -1611,7 +1638,9 @@ cross_size_cv <- function(data,
   }
 
   best_candidate <- running_buffer[1, , drop = FALSE]
-  best_items_vec <- .parse_itemset(best_candidate$items)
+  best_combo_0based <- .combination_unrank(n_items_total, best_candidate$n_items, best_candidate$combination_index_0based)
+  best_items_vec <- item_names[best_combo_0based + 1L]
+  best_candidate_items_str <- format_items(best_items_vec)
 
   # Run CV on selected best model only to generate complete oof_predictions and fold_results
   best_cv <- .run_fixed_model_cv(
@@ -1628,7 +1657,7 @@ cross_size_cv <- function(data,
   )
 
   final_model_df <- data.frame(
-    items                  = best_candidate$items,
+    items                  = best_candidate_items_str,
     n_items                = best_candidate$n_items,
     cv_auc                 = best_agg$summary$mean[best_agg$summary$metric == "auc"],
     cv_sensitivity         = best_agg$summary$mean[best_agg$summary$metric == "sensitivity"],
@@ -1664,9 +1693,15 @@ cross_size_cv <- function(data,
   keep_n <- min(top_n, nrow(running_buffer))
   ranking_df <- utils::head(running_buffer, keep_n)
 
+  # Lazily materialize items only for the final returned Top-N ranking rows
+  ranking_items <- vapply(seq_len(nrow(ranking_df)), function(ri) {
+    combo_0based <- .combination_unrank(n_items_total, ranking_df$n_items[ri], ranking_df$combination_index_0based[ri])
+    format_items(item_names[combo_0based + 1L])
+  }, character(1))
+
   final_rank_df <- data.frame(
     rank           = ranking_df$rank,
-    items          = ranking_df$items,
+    items          = ranking_items,
     n_items        = ranking_df$n_items,
     cv_auc         = ranking_df$cv_auc,
     cv_sensitivity = ranking_df$cv_sensitivity,

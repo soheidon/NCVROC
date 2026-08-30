@@ -17,7 +17,8 @@
   top_n,
   engine,
   parallel = "none",
-  n_workers = NULL
+  n_workers = NULL,
+  progress_callback = NULL
 )
 }
 \arguments{
@@ -46,6 +47,8 @@
 \item{parallel}{Parallel mode for inner exhaustive search (e.g. "threads" or "none").}
 
 \item{n_workers}{Number of workers/threads for inner evaluation.}
+
+\item{progress_callback}{Optional callback function receiving progress increment counts.}
 }
 \value{
 A data.frame of at most `top_n` rows in the standard exhaustive_sum_roc format.

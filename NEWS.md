@@ -1,3 +1,71 @@
+# NCVROC 0.20.0
+
+## Execution planning
+
+* Added automatic execution planning for computationally intensive exhaustive
+  ROC workflows.
+* The planner benchmarks legal execution configurations and selects an
+  execution backend from serial, multithreaded, outer-fold parallel, and
+  hybrid strategies.
+* Backend benchmarking is triggered by a deterministic workload threshold,
+  rather than by a predicted total runtime.
+* Small workloads below the threshold skip backend benchmarking and use the
+  safe baseline execution path.
+* Nested-CV planner pilots use a bounded, proportionally allocated candidate
+  sample across requested model sizes, preserving the original candidate
+  space and model-size structure.
+* Planner decisions affect execution strategy only. Candidate generation,
+  fold construction, ranking, tie-breaking, cutoff selection, predictions,
+  and final model selection are unchanged.
+
+## Parallel execution
+
+* Improved multithreaded exhaustive candidate evaluation using RcppParallel.
+* Added bounded resource-plan benchmarking for nested cross-validation,
+  including multithreaded, outer-fold PSOCK, and hybrid execution modes.
+* Exact statistical equivalence is preserved across supported execution
+  backends.
+* Production PSOCK execution continues to use standard R parallel
+  infrastructure; no custom worker protocol or package-namespace
+  modification is used.
+
+## Progress reporting
+
+* Added immediate progress initialization for long-running nested
+  cross-validation jobs.
+* Serial and multithreaded nested workflows now report fine-grained
+  candidate-level progress within each outer fold.
+* Candidate evaluation is processed in bounded batches to provide responsive
+  progress updates without changing candidate identity or statistical
+  results.
+* Outer-fold and hybrid PSOCK execution report truthful outer-task progress
+  without artificial interpolation.
+* Progress output reports observed elapsed time only; ETA estimates are not
+  shown.
+
+## Exhaustive search engine
+
+* Added streaming Top-N support to the C++ exhaustive-search path, reducing
+  unnecessary result materialization during large combinatorial searches.
+* Added rank-bounded nested candidate evaluation while preserving canonical
+  combination-index identity and exact unranking behavior.
+* Candidate-space enumeration remains exhaustive. No statistical screening or
+  implicit pruning of candidate models is introduced.
+
+## Reliability and validation
+
+* Expanded regression coverage for candidate identity, streaming Top-N
+  selection, nested execution planning, progress reporting, and
+  serial/parallel statistical invariance.
+* Verified agreement of selected models, outer-fold results, summaries, and
+  outer predictions between serial and multithreaded nested-CV execution.
+* Clean installed-package tests confirm that outer and hybrid PSOCK workflows
+  remain statistically equivalent to serial execution.
+* Repository and generated R/Rcpp interfaces were normalized and checked for
+  accidental line-ending-only changes.
+
+---
+
 # NCVROC 0.19.0
 
 ## Execution planning and truthful progress reporting

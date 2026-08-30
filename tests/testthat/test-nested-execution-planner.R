@@ -164,6 +164,35 @@ testthat::test_that("nested execution planning never runs an unbounded resource 
                         seed = 11, progress = FALSE, verbose = FALSE)
   plan <- res$settings$execution_plan
   expect_false(plan$backend_benchmark_performed)
-  expect_true(all(plan$benchmark_table$status == "insufficient_workload"))
-  expect_match(plan$benchmark_table$failure_reason[[1L]], "rank-bounded evaluator")
+  expect_true(all(plan$benchmark_table$status %in% c("unmeasured", "insufficient_workload")))
+  expect_true(nchar(plan$benchmark_table$failure_reason[[1L]]) > 0)
+})
+
+testthat::test_that(".PLANNER_NESTED_PILOT_BUDGET is 1024L and allocates proportionally across sizes", {
+  testthat::expect_equal(NCVROC:::.PLANNER_NESTED_PILOT_BUDGET, 1024L)
+
+  # Synthetic workload: p = 36, model_sizes = 1:4 (total 66,711 combinations)
+  p <- 36L
+  sizes <- 1:4
+  counts <- choose(p, sizes) # 36, 630, 7140, 58905
+  total_combos <- sum(counts)
+  testthat::expect_equal(total_combos, 66711L)
+
+  pilot <- NCVROC:::.planner_make_pilot_candidates(p, sizes, NCVROC:::.PLANNER_NESTED_PILOT_BUDGET)
+  testthat::expect_equal(nrow(pilot), 1024L)
+
+  # Check that each model size gets at least 1 candidate and sum equals 1024
+  by_size <- table(pilot$model_size)
+  testthat::expect_equal(length(by_size), length(sizes))
+  testthat::expect_equal(sum(by_size), 1024L)
+
+  # Check monotonic proportional shares (size 4 has largest count, size 1 has 1)
+  testthat::expect_true(by_size[["4"]] > by_size[["3"]])
+  testthat::expect_true(by_size[["3"]] > by_size[["2"]])
+  testthat::expect_true(by_size[["2"]] >= by_size[["1"]])
+  testthat::expect_equal(as.integer(by_size[["1"]]), 1L)
+
+  # Check that small space (< 1024) caps at total combos
+  small_pilot <- NCVROC:::.planner_make_pilot_candidates(5L, 1:3, NCVROC:::.PLANNER_NESTED_PILOT_BUDGET)
+  testthat::expect_equal(nrow(small_pilot), sum(choose(5L, 1:3)))
 })

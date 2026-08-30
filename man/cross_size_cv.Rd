@@ -31,7 +31,8 @@ cross_size_cv(
   ci = FALSE,
   conf_level = 0.95,
   seed = NULL,
-  progress = interactive()
+  progress = interactive(),
+  progress_callback = NULL
 )
 }
 \arguments{
@@ -103,6 +104,8 @@ measurements use an empirical affine runtime estimate.}
 completed candidate counts at block boundaries. The PSOCK `"chunks"` path
 reports only truthful start and successful completion, with no percentage or
 ETA. Approximate ETA is based only on observed progress. `FALSE` is silent.}
+
+\item{progress_callback}{Optional callback function receiving progress increment counts (internal use).}
 }
 \value{
 An S3 object of class `"cross_size_cv_result"`, containing:

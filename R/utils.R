@@ -472,3 +472,36 @@ CACHE_FORMAT_VERSION <- 1L     # bump when cache storage format changes
 
   df[ord, , drop = FALSE]
 }
+
+#' Materialize item combination strings for a subset of candidate models
+#'
+#' Reconstructs item names lazily from canonical combination ranks and model sizes.
+#'
+#' @param df data.frame of candidate models.
+#' @param items Character vector of available item names.
+#' @param min_items Integer, minimum items per combo.
+#' @param max_items Integer, maximum items per combo.
+#' @return data.frame with 'items' column materialized.
+#' @keywords internal
+.materialize_candidate_items <- function(df, items, min_items = 1L, max_items = NULL) {
+  if (nrow(df) == 0L || "items" %in% names(df)) return(df)
+  n_items <- length(items)
+  if (is.null(max_items)) max_items <- n_items
+  n_rows <- nrow(df)
+  items_vec <- character(n_rows)
+  has_g_idx <- !is.null(df$.global_combo_index)
+
+  for (i in seq_len(n_rows)) {
+    if (has_g_idx) {
+      g_rank_0based <- as.double(df$.global_combo_index[i]) - 1.0
+      resolved <- .resolve_global_combination_rank(n_items, min_items, max_items, g_rank_0based)
+      idx <- .combination_unrank(n_items, resolved$k, resolved$rank_within_k)
+    } else {
+      k <- if (!is.null(df$n_items)) df$n_items[i] else 1L
+      idx <- seq_len(k) - 1L
+    }
+    items_vec[i] <- format_items(items[idx + 1L])
+  }
+  df$items <- items_vec
+  df
+}

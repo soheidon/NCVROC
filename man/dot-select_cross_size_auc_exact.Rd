@@ -20,8 +20,12 @@
   cv_folds,
   repeats,
   y,
-  progress = FALSE
+  progress = FALSE,
+  progress_callback = NULL
 )
+}
+\arguments{
+\item{progress_callback}{Optional callback function receiving progress increment counts.}
 }
 \description{
 Memory-safe exact cross-size AUC model selector

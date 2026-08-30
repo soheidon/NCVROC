@@ -157,26 +157,26 @@ test_that("constants planner_version and auto_runtime_threshold are preserved", 
   expect_identical(ex_meta$planner_version, "0.2.0")
   expect_identical(cv_meta$planner_version, "0.2.0")
 
-  # auto_runtime_threshold is 180.0
-  expect_equal(ex_meta$auto_runtime_threshold, 180.0)
-  expect_equal(cv_meta$auto_runtime_threshold, 180.0)
+  # auto_runtime_threshold is 5000000.0 (provisional workload threshold)
+  expect_equal(ex_meta$auto_runtime_threshold, 5000000.0)
+  expect_equal(cv_meta$auto_runtime_threshold, 5000000.0)
 })
 
-test_that(".planner_should_benchmark boundary contract is exact at 30.0 seconds", {
-  # Strictly below threshold (29.999s) -> skip backend benchmark
-  below <- NCVROC:::.planner_should_benchmark(29.999, threshold = 30.0)
+test_that(".planner_should_benchmark boundary contract is exact at threshold", {
+  # Strictly below threshold -> skip backend benchmark
+  below <- NCVROC:::.planner_should_benchmark(29999, threshold = 30000)
   expect_false(below$backend_benchmark_required)
-  expect_identical(below$reason, "estimated workload too small for backend benchmarking")
+  expect_identical(below$reason, "workload below threshold; skipping backend benchmarking")
 
-  # Exactly at threshold (30.000s) -> perform backend benchmark
-  at_threshold <- NCVROC:::.planner_should_benchmark(30.000, threshold = 30.0)
+  # Exactly at threshold -> perform backend benchmark
+  at_threshold <- NCVROC:::.planner_should_benchmark(30000, threshold = 30000)
   expect_true(at_threshold$backend_benchmark_required)
-  expect_identical(at_threshold$reason, "estimated runtime justifies backend benchmarking")
+  expect_identical(at_threshold$reason, "workload exceeds threshold; backend benchmarking required")
 
-  # Strictly above threshold (30.001s) -> perform backend benchmark
-  above <- NCVROC:::.planner_should_benchmark(30.001, threshold = 30.0)
+  # Strictly above threshold -> perform backend benchmark
+  above <- NCVROC:::.planner_should_benchmark(30001, threshold = 30000)
   expect_true(above$backend_benchmark_required)
-  expect_identical(above$reason, "estimated runtime justifies backend benchmarking")
+  expect_identical(above$reason, "workload exceeds threshold; backend benchmarking required")
 })
 
 test_that("benchmark_table columns and types match canonical schema across APIs", {
@@ -261,12 +261,16 @@ test_that(".planner_format_execution_plan formats metadata correctly with approx
 
   expect_match(ex_text, "=== Automatic Execution Plan ===")
   expect_match(ex_text, "Target API:               exhaustive_sum_roc")
-  expect_match(ex_text, "approximate estimate")
+  expect_match(ex_text, "Suggested Backend:")
+  expect_false(grepl("Estimated Serial Runtime", ex_text))
+  expect_false(grepl("Estimated Plan Runtime", ex_text))
 
   expect_match(cv_text, "=== Automatic Execution Plan ===")
   expect_match(cv_text, "Target API:               cross_size_cv")
   expect_match(cv_text, "Cross-Validation Method:")
-  expect_match(cv_text, "approximate estimate")
+  expect_match(cv_text, "Suggested Backend:")
+  expect_false(grepl("Estimated Serial Runtime", cv_text))
+  expect_false(grepl("Estimated Plan Runtime", cv_text))
 
   # Format from metadata directly
   meta_text <- NCVROC:::.planner_format_execution_plan(attr(ex_res, "execution_plan"))

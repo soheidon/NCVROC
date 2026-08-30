@@ -138,10 +138,9 @@
 #' @return A data.frame of at most `top_n` rows.
 #' @keywords internal
 .stream_top_n_from_chunks <- function(chunk_dir,
-                                       rank_by = c("youden", "auc", "sensitivity",
-                                                   "specificity", "accuracy",
-                                                   "ppv", "npv"),
+                                       rank_by = "auc",
                                        top_n = 20,
+                                       prefer_fewer_items = TRUE,
                                        sensitivity = NULL,
                                        specificity = NULL,
                                        auc          = NULL,
@@ -152,7 +151,11 @@
                                        n_items      = NULL,
                                        cutoff       = NULL) {
 
-  rank_by <- match.arg(rank_by)
+  valid_metrics <- c("youden", "auc", "sensitivity", "specificity", "accuracy", "ppv", "npv",
+                     "cv_youden", "cv_auc", "cv_sensitivity", "cv_specificity", "cv_accuracy", "cv_ppv", "cv_npv")
+  if (!is.character(rank_by) || length(rank_by) != 1L || !rank_by %in% valid_metrics) {
+    stop("`rank_by` must be one of: ", paste(valid_metrics, collapse = ", "), call. = FALSE)
+  }
 
   conditions <- list(
     sensitivity = sensitivity,
@@ -202,16 +205,11 @@
       rbind(best_so_far, chunk)
     }
 
-    tie_cols <- setdiff(
-      c("youden", "auc", "sensitivity", "specificity", "accuracy"),
-      rank_by
+    combined <- .order_and_rank_candidates(
+      df                 = combined,
+      rank_by            = rank_by,
+      prefer_fewer_items = prefer_fewer_items
     )
-    tie_cols <- intersect(tie_cols, names(combined))
-
-    ord <- do.call(order, c(
-      lapply(c(rank_by, tie_cols), function(nm) -combined[[nm]])
-    ))
-    combined <- combined[ord, , drop = FALSE]
 
     best_so_far <- utils::head(combined, top_n)
   }
@@ -230,6 +228,8 @@
     return(empty)
   }
 
+  best_so_far$rank <- seq_len(nrow(best_so_far))
+  rownames(best_so_far) <- NULL
   best_so_far
 }
 

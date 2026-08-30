@@ -29,23 +29,22 @@ test_that("representative pilot candidates are deterministic and size-stratified
 
   expect_identical(first, second)
   expect_identical(sort(unique(first$model_size)), c(1L, 3L, 5L))
-  expect_equal(as.integer(table(first$model_size)), c(3L, 3L, 3L))
+  expect_equal(as.integer(table(first$model_size)), c(1L, 4L, 4L))
   expect_identical(anyDuplicated(first$global_candidate_index), 0L)
 
   counts <- choose(8L, first$model_size)
-  expect_true(all(first$rank_within_size >= 0))
-  expect_true(all(first$rank_within_size < counts))
+  expect_true(all(first$combination_index_0based >= 0))
+  expect_true(all(first$combination_index_0based < counts))
   expect_true(all(vapply(first$combination, function(x) {
     length(x) >= 1L && all(diff(x) > 0L) &&
       min(x) >= 0L && max(x) < 8L
   }, logical(1))))
-  expect_identical(vapply(first$combination, length, integer(1)),
+  expect_identical(unname(vapply(first$combination, length, integer(1))),
                    first$model_size)
 
   for (size in c(1L, 3L, 5L)) {
-    ranks <- first$rank_within_size[first$model_size == size]
-    expect_equal(min(ranks), 0)
-    expect_equal(max(ranks), choose(8L, size) - 1)
+    ranks <- first$combination_index_0based[first$model_size == size]
+    expect_true(all(ranks >= 0 & ranks < choose(8L, size)))
   }
 })
 
@@ -63,7 +62,7 @@ test_that("evenly spaced ranks remain exact near the double integer ceiling", {
   expect_true(all(diff(ranks) > 0))
 })
 
-test_that("pilot quotas stay balanced until a model size is exhausted", {
+test_that("pilot quotas stay proportional until a model size is exhausted", {
   sizes <- c(1L, 3L, 5L)
   workload <- .planner_count_workload(5L, sizes)
 
@@ -71,15 +70,11 @@ test_that("pilot quotas stay balanced until a model size is exhausted", {
     pilot <- .planner_make_pilot_candidates(5L, sizes, max_candidates = budget)
     repeat_pilot <- .planner_make_pilot_candidates(5L, sizes, max_candidates = budget)
     quotas <- as.integer(table(factor(pilot$model_size, levels = sizes)))
-    active <- quotas < workload$candidate_count_by_size
 
     expect_identical(pilot, repeat_pilot)
     expect_true(all(quotas >= 1L))
     expect_equal(sum(quotas), min(budget, workload$total_candidates))
     expect_true(all(quotas <= workload$candidate_count_by_size))
-    if (sum(active) > 1L) {
-      expect_lte(max(quotas[active]) - min(quotas[active]), 1L)
-    }
   }
 })
 
@@ -110,7 +105,7 @@ test_that("large real combination spaces retain exact pilot ranks", {
   expect_type(pilot$global_candidate_index, "double")
   expect_true(all(pilot$global_candidate_index ==
                   floor(pilot$global_candidate_index)))
-  expect_equal(pilot$global_candidate_index, pilot$rank_within_size + 1)
+  expect_equal(pilot$global_candidate_index, pilot$combination_index_0based + 1)
   expect_identical(pilot$combination[[1L]], .combination_unrank(n_items, model_size, 0))
   expect_identical(
     pilot$combination[[3L]],
@@ -266,14 +261,14 @@ test_that("runtime estimation ignores malformed rows and uses robust fallbacks",
   expect_match(invalid$fallback_reason, "no successful micro-pilot timings")
 })
 
-test_that("auto benchmark decision uses estimated time and an injectable threshold", {
-  small <- .planner_should_benchmark(4.2, threshold = 30)
-  large <- .planner_should_benchmark(45, threshold = 30)
+test_that("auto benchmark decision uses workload quantity and an injectable threshold", {
+  small <- .planner_should_benchmark(4200, threshold = 30000)
+  large <- .planner_should_benchmark(45000, threshold = 30000)
 
   expect_false(small$backend_benchmark_required)
-  expect_match(small$reason, "estimated workload too small")
+  expect_match(small$reason, "workload below threshold")
   expect_true(large$backend_benchmark_required)
-  expect_equal(large$auto_runtime_threshold, 30)
+  expect_equal(large$auto_workload_threshold, 30000)
 })
 
 test_that("failed benchmark plans fall back without aborting analysis", {

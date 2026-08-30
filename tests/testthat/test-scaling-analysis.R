@@ -94,19 +94,19 @@ test_that("workload insufficiency is explicit and excluded from selection", {
   expect_identical(selected$selected_parallel, "none")
 })
 
-test_that("primary 180s gate and secondary budget rule operate correctly", {
-  # Below 180s threshold -> benchmark not required
+test_that("workload gate and secondary budget rule operate correctly", {
+  # Below threshold -> benchmark not required
   below <- NCVROC:::.planner_should_benchmark(120.0, threshold = 180.0)
   expect_false(below$backend_benchmark_required)
-  expect_match(below$reason, "estimated")
+  expect_match(below$reason, "workload below threshold")
 
-  # Above 180s threshold -> benchmark required
+  # Above threshold -> benchmark required
   above <- NCVROC:::.planner_should_benchmark(240.0, threshold = 180.0)
   expect_true(above$backend_benchmark_required)
-  allowed <- NCVROC:::.planner_sweep_gate(240, expected_sweep_seconds = 12, threshold = 180)
+  allowed <- NCVROC:::.planner_sweep_gate(240, expected_sweep_seconds = 12, threshold = 180, estimated_serial_runtime = 240)
   expect_true(allowed$allowed)
   expect_equal(allowed$overhead_budget_seconds, 12)
-  denied <- NCVROC:::.planner_sweep_gate(240, expected_sweep_seconds = 12.1, threshold = 180)
+  denied <- NCVROC:::.planner_sweep_gate(240, expected_sweep_seconds = 12.1, threshold = 180, estimated_serial_runtime = 240)
   expect_false(denied$allowed)
   expect_identical(denied$reason, "benchmark_budget_insufficient")
 })

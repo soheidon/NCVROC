@@ -174,8 +174,8 @@ test_that("fit_final_sum_scale supports parallel = 'threads'", {
   colnames(dat) <- sprintf("q%d", 1:p)
   dat$y <- rep(c(0, 1), each = n / 2)
 
-  ref <- fit_final_sum_scale(dat, "y", sprintf("q%d", 1:p), max_items = 2, parallel = FALSE, progress = FALSE)
-  res <- fit_final_sum_scale(dat, "y", sprintf("q%d", 1:p), max_items = 2, parallel = "threads", n_workers = 2L, progress = FALSE)
+  ref <- fit_final_sum_scale(dat, "y", sprintf("q%d", 1:p), max_items = 2, engine = "Rcpp", parallel = FALSE, progress = FALSE)
+  res <- fit_final_sum_scale(dat, "y", sprintf("q%d", 1:p), max_items = 2, engine = "Rcpp", parallel = "threads", n_workers = 2L, progress = FALSE)
 
   expect_identical(ref, res)
 })
@@ -194,5 +194,3 @@ test_that("CRAN limit environment variable is respected", {
   workers <- NCVROC:::.resolve_n_workers(parallel = TRUE, n_workers = 8L)
   expect_lte(workers, 2L)
 })
-
-

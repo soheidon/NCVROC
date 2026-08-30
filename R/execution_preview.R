@@ -118,7 +118,17 @@ plan_ncvroc_execution <- function(data,
 
   available_cap <- if (!is.null(max_resources)) as.integer(max_resources) else NULL
 
-  # Dispatch to internal planner controller with tuning = "always"
+  extra_args <- list(...)
+  tuning_arg <- if (!is.null(extra_args$tuning)) extra_args$tuning else "always"
+  threshold_arg <- if (!is.null(extra_args$benchmark_threshold)) {
+    as.double(extra_args$benchmark_threshold)
+  } else if (!is.null(extra_args$threshold)) {
+    as.double(extra_args$threshold)
+  } else {
+    .PLANNER_AUTO_WORKLOAD_THRESHOLD
+  }
+
+  # Dispatch to internal planner controller
   if (workflow == "exhaustive") {
     ctrl <- .planner_exhaustive_controller(
       x_mat                = dat_prep,
@@ -128,10 +138,11 @@ plan_ncvroc_execution <- function(data,
       max_items            = max(resolved_sizes),
       cutoff_method        = cutoff_method,
       engine               = engine,
-      tuning               = "always",
+      tuning               = tuning_arg,
       manual_parallel_mode = "none",
       manual_n_workers     = available_cap,
-      chunk_size           = 200000L
+      chunk_size           = 200000L,
+      dependencies         = list(benchmark_threshold = threshold_arg)
     )
   } else if (workflow == "cross_size_cv") {
     cv_folds_list <- .planner_with_preserved_rng(.build_cv_folds(
@@ -153,9 +164,10 @@ plan_ncvroc_execution <- function(data,
       sensitivity_min      = sensitivity_min,
       specificity_min      = specificity_min,
       engine               = engine,
-      tuning               = "always",
+      tuning               = tuning_arg,
       manual_parallel_mode = "none",
-      manual_n_workers     = available_cap
+      manual_n_workers     = available_cap,
+      dependencies         = list(benchmark_threshold = threshold_arg)
     )
   } else if (workflow == "nested_sum_roc") {
     outer_folds_list <- .planner_with_preserved_rng(.build_cv_folds(
@@ -182,11 +194,12 @@ plan_ncvroc_execution <- function(data,
       stratified                = TRUE,
       seed                      = 42L,
       engine                    = engine,
-      tuning                    = "always",
+      tuning                    = tuning_arg,
       manual_parallel_mode      = "none",
       manual_n_workers          = available_cap,
       manual_threads_per_worker = 1L,
-      outer_folds               = outer_folds_list
+      outer_folds               = outer_folds_list,
+      threshold                 = threshold_arg
     )
   } else {
     outer_folds_list <- .planner_with_preserved_rng(.build_cv_folds(
@@ -211,19 +224,21 @@ plan_ncvroc_execution <- function(data,
       positive_label            = positive_label,
       negative_label            = negative_label,
       engine                    = engine,
-      tuning                    = "always",
+      tuning                    = tuning_arg,
       manual_parallel_mode      = "none",
       manual_n_workers          = available_cap,
       manual_threads_per_worker = 1L,
-      fold_seeds                = rep(42L, length(outer_folds_list))
+      fold_seeds                = rep(42L, length(outer_folds_list)),
+      threshold                 = threshold_arg
     )
   }
 
   meta <- ctrl$metadata
   res <- list(
-    workflow         = workflow,
-    target_api       = meta$target_api,
-    workload         = list(
+    workflow                    = workflow,
+    target_api                  = meta$target_api,
+    backend_benchmark_performed = isTRUE(meta$backend_benchmark_performed),
+    workload                    = list(
       total_candidates        = meta$total_candidates,
       candidate_count_by_size = meta$candidate_count_by_size,
       model_sizes             = resolved_sizes,
@@ -273,16 +288,11 @@ print.ncvroc_execution_plan <- function(x, ...) {
 #' @export
 format.ncvroc_execution_plan <- function(x, ...) {
   lines <- character()
-  lines <- c(lines, "=== NCVROC Execution Plan & Runtime Preview ===")
+  lines <- c(lines, "=== NCVROC Execution Plan ===")
   lines <- c(lines, sprintf("Workflow: %s", x$workflow))
   lines <- c(lines, sprintf("Total Candidates: %s across %d item(s)",
                             format(x$workload$total_candidates, big.mark = ","),
                             x$workload$n_items))
-
-  if (!is.null(x$cheap_probe$serial_estimate) && is.finite(x$cheap_probe$serial_estimate)) {
-    lines <- c(lines, sprintf("Initial Serial Estimate: %s",
-                              .format_eta(x$cheap_probe$serial_estimate)))
-  }
 
   lines <- c(lines, "")
   lines <- c(lines, "--- Resource Sweep Benchmark ---")
@@ -290,8 +300,7 @@ format.ncvroc_execution_plan <- function(x, ...) {
     tb <- x$benchmark_table
     show_cols <- intersect(
       c("plan_id", "parallel", "n_workers", "threads_per_worker",
-        "resource_count", "median_elapsed", "speedup", "parallel_efficiency",
-        "estimated_full_runtime", "status"),
+        "resource_count", "median_elapsed", "speedup", "parallel_efficiency", "status"),
       names(tb)
     )
     df_show <- tb[, show_cols, drop = FALSE]
@@ -305,20 +314,13 @@ format.ncvroc_execution_plan <- function(x, ...) {
       df_show$parallel_efficiency <- ifelse(is.finite(df_show$parallel_efficiency),
                                             sprintf("%.1f%%", df_show$parallel_efficiency * 100), "-")
     }
-    if ("estimated_full_runtime" %in% names(df_show)) {
-      df_show$estimated_full_runtime <- vapply(
-        df_show$estimated_full_runtime,
-        function(val) if (is.finite(val)) .format_eta(val) else "-",
-        character(1)
-      )
-    }
     lines <- c(lines, utils::capture.output(print(df_show, row.names = FALSE)))
   } else {
     lines <- c(lines, "  (No multi-backend benchmark sweep performed)")
   }
 
   lines <- c(lines, "")
-  lines <- c(lines, "--- Selected Execution Plan ---")
+  lines <- c(lines, "--- Suggested Configuration ---")
   plan_desc <- if (x$selected_plan$parallel == "hybrid") {
     sprintf("hybrid (%d outer workers x %d threads)",
             x$selected_plan$outer_workers, x$selected_plan$threads_per_worker)
@@ -328,10 +330,14 @@ format.ncvroc_execution_plan <- function(x, ...) {
     sprintf("%s (%d resources)", x$selected_plan$parallel, x$selected_plan$resource_count)
   }
   lines <- c(lines, sprintf("Plan: %s", plan_desc))
-  if (!is.null(x$selected_plan$estimated_runtime) && is.finite(x$selected_plan$estimated_runtime)) {
-    lines <- c(lines, sprintf("Estimated Runtime: %s", .format_eta(x$selected_plan$estimated_runtime)))
+  basis_str <- if (!is.null(x$decision_reason) && grepl("benchmark", x$decision_reason, ignore.case = TRUE)) {
+    "Benchmark-based suggestion"
+  } else if (!is.null(x$decision_reason) && is.character(x$decision_reason) && nzchar(x$decision_reason)) {
+    x$decision_reason
+  } else {
+    "Advisory configuration"
   }
-  lines <- c(lines, sprintf("Decision: %s", x$decision_reason))
+  lines <- c(lines, sprintf("Basis: %s", basis_str))
 
   if (!is.null(x$saturation) && length(x$saturation) > 0L) {
     lines <- c(lines, "")

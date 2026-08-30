@@ -1,12 +1,46 @@
 [English](README.md) | [日本語 README](README-ja.md) | [日本語詳細リファレンス](docs/reference-ja.md)
 
-# NCVROC 0.19.0
+# NCVROC 0.20.0
 
 **N**ested **C**ross-**V**alidation for Combinatorial **ROC**-based Selection of Item-set Scores
 
 NCVROC develops short item-based screening scales through combinatorial item-set selection, Receiver Operating Characteristic (ROC) curve evaluation, ordinary and nested cross-validation, and selection optimism assessment. For psychological and clinical questionnaire data, NCVROC identifies which small subset of items best predicts a binary outcome using unweighted sum scores.
 
 Assume higher sum scores indicate higher probability of a positive outcome. Users must reverse-code items beforehand.
+
+---
+
+## What's new in NCVROC 0.20.0
+
+- **Automatic execution planning**:
+  - Benchmarks legal execution configurations for large exhaustive searches
+    and chooses a measured execution backend from serial, multithreaded,
+    outer-fold parallel, and hybrid strategies.
+  - The benchmark trigger is a deterministic workload threshold. Workloads
+    below that threshold use the safe baseline path without a backend sweep.
+  - Nested-CV planning uses a bounded pilot sample allocated across requested
+    model sizes. The pilot does not replace, screen, or prune the exhaustive
+    candidate search.
+  - Planning changes scheduling only; candidate generation, folds, ranking,
+    tie-breaking, cutoffs, predictions, and final model selection remain
+    unchanged.
+- **Parallel execution**:
+  - Improved C++ multithreaded exhaustive evaluation with `RcppParallel`.
+  - Added bounded nested resource-plan benchmarking for multithreaded,
+    outer-fold PSOCK, and hybrid execution modes.
+  - Production PSOCK paths continue to use standard R parallel infrastructure.
+- **Progress reporting**:
+  - Serial and multithreaded nested execution reports completed candidates
+    within each outer fold.
+  - Outer-fold parallel execution reports observable outer-task progress.
+  - Progress shows observed elapsed time only; NCVROC does not display ETA
+    estimates.
+- **Large-search reliability**:
+  - Added streaming C++ Top-N evaluation and rank-bounded nested evaluation
+    while preserving canonical combination identity and exact exhaustive
+    semantics.
+  - Expanded regression coverage for serial/parallel statistical and RNG
+    invariance.
 
 ---
 
@@ -90,7 +124,7 @@ Large combinatorial searches across multiple item sizes can generate tens or hun
 
 ### 1. Previewing Execution Scaling (`plan_ncvroc_execution`)
 
-Before launching a long-running analysis, `plan_ncvroc_execution()` allows you to inspect candidate counts, benchmark legal execution configurations, extrapolate runtimes via setup-aware modeling, and visualize scaling curves:
+Before launching a long-running analysis, `plan_ncvroc_execution()` allows you to inspect candidate counts, compare legal execution configurations on a bounded pilot workload, and visualize observed scaling curves:
 
 ```r
 library(NCVROC)
@@ -120,7 +154,7 @@ Execution planning is integrated directly into `exhaustive_sum_roc()`, `cross_si
 # 1. Manual mode (no planner overhead)
 fit <- cross_size_cv(data = d, outcome = y, items = Q1:Q10, model_sizes = 1:4, tuning = "off")
 
-# 2. Automatic planning (180-second primary gate + 5% overhead budget)
+# 2. Automatic planning (deterministic workload threshold)
 fit <- cross_size_cv(data = d, outcome = y, items = Q1:Q10, model_sizes = 1:4, tuning = "auto")
 
 # 3. Explicit benchmarking (always sweep legal configurations)
@@ -138,7 +172,7 @@ When benchmarking is performed, NCVROC evaluates legal execution configurations 
 5. **Deterministic tie-breakers**: Lowest `median_elapsed` followed by lexicographical `plan_id`.
 
 > [!NOTE]
-> **Nested Workflows in v0.19.0**: Nested cross-validation workflows (`nested_sum_roc()`, `cross_size_nested_cv()`) perform candidate-bounded runtime probing where supported. Full nested multi-configuration resource sweep benchmarking is deferred to v0.20.0; when unavailable, NCVROC retains the user's manual/default execution plan.
+> **Nested workflows in v0.20.0**: Nested cross-validation workflows use a bounded pilot workload when rank-bounded evaluation is available. The pilot preserves the full fold/repeat structure and does not remove candidates from the final exhaustive search.
 
 ---
 
@@ -171,7 +205,7 @@ res <- cross_size_nested_cv(data = d, outcome = y, items = Q1:Q10, model_sizes =
 NCVROC includes observation-only progress reporting controlled by `progress`:
 
 - **Exact Completed Counts**: On compiled serial and multithreaded loops, progress reports exact completed candidate counts at batch boundaries (e.g. `Evaluating 25,000 / 100,000 combinations (25.0%)`).
-- **Approximate ETA**: Monotonically estimates remaining time derived strictly from observed completed batches.
+- **Observed elapsed time**: Progress reports elapsed time from completed work; estimated time remaining is not displayed.
 - **Truthful PSOCK Boundaries**: PSOCK worker processes emit concise start and completion notifications (`progress_unit = "none"`) without generating unverified progress percentages.
 - **Silence Contract**: `progress = FALSE` guarantees complete console silence and minimal execution overhead.
 

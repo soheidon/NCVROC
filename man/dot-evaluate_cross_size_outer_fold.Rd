@@ -30,8 +30,12 @@
   fold_name = "Fold1",
   rep_id = 1L,
   f_id = 1L,
-  test_idx = seq_len(nrow(test_data))
+  test_idx = seq_len(nrow(test_data)),
+  progress_callback = NULL
 )
+}
+\arguments{
+\item{progress_callback}{Optional callback function receiving progress increment counts.}
 }
 \description{
 Evaluate a single outer fold in cross-size nested cross-validation

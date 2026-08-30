@@ -94,7 +94,8 @@ test_that("exact progress reports only completed batch work and remains silent w
 })
 
 test_that("progress capability and batch sizing are deterministic", {
-  expect_equal(NCVROC:::.progress_batch_size(100L), 50000L)
+  expect_equal(NCVROC:::.progress_batch_size(100L), 2500L)
+  expect_equal(NCVROC:::.progress_batch_size(58905L), 2946L)
   expect_equal(NCVROC:::.progress_batch_size(5e6), 200000L)
   expect_identical(NCVROC:::.progress_capability("exhaustive_sum_roc", "threads")$progress_mode, "exact")
   expect_identical(NCVROC:::.progress_capability("nested_sum_roc", "hybrid")$progress_mode, "start_completion")
