@@ -4,7 +4,7 @@
 \alias{.open_block_stream_reader}
 \title{Open a streaming block reader for a logical block stream}
 \usage{
-.open_block_stream_reader(stream_obj, size_cum_offset = 0L)
+.open_block_stream_reader(stream_obj, size_cum_offset = 0)
 }
 \description{
 Reads only ONE block file (at most `block_size` rows) into R memory at any time.

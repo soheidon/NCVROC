@@ -1,6 +1,6 @@
 [English README](README.md) | [日本語詳細リファレンス](docs/reference-ja.md)
 
-# NCVROC 0.19.0
+# NCVROC 0.21.0
 
 **N**ested **C**ross-**V**alidation for Combinatorial **ROC**-based Selection of Item-set Scores（項目セット得点の組み合わせROC選択のためのネスト交差検証）
 
@@ -10,7 +10,21 @@ NCVROC は、項目の組み合わせ選択、Receiver Operating Characteristic 
 
 ---
 
-## NCVROC 0.19.0 の主要新機能
+## NCVROC 0.21.0 の主要新機能
+
+- **臨床動作点カットオフ選択エンジン**:
+  - `cross_size_cv()` および `cross_size_nested_cv()` に `"sensitivity_target"`（感度目標達成下での特異度最大化）と `"clinical_constraint"`（感度・特異度の同時制約下での Youden 指数最大化）の 2 つの新カットオフ選択規則を追加。
+  - 契約 C1 を厳格に適用（`sensitivity_target` では `sensitivity_min` 必須・`specificity_min` 禁止、`clinical_constraint` では両方必須）。
+  - 従来手法（`"youden"`, `"closest_topleft"`）の後方互換性を 100% 維持。
+- **全データへの実運用カットオフ再推定**:
+  - 最終選抜モデルに対して、同一のカットオフ規則・臨床制約を用いて全データ上で実運用カットオフを再推定。
+  - 状態値（`"selected"`, `"no_feasible_cutoff_on_full_data"`, `"no_feasible_candidate"`）の分離。
+- **ネスト交差検証の 16 列標準化テーブル**:
+  - `outer_fold_results` を 16 列の標準スキーマに統一し、選抜不能フォールドには型付き NA を安全に設定。
+
+---
+
+## NCVROC 0.20.0 の主要新機能
 
 - **実行プレビュー公開 API (`plan_ncvroc_execution()`)**:
   - 解析実行前に総組み合わせ数・計算負荷を算出し、利用可能な全並列リソース構成のスケーリングを事前計測して専用の S3 オブジェクト（`"ncvroc_execution_plan"`）を返します。

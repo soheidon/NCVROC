@@ -48,11 +48,17 @@ If `NULL`, resolved from `min_items:max_items` or `item_count`.}
 \item{selection_metric}{Metric for candidate ranking and model selection:
 `"auc"` (default), `"youden"`, `"sensitivity"`, `"specificity"`, or `"accuracy"`.}
 
-\item{cutoff_method}{Cutoff selection rule: `"youden"` (default) or `"closest_topleft"`.}
+\item{cutoff_method}{Cutoff selection rule: `"youden"` (default), `"closest_topleft"`,
+`"sensitivity_target"` (target sensitivity with maximum specificity), or
+`"clinical_constraint"` (joint sensitivity and specificity constraints with maximum Youden).}
 
-\item{sensitivity_min}{Optional minimum OOF sensitivity threshold (numeric in `[0, 1]`, default `NULL`).}
+\item{sensitivity_min}{Minimum sensitivity threshold (numeric in `[0, 1]`).
+Required when `cutoff_method = "sensitivity_target"` or `"clinical_constraint"`.
+Optional post-evaluation candidate-level filter when `cutoff_method = "youden"` or `"closest_topleft"`.}
 
-\item{specificity_min}{Optional minimum OOF specificity threshold (numeric in `[0, 1]`, default `NULL`).}
+\item{specificity_min}{Minimum specificity threshold (numeric in `[0, 1]`).
+Required when `cutoff_method = "clinical_constraint"`. Prohibited when `cutoff_method = "sensitivity_target"`.
+Optional post-evaluation candidate-level filter when `cutoff_method = "youden"` or `"closest_topleft"`.}
 
 \item{top_n}{Integer, number of top candidates to return in `candidate_ranking` (default 20).}
 

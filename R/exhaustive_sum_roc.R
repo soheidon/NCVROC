@@ -503,6 +503,7 @@ exhaustive_sum_roc <- function(data,
                                progress_callback = NULL) {
 
   # ---- Argument validation ----
+  .ncvroc_reject_deployment_only_methods(cutoff_method)
   cutoff_method <- match.arg(cutoff_method)
   rank_by <- match.arg(rank_by)
   engine <- match.arg(engine)

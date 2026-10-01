@@ -38,6 +38,7 @@
   "compute_score_frequencies",
   "compute_roc_metrics_from_table",
   "find_optimal_cutoff",
+  "select_operating_point",
   "compute_auc_from_table",
   "add_performance_cis",
   "cv_sum_roc",
@@ -120,61 +121,97 @@
     ci                 = FALSE,
     seed               = seed,
     progress           = FALSE,
-    progress_callback  = progress_callback
+    progress_callback  = progress_callback,
+    error_on_empty     = FALSE
   )
 
-  selected_model_str <- inner_fit$final_selected_model$items
-  selected_items_vec <- .parse_itemset(selected_model_str)
-  selected_n_items   <- inner_fit$final_selected_model$n_items
-  train_cutoff       <- inner_fit$final_full_data_cutoff
+  is_selected <- !is.null(inner_fit$final_selected_model) &&
+    nrow(inner_fit$final_selected_model) > 0L &&
+    identical(inner_fit$final_selection_status, "selected") &&
+    !is.na(inner_fit$final_full_data_cutoff)
 
-  # Apply selected model and training cutoff to outer test set ONLY
-  test_scores <- rowSums(test_data[, selected_items_vec, drop = FALSE])
-  pred_class  <- ifelse(test_scores >= train_cutoff, 1L, 0L)
+  if (is_selected) {
+    selected_model_str <- inner_fit$final_selected_model$items
+    selected_items_vec <- .parse_itemset(selected_model_str)
+    selected_n_items   <- as.integer(inner_fit$final_selected_model$n_items)
+    train_cutoff       <- as.numeric(inner_fit$final_full_data_cutoff)
 
-  test_freq <- compute_score_frequencies(test_scores, test_y)
-  test_auc  <- compute_auc_from_table(test_freq$pos_counts, test_freq$neg_counts)
+    # Apply selected model and training cutoff to outer test set ONLY
+    test_scores <- rowSums(test_data[, selected_items_vec, drop = FALSE])
+    pred_class  <- ifelse(test_scores >= train_cutoff, 1L, 0L)
 
-  tp <- sum(pred_class == 1L & test_y == 1L)
-  tn <- sum(pred_class == 0L & test_y == 0L)
-  fp <- sum(pred_class == 1L & test_y == 0L)
-  fn <- sum(pred_class == 0L & test_y == 1L)
+    test_freq <- compute_score_frequencies(test_scores, test_y)
+    test_auc  <- compute_auc_from_table(test_freq$pos_counts, test_freq$neg_counts)
 
-  sens <- if (tp + fn > 0) tp / (tp + fn) else NA_real_
-  spec <- if (tn + fp > 0) tn / (tn + fp) else NA_real_
-  ppv  <- if (tp + fp > 0) tp / (tp + fp) else NA_real_
-  npv  <- if (tn + fn > 0) tn / (tn + fn) else NA_real_
-  acc  <- if (tp + tn + fp + fn > 0) (tp + tn) / (tp + tn + fp + fn) else NA_real_
-  youd <- if (is.na(sens) || is.na(spec)) NA_real_ else sens + spec - 1
+    tp <- sum(pred_class == 1L & test_y == 1L)
+    tn <- sum(pred_class == 0L & test_y == 0L)
+    fp <- sum(pred_class == 1L & test_y == 0L)
+    fn <- sum(pred_class == 0L & test_y == 1L)
+
+    sens <- if (tp + fn > 0) tp / (tp + fn) else NA_real_
+    spec <- if (tn + fp > 0) tn / (tn + fp) else NA_real_
+    ppv  <- if (tp + fp > 0) tp / (tp + fp) else NA_real_
+    npv  <- if (tn + fn > 0) tn / (tn + fn) else NA_real_
+    acc  <- if (tp + tn + fp + fn > 0) (tp + tn) / (tp + tn + fp + fn) else NA_real_
+    youd <- if (is.na(sens) || is.na(spec)) NA_real_ else sens + spec - 1
+    fold_status <- "selected"
+  } else {
+    selected_model_str <- NA_character_
+    selected_n_items   <- NA_integer_
+    train_cutoff       <- NA_real_
+
+    test_scores <- rep(NA_real_, nrow(test_data))
+    pred_class  <- rep(NA_integer_, nrow(test_data))
+    test_auc    <- NA_real_
+    sens        <- NA_real_
+    spec        <- NA_real_
+    ppv         <- NA_real_
+    npv         <- NA_real_
+    acc         <- NA_real_
+    youd        <- NA_real_
+    fold_status <- if (!is.null(inner_fit$final_selection_status)) inner_fit$final_selection_status else "no_feasible_candidate"
+  }
+
+  n_feasible <- if (!is.null(inner_fit$n_feasible_candidates)) {
+    as.integer(inner_fit$n_feasible_candidates)
+  } else if (!is.null(inner_fit$candidate_ranking)) {
+    as.integer(nrow(inner_fit$candidate_ranking))
+  } else {
+    0L
+  }
+  n_total_combos <- if (!is.null(inner_fit$total_combinations)) as.numeric(inner_fit$total_combinations) else 0.0
 
   fold_result_row <- data.frame(
-    outer_fold       = if (is.null(fold_name)) paste0("Fold", f_id) else fold_name,
-    repeat_id        = rep_id,
-    fold_id          = f_id,
-    selected_items   = selected_model_str,
-    selected_n_items = selected_n_items,
-    selected_cutoff  = train_cutoff,
-    outer_auc        = test_auc,
-    outer_sensitivity= sens,
-    outer_specificity= spec,
-    outer_youden     = youd,
-    outer_accuracy   = acc,
-    outer_ppv        = ppv,
-    outer_npv        = npv,
-    stringsAsFactors = FALSE
+    outer_fold            = if (is.null(fold_name)) paste0("Fold", f_id) else fold_name,
+    repeat_id             = as.integer(rep_id),
+    fold_id               = as.integer(f_id),
+    selected_items        = selected_model_str,
+    selected_n_items      = as.integer(selected_n_items),
+    selected_cutoff       = train_cutoff,
+    outer_auc             = test_auc,
+    outer_sensitivity     = sens,
+    outer_specificity     = spec,
+    outer_youden          = youd,
+    outer_accuracy        = acc,
+    outer_ppv             = ppv,
+    outer_npv             = npv,
+    selection_status      = fold_status,
+    n_feasible_candidates = n_feasible,
+    n_candidates_total    = n_total_combos,
+    stringsAsFactors      = FALSE
   )
 
   preds_df <- data.frame(
     row_index       = test_idx,
-    repeat_id       = rep_id,
-    fold_id         = f_id,
+    repeat_id       = as.integer(rep_id),
+    fold_id         = as.integer(f_id),
     outer_fold      = if (is.null(fold_name)) paste0("Fold", f_id) else fold_name,
     true_outcome    = test_y,
     predicted_score = test_scores,
     predicted_class = pred_class,
     applied_cutoff  = train_cutoff,
     selected_items  = selected_model_str,
-    selected_n_items= selected_n_items,
+    selected_n_items= as.integer(selected_n_items),
     stringsAsFactors = FALSE
   )
 
@@ -206,9 +243,15 @@
 #' @param inner_repeats Integer, number of inner CV repeats (default 1).
 #' @param selection_metric Metric for inner model selection:
 #'   `"auc"` (default), `"youden"`, `"sensitivity"`, `"specificity"`, or `"accuracy"`.
-#' @param cutoff_method Cutoff selection rule: `"youden"` (default) or `"closest_topleft"`.
-#' @param sensitivity_min Optional minimum OOF sensitivity threshold (numeric in `[0, 1]`, default `NULL`).
-#' @param specificity_min Optional minimum OOF specificity threshold (numeric in `[0, 1]`, default `NULL`).
+#' @param cutoff_method Cutoff selection rule: `"youden"` (default), `"closest_topleft"`,
+#'   `"sensitivity_target"` (target sensitivity with maximum specificity), or
+#'   `"clinical_constraint"` (joint sensitivity and specificity constraints with maximum Youden).
+#' @param sensitivity_min Minimum sensitivity threshold (numeric in `[0, 1]`).
+#'   Required when `cutoff_method = "sensitivity_target"` or `"clinical_constraint"`.
+#'   Optional post-evaluation candidate-level filter when `cutoff_method = "youden"` or `"closest_topleft"`.
+#' @param specificity_min Minimum specificity threshold (numeric in `[0, 1]`).
+#'   Required when `cutoff_method = "clinical_constraint"`. Prohibited when `cutoff_method = "sensitivity_target"`.
+#'   Optional post-evaluation candidate-level filter when `cutoff_method = "youden"` or `"closest_topleft"`.
 #' @param prefer_fewer_items Logical, prefer smaller models on ties (default `TRUE`).
 #' @param stratified Logical, maintain class balance across folds (default `TRUE`).
 #' @param positive_label Value indicating positive class (default 1).
@@ -239,11 +282,37 @@
 #' @param outer_k Alias for `outer_folds`.
 #' @param inner_k Alias for `inner_folds`.
 #'
-#' @return An S3 object of class `"cross_size_nested_cv_result"`. When
-#'   \code{tuning = "auto"} or \code{"always"}, \code{settings$execution_plan}
-#'   contains planning metadata detailing the selected execution backend and
-#'   approximate runtime estimates. \code{tuning = "off"} attaches no execution
-#'   plan metadata.
+#' @return An S3 object of class `"cross_size_nested_cv_result"`, containing:
+#' \describe{
+#'   \item{summary}{Summary data.frame of pooled outer-fold performance metrics (AUC, sensitivity, specificity, Youden index, accuracy, PPV, NPV).}
+#'   \item{outer_fold_results}{A 16-column data.frame containing outer-fold evaluation details:
+#'     `outer_fold` (character),
+#'     `repeat_id` (integer),
+#'     `fold_id` (integer),
+#'     `selected_items` (character),
+#'     `selected_n_items` (integer),
+#'     `selected_cutoff` (numeric),
+#'     `outer_auc` (numeric),
+#'     `outer_sensitivity` (numeric),
+#'     `outer_specificity` (numeric),
+#'     `outer_youden` (numeric),
+#'     `outer_accuracy` (numeric),
+#'     `outer_ppv` (numeric),
+#'     `outer_npv` (numeric),
+#'     `selection_status` (character, e.g. "success" or "no_feasible_candidate"),
+#'     `n_feasible_candidates` (integer),
+#'     `n_candidates_total` (numeric).
+#'   }
+#'   \item{predictions}{A data.frame of outer out-of-fold predictions.}
+#'   \item{model_size_distribution}{Frequency distribution of selected model sizes across outer folds.}
+#'   \item{selected_models_summary}{Summary table of unique models selected across outer folds.}
+#'   \item{item_selection_frequency}{Frequency table of individual item selections.}
+#'   \item{settings}{Execution settings and parameter configuration. When
+#'     \code{tuning = "auto"} or \code{"always"}, \code{settings$execution_plan}
+#'     contains planning metadata detailing the selected execution backend and
+#'     approximate runtime estimates. \code{tuning = "off"} attaches no execution
+#'     plan metadata.}
+#' }
 #'
 #' @export
 cross_size_nested_cv <- function(data,
@@ -258,7 +327,7 @@ cross_size_nested_cv <- function(data,
                                  outer_repeats      = 5,
                                  inner_repeats      = 1,
                                  selection_metric   = c("auc", "youden", "sensitivity", "specificity", "accuracy"),
-                                 cutoff_method      = c("youden", "closest_topleft"),
+                                 cutoff_method      = c("youden", "closest_topleft", "sensitivity_target", "clinical_constraint"),
                                  sensitivity_min    = NULL,
                                  specificity_min    = NULL,
                                  prefer_fewer_items = TRUE,
@@ -288,6 +357,23 @@ cross_size_nested_cv <- function(data,
   cutoff_method    <- match.arg(cutoff_method)
   engine           <- match.arg(engine)
   tuning           <- match.arg(tuning, c("off", "auto", "always"))
+
+  # ---- Contract C1: Validate cutoff_method constraints ----
+  if (cutoff_method == "sensitivity_target") {
+    if (is.null(sensitivity_min)) {
+      stop("`sensitivity_min` is required when `cutoff_method = \"sensitivity_target\"`.", call. = FALSE)
+    }
+    if (!is.null(specificity_min)) {
+      stop("`specificity_min` is prohibited and must not be specified when `cutoff_method = \"sensitivity_target\"`.", call. = FALSE)
+    }
+  } else if (cutoff_method == "clinical_constraint") {
+    if (is.null(sensitivity_min)) {
+      stop("`sensitivity_min` is required when `cutoff_method = \"clinical_constraint\"`.", call. = FALSE)
+    }
+    if (is.null(specificity_min)) {
+      stop("`specificity_min` is required when `cutoff_method = \"clinical_constraint\"`.", call. = FALSE)
+    }
+  }
 
   # ---- Validate constraints ----
   if (!is.null(sensitivity_min)) {
@@ -566,7 +652,7 @@ cross_size_nested_cv <- function(data,
   )
 
   # Model size selection frequency
-  size_counts <- table(factor(outer_fold_results_df$selected_n_items, levels = sizes))
+  size_counts <- table(factor(outer_fold_results_df$selected_n_items[!is.na(outer_fold_results_df$selected_n_items)], levels = sizes))
   size_freq_df <- data.frame(
     n_items      = sizes,
     n_selections = as.integer(size_counts),
@@ -575,27 +661,51 @@ cross_size_nested_cv <- function(data,
   )
 
   # Item combination selection frequency
-  combo_counts <- sort(table(outer_fold_results_df$selected_items), decreasing = TRUE)
-  combo_freq_df <- data.frame(
-    items        = names(combo_counts),
-    n_items      = vapply(names(combo_counts), function(s) length(.parse_itemset(s)), integer(1)),
-    n_selections = as.integer(combo_counts),
-    frequency    = as.numeric(combo_counts) / n_outer_evals,
-    row.names    = NULL,
-    stringsAsFactors = FALSE
-  )
+  valid_items <- outer_fold_results_df$selected_items[!is.na(outer_fold_results_df$selected_items)]
+  combo_counts <- if (length(valid_items) > 0L) sort(table(valid_items), decreasing = TRUE) else table(character(0))
+  combo_freq_df <- if (length(combo_counts) > 0L) {
+    data.frame(
+      items        = names(combo_counts),
+      n_items      = vapply(names(combo_counts), function(s) length(.parse_itemset(s)), integer(1)),
+      n_selections = as.integer(combo_counts),
+      frequency    = as.numeric(combo_counts) / n_outer_evals,
+      row.names    = NULL,
+      stringsAsFactors = FALSE
+    )
+  } else {
+    data.frame(
+      items        = character(0),
+      n_items      = integer(0),
+      n_selections = integer(0),
+      frequency    = numeric(0),
+      stringsAsFactors = FALSE
+    )
+  }
 
   # Cutoff distribution across outer folds (1 cutoff per outer fold)
   cutoffs_vec <- outer_fold_results_df$selected_cutoff
-  cv_cutoff_dist <- list(
-    mean            = mean(cutoffs_vec),
-    sd              = if (length(cutoffs_vec) > 1) stats::sd(cutoffs_vec) else 0,
-    median          = stats::median(cutoffs_vec),
-    iqr             = stats::IQR(cutoffs_vec),
-    min             = min(cutoffs_vec),
-    max             = max(cutoffs_vec),
-    per_fold_values = cutoffs_vec
-  )
+  valid_cutoffs <- cutoffs_vec[!is.na(cutoffs_vec)]
+  cv_cutoff_dist <- if (length(valid_cutoffs) > 0L) {
+    list(
+      mean            = mean(valid_cutoffs),
+      sd              = if (length(valid_cutoffs) > 1) stats::sd(valid_cutoffs) else 0,
+      median          = stats::median(valid_cutoffs),
+      iqr             = stats::IQR(valid_cutoffs),
+      min             = min(valid_cutoffs),
+      max             = max(valid_cutoffs),
+      per_fold_values = cutoffs_vec
+    )
+  } else {
+    list(
+      mean            = NA_real_,
+      sd              = NA_real_,
+      median          = NA_real_,
+      iqr             = NA_real_,
+      min             = NA_real_,
+      max             = NA_real_,
+      per_fold_values = cutoffs_vec
+    )
+  }
 
   structure(
     list(

@@ -288,6 +288,7 @@ candidate_stability_roc <- function(data,
   # 2. Resolve arguments
   resampling <- match.arg(resampling)
   bootstrap_test <- match.arg(bootstrap_test)
+  .ncvroc_reject_deployment_only_methods(cutoff_method)
   cutoff_method <- match.arg(cutoff_method)
   rank_by <- match.arg(rank_by)
   parallel <- match.arg(parallel)

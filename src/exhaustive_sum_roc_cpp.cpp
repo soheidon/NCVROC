@@ -15,7 +15,9 @@ using namespace Rcpp;
 
 enum CutoffMethod {
   CUTOFF_YOUDEN = 1,
-  CUTOFF_CLOSEST_TOPLEFT = 2
+  CUTOFF_CLOSEST_TOPLEFT = 2,
+  CUTOFF_SENSITIVITY_TARGET = 3,
+  CUTOFF_CLINICAL_CONSTRAINT = 4
 };
 
 // Compute binomial coefficient (n choose k) using multiplicative formula.
@@ -1322,7 +1324,9 @@ static inline void evaluate_single_combo_cv_cpp(
     double& out_cutoff_mean,
     double& out_cutoff_sd,
     double& out_final_cutoff,
-    bool& out_valid
+    bool& out_valid,
+    int& out_n_cutoff_feasible_folds,
+    int& out_n_total_folds
 ) {
   int k = combo_cols.size();
 
@@ -1361,6 +1365,8 @@ static inline void evaluate_single_combo_cv_cpp(
     out_cutoff_sd = NA_REAL;
     out_final_cutoff = NA_REAL;
     out_valid = false;
+    out_n_cutoff_feasible_folds = 0;
+    out_n_total_folds = n_folds;
     return;
   }
 
@@ -1435,13 +1441,13 @@ static inline void evaluate_single_combo_cv_cpp(
       buf.fn[si] = n_pos - buf.tp[si];
       buf.tn[si] = n_neg - buf.fp[si];
 
-      buf.sensitivity[si] = buf.tp[si] / n_pos;
-      buf.specificity[si] = buf.tn[si] / n_neg;
+      buf.sensitivity[si] = (double)buf.tp[si] / n_pos;
+      buf.specificity[si] = (double)buf.tn[si] / n_neg;
       buf.youden_vals[si] = buf.sensitivity[si] + buf.specificity[si] - 1.0;
       buf.accuracy[si] = (buf.tp[si] + buf.tn[si]) / (double)tot_sub;
     }
 
-    int best_idx = 0;
+    int best_idx = -1;
     if (cutoff_method == CUTOFF_YOUDEN) {
       double best_youden = -2.0, best_sens = -1.0, best_spec = -1.0;
       double best_cutoff_val = R_PosInf;
@@ -1480,7 +1486,48 @@ static inline void evaluate_single_combo_cv_cpp(
           best_idx = si;
         }
       }
+    } else if (cutoff_method == CUTOFF_SENSITIVITY_TARGET) {
+      double best_spec = -1.0, best_sens = -1.0, best_youden = -2.0;
+      double best_cutoff_val = R_PosInf;
+      for (int si = 0; si < n_scores; si++) {
+        double se = buf.sensitivity[si];
+        if (se < sensitivity_min) continue;
+        double sp = buf.specificity[si];
+        double yd = buf.youden_vals[si];
+        double co = buf.unique_scores[si];
+        if (sp > best_spec ||
+            (sp == best_spec && se > best_sens) ||
+            (sp == best_spec && se == best_sens && yd > best_youden) ||
+            (sp == best_spec && se == best_sens && yd == best_youden && co < best_cutoff_val)) {
+          best_spec = sp;
+          best_sens = se;
+          best_youden = yd;
+          best_cutoff_val = co;
+          best_idx = si;
+        }
+      }
+    } else if (cutoff_method == CUTOFF_CLINICAL_CONSTRAINT) {
+      double best_youden = -2.0, best_sens = -1.0, best_spec = -1.0;
+      double best_cutoff_val = R_PosInf;
+      for (int si = 0; si < n_scores; si++) {
+        double se = buf.sensitivity[si];
+        double sp = buf.specificity[si];
+        if (se < sensitivity_min || sp < specificity_min) continue;
+        double yd = buf.youden_vals[si];
+        double co = buf.unique_scores[si];
+        if (yd > best_youden ||
+            (yd == best_youden && se > best_sens) ||
+            (yd == best_youden && se == best_sens && sp > best_spec) ||
+            (yd == best_youden && se == best_sens && sp == best_spec && co < best_cutoff_val)) {
+          best_youden = yd;
+          best_sens = se;
+          best_spec = sp;
+          best_cutoff_val = co;
+          best_idx = si;
+        }
+      }
     }
+    if (best_idx < 0) return NA_REAL;
     return buf.unique_scores[best_idx];
   };
 
@@ -1515,12 +1562,18 @@ static inline void evaluate_single_combo_cv_cpp(
         buf.full_neg_counts[s_i]++;
       }
 
-      // Test prediction
-      int pred_cls = (s_i >= fold_cutoff) ? 1 : 0;
-      buf.tps[i] = (pred_cls == 1 && y_i == 1) ? 1 : 0;
-      buf.tns[i] = (pred_cls == 0 && y_i == 0) ? 1 : 0;
-      buf.fps[i] = (pred_cls == 1 && y_i == 0) ? 1 : 0;
-      buf.fns[i] = (pred_cls == 0 && y_i == 1) ? 1 : 0;
+      if (std::isnan(fold_cutoff)) {
+        buf.tps[i] = 0;
+        buf.tns[i] = 0;
+        buf.fps[i] = 0;
+        buf.fns[i] = 0;
+      } else {
+        int pred_cls = (s_i >= fold_cutoff) ? 1 : 0;
+        buf.tps[i] = (pred_cls == 1 && y_i == 1) ? 1 : 0;
+        buf.tns[i] = (pred_cls == 0 && y_i == 0) ? 1 : 0;
+        buf.fps[i] = (pred_cls == 1 && y_i == 0) ? 1 : 0;
+        buf.fns[i] = (pred_cls == 0 && y_i == 1) ? 1 : 0;
+      }
     }
   } else {
     // General K-fold / repeated K-fold
@@ -1557,21 +1610,27 @@ static inline void evaluate_single_combo_cv_cpp(
         }
       }
 
-      // Test predictions for fold f
-      int fold_tp = 0, fold_tn = 0, fold_fp = 0, fold_fn = 0;
-      for (int ti = 0; ti < n_test; ti++) {
-        int idx = test_idx[ti];
-        int pred_cls = (buf.scores[idx] >= fold_cutoff) ? 1 : 0;
-        int y_idx = y_ptr[idx];
-        if (pred_cls == 1 && y_idx == 1) fold_tp++;
-        else if (pred_cls == 0 && y_idx == 0) fold_tn++;
-        else if (pred_cls == 1 && y_idx == 0) fold_fp++;
-        else if (pred_cls == 0 && y_idx == 1) fold_fn++;
+      if (std::isnan(fold_cutoff)) {
+        buf.tps[f] = 0;
+        buf.tns[f] = 0;
+        buf.fps[f] = 0;
+        buf.fns[f] = 0;
+      } else {
+        int fold_tp = 0, fold_tn = 0, fold_fp = 0, fold_fn = 0;
+        for (int ti = 0; ti < n_test; ti++) {
+          int idx = test_idx[ti];
+          int pred_cls = (buf.scores[idx] >= fold_cutoff) ? 1 : 0;
+          int y_idx = y_ptr[idx];
+          if (pred_cls == 1 && y_idx == 1) fold_tp++;
+          else if (pred_cls == 0 && y_idx == 0) fold_tn++;
+          else if (pred_cls == 1 && y_idx == 0) fold_fp++;
+          else if (pred_cls == 0 && y_idx == 1) fold_fn++;
+        }
+        buf.tps[f] = fold_tp;
+        buf.tns[f] = fold_tn;
+        buf.fps[f] = fold_fp;
+        buf.fns[f] = fold_fn;
       }
-      buf.tps[f] = fold_tp;
-      buf.tns[f] = fold_tn;
-      buf.fps[f] = fold_fp;
-      buf.fns[f] = fold_fn;
     }
   }
 
@@ -1618,33 +1677,51 @@ static inline void evaluate_single_combo_cv_cpp(
   out_ppv         = mean_vec(buf.rep_ppv);
   out_npv         = mean_vec(buf.rep_npv);
 
-  // Cutoff mean and SD
+  // Cutoff mean, SD, and feasibility tracking
+  int n_feasible_folds = 0;
   double c_sum = 0.0;
   for (int f = 0; f < n_folds; f++) {
-    c_sum += buf.cutoffs_vec[f];
-  }
-  out_cutoff_mean = c_sum / n_folds;
-  if (n_folds > 1) {
-    double sq_diff = 0.0;
-    for (int f = 0; f < n_folds; f++) {
-      double diff = buf.cutoffs_vec[f] - out_cutoff_mean;
-      sq_diff += diff * diff;
+    if (!std::isnan(buf.cutoffs_vec[f])) {
+      n_feasible_folds++;
+      c_sum += buf.cutoffs_vec[f];
     }
-    out_cutoff_sd = std::sqrt(sq_diff / (n_folds - 1));
+  }
+  out_n_cutoff_feasible_folds = n_feasible_folds;
+  out_n_total_folds = n_folds;
+
+  if (n_feasible_folds > 0) {
+    out_cutoff_mean = c_sum / n_feasible_folds;
+    if (n_feasible_folds > 1) {
+      double sq_diff = 0.0;
+      for (int f = 0; f < n_folds; f++) {
+        if (!std::isnan(buf.cutoffs_vec[f])) {
+          double diff = buf.cutoffs_vec[f] - out_cutoff_mean;
+          sq_diff += diff * diff;
+        }
+      }
+      out_cutoff_sd = std::sqrt(sq_diff / (n_feasible_folds - 1));
+    } else {
+      out_cutoff_sd = 0.0;
+    }
   } else {
-    out_cutoff_sd = 0.0;
+    out_cutoff_mean = NA_REAL;
+    out_cutoff_sd = NA_REAL;
   }
 
-  // Constraints check
-  if (sensitivity_min >= 0.0 && (std::isnan(out_sensitivity) || out_sensitivity < sensitivity_min)) {
-    out_valid = false;
-    return;
+  // Validity and constraint check
+  if (cutoff_method == CUTOFF_SENSITIVITY_TARGET || cutoff_method == CUTOFF_CLINICAL_CONSTRAINT) {
+    out_valid = (n_feasible_folds == n_folds);
+  } else {
+    out_valid = true;
+    if (sensitivity_min >= 0.0 && (std::isnan(out_sensitivity) || out_sensitivity < sensitivity_min)) {
+      out_valid = false;
+      return;
+    }
+    if (specificity_min >= 0.0 && (std::isnan(out_specificity) || out_specificity < specificity_min)) {
+      out_valid = false;
+      return;
+    }
   }
-  if (specificity_min >= 0.0 && (std::isnan(out_specificity) || out_specificity < specificity_min)) {
-    out_valid = false;
-    return;
-  }
-  out_valid = true;
 }
 
 struct CvComboEvaluatorWorker : public RcppParallel::Worker {
@@ -1671,6 +1748,8 @@ struct CvComboEvaluatorWorker : public RcppParallel::Worker {
   RcppParallel::RVector<double> out_cutoff_sd;
   RcppParallel::RVector<double> out_final_cutoff;
   RcppParallel::RVector<int> out_valid;
+  RcppParallel::RVector<int> out_n_cutoff_feasible_folds;
+  RcppParallel::RVector<int> out_n_total_folds;
 
   CvComboEvaluatorWorker(
     const double* x_ptr_,
@@ -1694,7 +1773,9 @@ struct CvComboEvaluatorWorker : public RcppParallel::Worker {
     NumericVector out_cutoff_mean_,
     NumericVector out_cutoff_sd_,
     NumericVector out_final_cutoff_,
-    IntegerVector out_valid_
+    IntegerVector out_valid_,
+    IntegerVector out_n_cutoff_feasible_folds_,
+    IntegerVector out_n_total_folds_
   ) : x_ptr(x_ptr_), y_ptr(y_ptr_), n(n_), n_cols(n_cols_),
       combo_indices_vec(combo_indices_vec_),
       fold_test_indices_vec(fold_test_indices_vec_),
@@ -1704,7 +1785,9 @@ struct CvComboEvaluatorWorker : public RcppParallel::Worker {
       out_specificity(out_specificity_), out_youden(out_youden_),
       out_accuracy(out_accuracy_), out_ppv(out_ppv_), out_npv(out_npv_),
       out_cutoff_mean(out_cutoff_mean_), out_cutoff_sd(out_cutoff_sd_),
-      out_final_cutoff(out_final_cutoff_), out_valid(out_valid_) {}
+      out_final_cutoff(out_final_cutoff_), out_valid(out_valid_),
+      out_n_cutoff_feasible_folds(out_n_cutoff_feasible_folds_),
+      out_n_total_folds(out_n_total_folds_) {}
 
   void operator()(std::size_t begin, std::size_t end) {
     CvThreadBuffer buf(n, n_folds, repeats);
@@ -1712,6 +1795,7 @@ struct CvComboEvaluatorWorker : public RcppParallel::Worker {
       double auc_v, sens_v, spec_v, youd_v, acc_v, ppv_v, npv_v;
       double cut_mean_v, cut_sd_v, final_cut_v;
       bool valid_v;
+      int n_cutoff_feasible_v, n_total_folds_v;
 
       evaluate_single_combo_cv_cpp(
         combo_indices_vec[i],
@@ -1736,7 +1820,9 @@ struct CvComboEvaluatorWorker : public RcppParallel::Worker {
         cut_mean_v,
         cut_sd_v,
         final_cut_v,
-        valid_v
+        valid_v,
+        n_cutoff_feasible_v,
+        n_total_folds_v
       );
 
       out_auc[i] = auc_v;
@@ -1750,6 +1836,8 @@ struct CvComboEvaluatorWorker : public RcppParallel::Worker {
       out_cutoff_sd[i] = cut_sd_v;
       out_final_cutoff[i] = final_cut_v;
       out_valid[i] = valid_v ? 1 : 0;
+      out_n_cutoff_feasible_folds[i] = n_cutoff_feasible_v;
+      out_n_total_folds[i] = n_total_folds_v;
     }
   }
 };
@@ -1772,7 +1860,14 @@ DataFrame evaluate_combos_cv_cpp(
   int n_cols = x.ncol();
   int n_combos = combo_indices.size();
 
-  CutoffMethod cm = (cutoff_method == "closest_topleft") ? CUTOFF_CLOSEST_TOPLEFT : CUTOFF_YOUDEN;
+  CutoffMethod cm = CUTOFF_YOUDEN;
+  if (cutoff_method == "closest_topleft") {
+    cm = CUTOFF_CLOSEST_TOPLEFT;
+  } else if (cutoff_method == "sensitivity_target") {
+    cm = CUTOFF_SENSITIVITY_TARGET;
+  } else if (cutoff_method == "clinical_constraint") {
+    cm = CUTOFF_CLINICAL_CONSTRAINT;
+  }
 
   std::vector<std::vector<int>> combo_indices_vec(n_combos);
   for (int i = 0; i < n_combos; i++) {
@@ -1797,6 +1892,8 @@ DataFrame evaluate_combos_cv_cpp(
   NumericVector out_cutoff_sd(n_combos);
   NumericVector out_final_cutoff(n_combos);
   IntegerVector out_valid(n_combos);
+  IntegerVector out_n_cutoff_feasible_folds(n_combos);
+  IntegerVector out_n_total_folds(n_combos);
 
   const double* x_ptr = &x[0];
   const int* y_ptr = &y[0];
@@ -1823,7 +1920,9 @@ DataFrame evaluate_combos_cv_cpp(
     out_cutoff_mean,
     out_cutoff_sd,
     out_final_cutoff,
-    out_valid
+    out_valid,
+    out_n_cutoff_feasible_folds,
+    out_n_total_folds
   );
 
   if (num_threads <= 1) {
@@ -1843,7 +1942,9 @@ DataFrame evaluate_combos_cv_cpp(
     _["cv_cutoff_mean"]         = out_cutoff_mean,
     _["cv_cutoff_sd"]           = out_cutoff_sd,
     _["final_full_data_cutoff"] = out_final_cutoff,
-    _["valid"]                  = out_valid
+    _["valid"]                  = out_valid,
+    _["n_cutoff_feasible_folds"] = out_n_cutoff_feasible_folds,
+    _["n_total_folds"]          = out_n_total_folds
   );
 }
 
@@ -1908,6 +2009,7 @@ struct CandidateStabilityCvWorker : public RcppParallel::Worker {
       double cut_mean_v, cut_sd_v, final_cut_v;
       bool valid_v;
 
+      int dummy_n_feasible = 0, dummy_n_total = 0;
       evaluate_single_combo_cv_cpp(
         combo_indices_vec[i],
         x_ptr,
@@ -1931,7 +2033,9 @@ struct CandidateStabilityCvWorker : public RcppParallel::Worker {
         cut_mean_v,
         cut_sd_v,
         final_cut_v,
-        valid_v
+        valid_v,
+        dummy_n_feasible,
+        dummy_n_total
       );
 
       for (int r = 0; r < repeats; r++) {

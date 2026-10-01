@@ -21,7 +21,8 @@
   repeats,
   y,
   progress = FALSE,
-  progress_callback = NULL
+  progress_callback = NULL,
+  error_on_empty = TRUE
 )
 }
 \arguments{

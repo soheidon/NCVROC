@@ -154,7 +154,7 @@ CACHE_FORMAT_VERSION <- 1L     # bump when cache storage format changes
 #' @keywords internal
 .count_total_combos_cross_size <- function(n, model_sizes) {
   valid_sizes <- model_sizes[model_sizes >= 1 & model_sizes <= n]
-  if (length(valid_sizes) == 0) return(0L)
+  if (length(valid_sizes) == 0) return(0.0)
   sum(choose(n, valid_sizes))
 }
 
@@ -321,7 +321,7 @@ CACHE_FORMAT_VERSION <- 1L     # bump when cache storage format changes
     }
     next_min <- c_val + 1L
   }
-  as.integer(rank)
+  as.double(rank)
 }
 
 #' Resolve a global combination rank to k and local rank

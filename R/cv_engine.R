@@ -192,7 +192,9 @@
                                 data,
                                 y,
                                 cv_folds,
-                                cutoff_method = c("youden", "closest_topleft")) {
+                                cutoff_method = c("youden", "closest_topleft", "sensitivity_target", "clinical_constraint"),
+                                sensitivity_min = NULL,
+                                specificity_min = NULL) {
   cutoff_method <- match.arg(cutoff_method)
   items_vec <- if (is.character(itemset) && length(itemset) == 1 && grepl(",", itemset)) {
     .parse_itemset(itemset)
@@ -223,13 +225,22 @@
     train_y <- y[train_idx]
     train_freq <- compute_score_frequencies(train_scores, train_y)
     train_metrics <- compute_roc_metrics_from_table(train_freq$pos_counts, train_freq$neg_counts)
-    best_row <- find_optimal_cutoff(train_metrics, method = cutoff_method)
-    train_cutoff <- best_row$cutoff
+    best_row <- find_optimal_cutoff(
+      train_metrics,
+      method          = cutoff_method,
+      sensitivity_min = sensitivity_min,
+      specificity_min = specificity_min
+    )
+    train_cutoff <- if (!is.null(best_row)) best_row$cutoff else NA_real_
 
     # Step 2: Apply training cutoff to test observations
     test_scores <- rowSums(data[test_idx, items_vec, drop = FALSE])
     test_y <- y[test_idx]
-    pred_class <- ifelse(test_scores >= train_cutoff, 1L, 0L)
+    pred_class <- if (is.na(train_cutoff)) {
+      rep(NA_integer_, length(test_idx))
+    } else {
+      ifelse(test_scores >= train_cutoff, 1L, 0L)
+    }
 
     oof_list[[f]] <- data.frame(
       row_index       = test_idx,
@@ -428,6 +439,7 @@ cv_sum_roc <- function(data,
   item_names   <- .resolve_items(data, substitute(items), env)
 
   cv_method     <- match.arg(cv_method)
+  .ncvroc_reject_deployment_only_methods(cutoff_method)
   cutoff_method <- match.arg(cutoff_method)
 
   if (cv_method == "loocv") {
@@ -573,6 +585,7 @@ loocv_sum_roc <- function(data,
   env <- parent.frame()
   outcome_name <- .resolve_outcome(substitute(outcome), env)
   item_names   <- .resolve_items(data, substitute(items), env)
+  .ncvroc_reject_deployment_only_methods(cutoff_method)
   cutoff_method <- match.arg(cutoff_method)
 
   cv_sum_roc(

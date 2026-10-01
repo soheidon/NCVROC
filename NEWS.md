@@ -1,3 +1,31 @@
+# NCVROC 0.21.0
+
+## Clinical operating-point cutoff selection
+
+* Added two new cutoff optimization rules to `cross_size_cv()` and `cross_size_nested_cv()`:
+  - `"sensitivity_target"`: Finds cutoffs satisfying Sensitivity >= `sensitivity_min` and selects the cutoff maximizing Specificity (requires `sensitivity_min`, prohibits `specificity_min`).
+  - `"clinical_constraint"`: Finds cutoffs satisfying Sensitivity >= `sensitivity_min` and Specificity >= `specificity_min`, and selects the cutoff maximizing Youden index (requires both `sensitivity_min` and `specificity_min`).
+* Legacy cutoff rules `"youden"` and `"closest_topleft"` continue to treat `sensitivity_min` and `specificity_min` as optional post-evaluation candidate-level constraints with full backward compatibility.
+* When using `"sensitivity_target"` or `"clinical_constraint"`, constraints operate strictly at the training cutoff search level and are not double-applied as post-hoc candidate filters.
+* Added explicit rejection guards in deployment-only and non-cross-size entry points (`exhaustive_sum_roc()`, `candidate_stability()`, `fit_final_sum_scale()`, `nested_sum_roc()`, `compare_cv_selection()`, `run_ncvroc()`, `cv_sum_roc()`, `loocv_sum_roc()`) with informative error messages directing users to `cross_size_cv()` and `cross_size_nested_cv()`.
+
+## Full-data cutoff refit and fold feasibility
+
+* For both ordinary cross-size cross-validation and nested cross-validation, the final selected model refits its deployment cutoff on full dataset observations using the same cutoff rule and clinical constraints.
+* Separated candidate fold-level cutoff feasibility from candidate-level post-filtering in return structures and status values (`"selected"`, `"no_feasible_cutoff_on_full_data"`, `"no_feasible_candidate"`).
+* Full-data refit failure preserves candidate identity, CV metrics, and apparent AUC while safely assigning NA to cutoff-dependent deployment metrics (`cutoff`, `sensitivity`, `specificity`, `youden`, `accuracy`, `ppv`, `npv`).
+
+## Standardized outer-fold schema in nested cross-validation
+
+* Standardized `outer_fold_results` in `cross_size_nested_cv()` to a 16-column table:
+  `outer_fold`, `repeat_id`, `fold_id`, `selected_items`, `selected_n_items`, `selected_cutoff`, `outer_auc`, `outer_sensitivity`, `outer_specificity`, `outer_youden`, `outer_accuracy`, `outer_ppv`, `outer_npv`, `selection_status`, `n_feasible_candidates`, `n_candidates_total`.
+* Failed outer folds (where inner selection finds no feasible candidate) emit strictly typed NAs across selected model and outer evaluation columns while preserving fold identity, repeat index, selection status, and candidate count metadata.
+
+## Multi-backend invariance and testing
+
+* Verified multi-backend exact numerical equivalence for all new cutoff selection procedures across serial (`"none"`), multithreaded (`"threads"`), outer-fold PSOCK (`"outer"`), socket chunk (`"chunks"`), and hybrid (`"hybrid"`) execution backends.
+* Expanded contract test suite covering input validation, outer fold schema, feasibility separation, unsupported API rejection, full-data refit handling, exact numerical parity, and multi-backend execution sweeps.
+
 # NCVROC 0.20.0
 
 ## Execution planning

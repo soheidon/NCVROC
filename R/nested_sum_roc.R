@@ -784,6 +784,7 @@ nested_sum_roc <- function(data,
   settings <- as.list(environment())
 
   # ---- Argument validation ----
+  .ncvroc_reject_deployment_only_methods(cutoff_method)
   cutoff_method      <- match.arg(cutoff_method)
   return             <- match.arg(return)
   tuning             <- match.arg(tuning, c("off", "auto", "always"))

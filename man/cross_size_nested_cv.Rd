@@ -17,7 +17,8 @@ cross_size_nested_cv(
   outer_repeats = 5,
   inner_repeats = 1,
   selection_metric = c("auc", "youden", "sensitivity", "specificity", "accuracy"),
-  cutoff_method = c("youden", "closest_topleft"),
+  cutoff_method = c("youden", "closest_topleft", "sensitivity_target",
+    "clinical_constraint"),
   sensitivity_min = NULL,
   specificity_min = NULL,
   prefer_fewer_items = TRUE,
@@ -64,11 +65,17 @@ If `NULL`, resolved from `min_items:max_items` or `item_count`.}
 \item{selection_metric}{Metric for inner model selection:
 `"auc"` (default), `"youden"`, `"sensitivity"`, `"specificity"`, or `"accuracy"`.}
 
-\item{cutoff_method}{Cutoff selection rule: `"youden"` (default) or `"closest_topleft"`.}
+\item{cutoff_method}{Cutoff selection rule: `"youden"` (default), `"closest_topleft"`,
+`"sensitivity_target"` (target sensitivity with maximum specificity), or
+`"clinical_constraint"` (joint sensitivity and specificity constraints with maximum Youden).}
 
-\item{sensitivity_min}{Optional minimum OOF sensitivity threshold (numeric in `[0, 1]`, default `NULL`).}
+\item{sensitivity_min}{Minimum sensitivity threshold (numeric in `[0, 1]`).
+Required when `cutoff_method = "sensitivity_target"` or `"clinical_constraint"`.
+Optional post-evaluation candidate-level filter when `cutoff_method = "youden"` or `"closest_topleft"`.}
 
-\item{specificity_min}{Optional minimum OOF specificity threshold (numeric in `[0, 1]`, default `NULL`).}
+\item{specificity_min}{Minimum specificity threshold (numeric in `[0, 1]`).
+Required when `cutoff_method = "clinical_constraint"`. Prohibited when `cutoff_method = "sensitivity_target"`.
+Optional post-evaluation candidate-level filter when `cutoff_method = "youden"` or `"closest_topleft"`.}
 
 \item{prefer_fewer_items}{Logical, prefer smaller models on ties (default `TRUE`).}
 
@@ -114,11 +121,37 @@ only truthful start and successful completion, with no percentage or ETA.
 \item{inner_k}{Alias for `inner_folds`.}
 }
 \value{
-An S3 object of class `"cross_size_nested_cv_result"`. When
-  \code{tuning = "auto"} or \code{"always"}, \code{settings$execution_plan}
-  contains planning metadata detailing the selected execution backend and
-  approximate runtime estimates. \code{tuning = "off"} attaches no execution
-  plan metadata.
+An S3 object of class `"cross_size_nested_cv_result"`, containing:
+\describe{
+  \item{summary}{Summary data.frame of pooled outer-fold performance metrics (AUC, sensitivity, specificity, Youden index, accuracy, PPV, NPV).}
+  \item{outer_fold_results}{A 16-column data.frame containing outer-fold evaluation details:
+    `outer_fold` (character),
+    `repeat_id` (integer),
+    `fold_id` (integer),
+    `selected_items` (character),
+    `selected_n_items` (integer),
+    `selected_cutoff` (numeric),
+    `outer_auc` (numeric),
+    `outer_sensitivity` (numeric),
+    `outer_specificity` (numeric),
+    `outer_youden` (numeric),
+    `outer_accuracy` (numeric),
+    `outer_ppv` (numeric),
+    `outer_npv` (numeric),
+    `selection_status` (character, e.g. "success" or "no_feasible_candidate"),
+    `n_feasible_candidates` (integer),
+    `n_candidates_total` (numeric).
+  }
+  \item{predictions}{A data.frame of outer out-of-fold predictions.}
+  \item{model_size_distribution}{Frequency distribution of selected model sizes across outer folds.}
+  \item{selected_models_summary}{Summary table of unique models selected across outer folds.}
+  \item{item_selection_frequency}{Frequency table of individual item selections.}
+  \item{settings}{Execution settings and parameter configuration. When
+    \code{tuning = "auto"} or \code{"always"}, \code{settings$execution_plan}
+    contains planning metadata detailing the selected execution backend and
+    approximate runtime estimates. \code{tuning = "off"} attaches no execution
+    plan metadata.}
+}
 }
 \description{
 Performs nested cross-validation where the full candidate model space across

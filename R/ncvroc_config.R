@@ -87,6 +87,7 @@ ncvroc_config <- function(outcome,
                           cache_dir = NULL,
                           item_count = NULL) {
   mode <- match.arg(mode)
+  .ncvroc_reject_deployment_only_methods(cutoff_method)
   cutoff_method <- match.arg(cutoff_method)
   engine <- match.arg(engine)
   cache <- match.arg(cache)

@@ -100,7 +100,7 @@
 #' Reads only ONE block file (at most `block_size` rows) into R memory at any time.
 #'
 #' @keywords internal
-.open_block_stream_reader <- function(stream_obj, size_cum_offset = 0L) {
+.open_block_stream_reader <- function(stream_obj, size_cum_offset = 0) {
   n_blocks <- stream_obj$n_blocks
   block_files <- stream_obj$block_files
   current_block_idx <- 0L
@@ -564,7 +564,8 @@
                                          repeats,
                                          y,
                                          progress = FALSE,
-                                         progress_callback = NULL) {
+                                         progress_callback = NULL,
+                                         error_on_empty = TRUE) {
   n_items_total <- length(item_names)
   has_constraints <- (!is.null(sensitivity_min) || !is.null(specificity_min))
 
@@ -639,11 +640,13 @@
     best_items_vec <- .parse_itemset(best_candidate$items)
 
     best_cv <- .run_fixed_model_cv(
-      itemset       = best_items_vec,
-      data          = data,
-      y             = y,
-      cv_folds      = cv_folds,
-      cutoff_method = cutoff_method
+      itemset         = best_items_vec,
+      data            = data,
+      y               = y,
+      cv_folds        = cv_folds,
+      cutoff_method   = cutoff_method,
+      sensitivity_min = sensitivity_min,
+      specificity_min = specificity_min
     )
     best_agg <- .aggregate_oof_metrics(
       oof_df       = best_cv$oof_predictions,
@@ -815,22 +818,28 @@
   }
 
   if (is.null(best_candidate)) {
-    stop(sprintf(
-      "No candidate models satisfied the specified OOF constraints (sensitivity_min = %s, specificity_min = %s).",
-      if (is.null(sensitivity_min)) "NULL" else as.character(sensitivity_min),
-      if (is.null(specificity_min)) "NULL" else as.character(specificity_min)
-    ), call. = FALSE)
+    if (isTRUE(error_on_empty)) {
+      stop(sprintf(
+        "No candidate models satisfied the specified OOF constraints (sensitivity_min = %s, specificity_min = %s).",
+        if (is.null(sensitivity_min)) "NULL" else as.character(sensitivity_min),
+        if (is.null(specificity_min)) "NULL" else as.character(specificity_min)
+      ), call. = FALSE)
+    } else {
+      return(NULL)
+    }
   }
 
   best_items_vec <- .parse_itemset(best_candidate$items)
 
   # Run CV ONCE on the single final selected best model
   best_cv <- .run_fixed_model_cv(
-    itemset       = best_items_vec,
-    data          = data,
-    y             = y,
-    cv_folds      = cv_folds,
-    cutoff_method = cutoff_method
+    itemset         = best_items_vec,
+    data            = data,
+    y               = y,
+    cv_folds        = cv_folds,
+    cutoff_method   = cutoff_method,
+    sensitivity_min = sensitivity_min,
+    specificity_min = specificity_min
   )
   best_agg <- .aggregate_oof_metrics(
     oof_df       = best_cv$oof_predictions,
@@ -875,17 +884,38 @@
     train_scores <- rowSums(dat_prep[sub_f$train_idx, combo_items, drop = FALSE])
     train_freq <- compute_score_frequencies(train_scores, sub_f$train_y)
     train_metrics <- compute_roc_metrics_from_table(train_freq$pos_counts, train_freq$neg_counts)
-    best_cut <- find_optimal_cutoff(train_metrics, method = cutoff_method)
-    cutoffs_vec[f] <- best_cut$cutoff
+    best_cut <- find_optimal_cutoff(
+      train_metrics,
+      method          = cutoff_method,
+      sensitivity_min = sensitivity_min,
+      specificity_min = specificity_min
+    )
+    if (is.null(best_cut)) {
+      cutoffs_vec[f] <- NA_real_
+      tps[f] <- 0
+      tns[f] <- 0
+      fps[f] <- 0
+      fns[f] <- 0
+    } else {
+      cutoffs_vec[f] <- best_cut$cutoff
+      test_scores <- rowSums(dat_prep[sub_f$test_idx, combo_items, drop = FALSE])
+      test_preds <- ifelse(test_scores >= best_cut$cutoff, 1L, 0L)
+      test_y <- sub_f$test_y
 
-    test_scores <- rowSums(dat_prep[sub_f$test_idx, combo_items, drop = FALSE])
-    test_preds <- ifelse(test_scores >= best_cut$cutoff, 1L, 0L)
-    test_y <- sub_f$test_y
+      tps[f] <- sum(test_preds == 1L & test_y == 1L)
+      tns[f] <- sum(test_preds == 0L & test_y == 0L)
+      fps[f] <- sum(test_preds == 1L & test_y == 0L)
+      fns[f] <- sum(test_preds == 0L & test_y == 1L)
+    }
+  }
 
-    tps[f] <- sum(test_preds == 1L & test_y == 1L)
-    tns[f] <- sum(test_preds == 0L & test_y == 0L)
-    fps[f] <- sum(test_preds == 1L & test_y == 0L)
-    fns[f] <- sum(test_preds == 0L & test_y == 1L)
+  n_feasible_folds <- sum(!is.na(cutoffs_vec))
+
+  # New methods feasibility check: all folds must be feasible
+  if (cutoff_method %in% c("sensitivity_target", "clinical_constraint")) {
+    if (n_feasible_folds < n_folds_total) {
+      return(NULL)
+    }
   }
 
   folds_per_rep <- n_folds_total %/% repeats
@@ -925,18 +955,30 @@
   mean_ppv  <- mean(rep_ppv, na.rm = TRUE)
   mean_npv  <- mean(rep_npv, na.rm = TRUE)
 
-  if (!is.null(sensitivity_min) && (is.na(mean_sens) || mean_sens < sensitivity_min)) {
-    return(NULL)
-  }
-  if (!is.null(specificity_min) && (is.na(mean_spec) || mean_spec < specificity_min)) {
-    return(NULL)
+  # Legacy methods constraint check at candidate level
+  if (cutoff_method %in% c("youden", "closest_topleft")) {
+    if (!is.null(sensitivity_min) && (is.na(mean_sens) || mean_sens < sensitivity_min)) {
+      return(NULL)
+    }
+    if (!is.null(specificity_min) && (is.na(mean_spec) || mean_spec < specificity_min)) {
+      return(NULL)
+    }
   }
 
   full_scores  <- rowSums(dat_prep[, combo_items, drop = FALSE])
   full_freq    <- compute_score_frequencies(full_scores, y)
   full_metrics <- compute_roc_metrics_from_table(full_freq$pos_counts, full_freq$neg_counts)
-  best_full    <- find_optimal_cutoff(full_metrics, method = cutoff_method)
+  best_full    <- find_optimal_cutoff(
+    full_metrics,
+    method          = cutoff_method,
+    sensitivity_min = sensitivity_min,
+    specificity_min = specificity_min
+  )
   full_auc     <- compute_auc_from_table(full_freq$pos_counts, full_freq$neg_counts)
+
+  valid_cuts <- cutoffs_vec[!is.na(cutoffs_vec)]
+  mean_cut <- if (length(valid_cuts) > 0) mean(valid_cuts) else NA_real_
+  sd_cut   <- if (length(valid_cuts) > 1) stats::sd(valid_cuts) else 0.0
 
   data.frame(
     items                  = combo_str,
@@ -948,9 +990,9 @@
     cv_accuracy            = mean_acc,
     cv_ppv                 = mean_ppv,
     cv_npv                 = mean_npv,
-    cv_cutoff_mean         = mean(cutoffs_vec),
-    cv_cutoff_sd           = if (length(cutoffs_vec) > 1) stats::sd(cutoffs_vec) else 0,
-    final_full_data_cutoff = best_full$cutoff,
+    cv_cutoff_mean         = mean_cut,
+    cv_cutoff_sd           = sd_cut,
+    final_full_data_cutoff = if (!is.null(best_full)) best_full$cutoff else NA_real_,
     .global_combo_index    = cum_offset + gi,
     stringsAsFactors       = FALSE
   )
@@ -1004,9 +1046,15 @@
 #' @param stratified Logical, maintain class balance across folds (default `TRUE`).
 #' @param selection_metric Metric for candidate ranking and model selection:
 #'   `"auc"` (default), `"youden"`, `"sensitivity"`, `"specificity"`, or `"accuracy"`.
-#' @param cutoff_method Cutoff selection rule: `"youden"` (default) or `"closest_topleft"`.
-#' @param sensitivity_min Optional minimum OOF sensitivity threshold (numeric in `[0, 1]`, default `NULL`).
-#' @param specificity_min Optional minimum OOF specificity threshold (numeric in `[0, 1]`, default `NULL`).
+#' @param cutoff_method Cutoff selection rule: `"youden"` (default), `"closest_topleft"`,
+#'   `"sensitivity_target"` (target sensitivity with maximum specificity), or
+#'   `"clinical_constraint"` (joint sensitivity and specificity constraints with maximum Youden).
+#' @param sensitivity_min Minimum sensitivity threshold (numeric in `[0, 1]`).
+#'   Required when `cutoff_method = "sensitivity_target"` or `"clinical_constraint"`.
+#'   Optional post-evaluation candidate-level filter when `cutoff_method = "youden"` or `"closest_topleft"`.
+#' @param specificity_min Minimum specificity threshold (numeric in `[0, 1]`).
+#'   Required when `cutoff_method = "clinical_constraint"`. Prohibited when `cutoff_method = "sensitivity_target"`.
+#'   Optional post-evaluation candidate-level filter when `cutoff_method = "youden"` or `"closest_topleft"`.
 #' @param top_n Integer, number of top candidates to return in `candidate_ranking` (default 20).
 #' @param prefer_fewer_items Logical, prefer smaller models on ties (default `TRUE`).
 #' @param positive_label Value indicating positive class (default 1).
@@ -1031,6 +1079,8 @@
 #'   reports only truthful start and successful completion, with no percentage or
 #'   ETA. Approximate ETA is based only on observed progress. `FALSE` is silent.
 #' @param progress_callback Optional callback function receiving progress increment counts (internal use).
+#' @param error_on_empty Logical, throw error when no candidate models satisfy constraints (default `TRUE`).
+#'   If `FALSE`, returns an empty result object with `final_selection_status = "no_feasible_candidate"`.
 #'
 #' @return An S3 object of class `"cross_size_cv_result"`, containing:
 #' \describe{
@@ -1082,7 +1132,7 @@ cross_size_cv <- function(data,
                           repeats            = 1,
                           stratified         = TRUE,
                           selection_metric   = c("auc", "youden", "sensitivity", "specificity", "accuracy"),
-                          cutoff_method      = c("youden", "closest_topleft"),
+                          cutoff_method      = c("youden", "closest_topleft", "sensitivity_target", "clinical_constraint"),
                           sensitivity_min    = NULL,
                           specificity_min    = NULL,
                           top_n              = 20,
@@ -1097,7 +1147,8 @@ cross_size_cv <- function(data,
                           conf_level         = 0.95,
                           seed               = NULL,
                           progress           = interactive(),
-                          progress_callback  = NULL) {
+                          progress_callback  = NULL,
+                          error_on_empty     = TRUE) {
   # ---- NSE Column Resolution ----
   env <- parent.frame()
   outcome_name <- .resolve_outcome(substitute(outcome), env)
@@ -1115,7 +1166,24 @@ cross_size_cv <- function(data,
   }
   top_n <- as.integer(top_n)
 
-  # ---- Validate constraints ----
+  # ---- Contract C1: Validate cutoff_method constraints ----
+  if (cutoff_method == "sensitivity_target") {
+    if (is.null(sensitivity_min)) {
+      stop("`sensitivity_min` is required when `cutoff_method = \"sensitivity_target\"`.", call. = FALSE)
+    }
+    if (!is.null(specificity_min)) {
+      stop("`specificity_min` is prohibited and must not be specified when `cutoff_method = \"sensitivity_target\"`.", call. = FALSE)
+    }
+  } else if (cutoff_method == "clinical_constraint") {
+    if (is.null(sensitivity_min)) {
+      stop("`sensitivity_min` is required when `cutoff_method = \"clinical_constraint\"`.", call. = FALSE)
+    }
+    if (is.null(specificity_min)) {
+      stop("`specificity_min` is required when `cutoff_method = \"clinical_constraint\"`.", call. = FALSE)
+    }
+  }
+
+  # ---- Validate constraint numeric ranges ----
   if (!is.null(sensitivity_min)) {
     if (!is.numeric(sensitivity_min) || length(sensitivity_min) != 1 ||
         is.na(sensitivity_min) || sensitivity_min < 0 || sensitivity_min > 1) {
@@ -1263,7 +1331,7 @@ cross_size_cv <- function(data,
   # =========================================================================
   # STRATEGY 1: Exact AUC Search & Fast Path
   # =========================================================================
-  if (selection_metric == "auc") {
+  if (selection_metric == "auc" && cutoff_method %in% c("youden", "closest_topleft")) {
     auc_res <- .select_cross_size_auc_exact(
       data               = dat_prep,
       outcome_name       = outcome_name,
@@ -1281,13 +1349,96 @@ cross_size_cv <- function(data,
       repeats            = repeats,
       y                  = y,
       progress           = progress,
-      progress_callback  = progress_callback
+      progress_callback  = progress_callback,
+      error_on_empty     = error_on_empty
     )
+
+    settings_obj <- list(
+      outcome_name       = outcome_name,
+      item_names         = item_names,
+      model_sizes        = sizes,
+      cv_method          = cv_method,
+      selection_metric   = selection_metric,
+      cutoff_method      = cutoff_method,
+      sensitivity_min    = sensitivity_min,
+      specificity_min    = specificity_min,
+      requested_folds    = requested_folds,
+      folds_requested    = requested_folds,
+      effective_folds    = effective_folds,
+      repeats            = repeats,
+      stratified         = stratified,
+      seed               = seed,
+      prefer_fewer_items = prefer_fewer_items,
+      engine             = engine,
+      parallel           = parallel_mode,
+      n_workers          = n_workers_res,
+      threads_per_worker = 1L,
+      ci                 = ci,
+      conf_level         = conf_level
+    )
+    if (!is.null(execution_plan_metadata)) {
+      capability <- .progress_capability("cross_size_cv", parallel_mode, progress,
+                                         observed_unit = "model_size")
+      execution_plan_metadata$progress_mode <- capability$progress_mode
+      execution_plan_metadata$progress_unit <- capability$progress_unit
+      settings_obj$execution_plan <- execution_plan_metadata
+    }
+
+    if (is.null(auc_res)) {
+      size_summary_df <- do.call(rbind, lapply(sizes, function(s) {
+        n_cand_total <- choose(n_items_total, s)
+        data.frame(
+          n_items             = s,
+          n_candidates_total  = n_cand_total,
+          n_evaluated_in_top  = 0L,
+          best_items          = NA_character_,
+          best_metric_value   = NA_real_,
+          stringsAsFactors    = FALSE
+        )
+      }))
+
+      return(structure(
+        list(
+          final_selected_model   = NULL,
+          candidate_ranking      = data.frame(),
+          model_size_summary     = size_summary_df,
+          oof_predictions        = data.frame(),
+          fold_results           = data.frame(),
+          repeat_metrics         = data.frame(),
+          cv_performance         = data.frame(),
+          cv_cutoff_distribution = list(mean = NA_real_, sd = NA_real_),
+          final_full_data_cutoff = NA_real_,
+          final_selection_status = "no_feasible_candidate",
+          n_feasible_candidates  = 0L,
+          n_candidates_total     = as.numeric(total_combos),
+          model_sizes            = sizes,
+          total_combinations     = total_combos,
+          cv_method              = cv_method,
+          settings               = settings_obj
+        ),
+        class = "cross_size_cv_result"
+      ))
+    }
 
     best_candidate <- auc_res$best_candidate
     best_cv        <- auc_res$best_cv
     best_agg       <- auc_res$best_agg
     ranking_df     <- auc_res$ranking_df
+    best_items_vec <- .parse_itemset(best_candidate$items)
+
+    full_scores  <- rowSums(dat_prep[, best_items_vec, drop = FALSE])
+    full_freq    <- compute_score_frequencies(full_scores, y)
+    full_metrics <- compute_roc_metrics_from_table(full_freq$pos_counts, full_freq$neg_counts)
+    full_auc     <- compute_auc_from_table(full_freq$pos_counts, full_freq$neg_counts)
+    best_full    <- select_operating_point(
+      full_metrics,
+      method          = cutoff_method,
+      sensitivity_min = sensitivity_min,
+      specificity_min = specificity_min
+    )
+
+    final_selection_status <- if (!is.null(best_full)) "selected" else "no_feasible_cutoff_on_full_data"
+    final_full_data_cutoff <- if (!is.null(best_full)) best_full$cutoff else NA_real_
 
     final_model_df <- data.frame(
       items                  = best_candidate$items,
@@ -1301,13 +1452,16 @@ cross_size_cv <- function(data,
       cv_npv                 = best_agg$summary$mean[best_agg$summary$metric == "npv"],
       cv_cutoff_mean         = best_agg$cv_cutoff_distribution$mean,
       cv_cutoff_sd           = best_agg$cv_cutoff_distribution$sd,
-      final_full_data_cutoff = best_candidate$cutoff,
+      final_full_data_cutoff = final_full_data_cutoff,
       selection_metric       = "auc",
-      sensitivity            = best_agg$summary$mean[best_agg$summary$metric == "sensitivity"],
-      specificity            = best_agg$summary$mean[best_agg$summary$metric == "specificity"],
-      accuracy               = best_agg$summary$mean[best_agg$summary$metric == "accuracy"],
-      ppv                    = best_agg$summary$mean[best_agg$summary$metric == "ppv"],
-      npv                    = best_agg$summary$mean[best_agg$summary$metric == "npv"],
+      auc                    = full_auc,
+      cutoff                 = final_full_data_cutoff,
+      sensitivity            = if (!is.null(best_full)) best_full$sensitivity else NA_real_,
+      specificity            = if (!is.null(best_full)) best_full$specificity else NA_real_,
+      youden                 = if (!is.null(best_full)) best_full$youden else NA_real_,
+      accuracy               = if (!is.null(best_full)) best_full$accuracy else NA_real_,
+      ppv                    = if (!is.null(best_full)) best_full$ppv else NA_real_,
+      npv                    = if (!is.null(best_full)) best_full$npv else NA_real_,
       n_positive             = sum(y == 1L),
       n_negative             = sum(y == 0L),
       stringsAsFactors       = FALSE
@@ -1370,37 +1524,6 @@ cross_size_cv <- function(data,
       }
     }))
 
-    settings_obj <- list(
-      outcome_name       = outcome_name,
-      item_names         = item_names,
-      model_sizes        = sizes,
-      cv_method          = cv_method,
-      selection_metric   = selection_metric,
-      cutoff_method      = cutoff_method,
-      sensitivity_min    = sensitivity_min,
-      specificity_min    = specificity_min,
-      requested_folds    = requested_folds,
-      folds_requested    = requested_folds,
-      effective_folds    = effective_folds,
-      repeats            = repeats,
-      stratified         = stratified,
-      seed               = seed,
-      prefer_fewer_items = prefer_fewer_items,
-      engine             = engine,
-      parallel           = parallel_mode,
-      n_workers          = n_workers_res,
-      threads_per_worker = 1L,
-      ci                 = ci,
-      conf_level         = conf_level
-    )
-    if (!is.null(execution_plan_metadata)) {
-      capability <- .progress_capability("cross_size_cv", parallel_mode, progress,
-                                         observed_unit = "model_size")
-      execution_plan_metadata$progress_mode <- capability$progress_mode
-      execution_plan_metadata$progress_unit <- capability$progress_unit
-      settings_obj$execution_plan <- execution_plan_metadata
-    }
-
     return(structure(
       list(
         final_selected_model   = final_model_df,
@@ -1411,7 +1534,10 @@ cross_size_cv <- function(data,
         repeat_metrics         = best_agg$repeat_metrics,
         cv_performance         = best_agg$summary,
         cv_cutoff_distribution = best_agg$cv_cutoff_distribution,
-        final_full_data_cutoff = best_candidate$cutoff,
+        final_full_data_cutoff = final_full_data_cutoff,
+        final_selection_status = final_selection_status,
+        n_feasible_candidates  = as.integer(nrow(ranking_df)),
+        n_candidates_total     = as.numeric(total_combos),
         model_sizes            = sizes,
         total_combinations     = total_combos,
         cv_method              = cv_method,
@@ -1434,15 +1560,15 @@ cross_size_cv <- function(data,
   # Build lightweight chunk descriptors without enumerating combinations into RAM
   block_size <- 2000L
   block_descriptors <- list()
-  cum_offset <- 0L
+  cum_offset <- 0.0
   block_idx <- 0L
   for (si in seq_along(sizes)) {
     s <- sizes[si]
     n_combos_s <- choose(n_items_total, s)
     n_blocks_s <- ceiling(n_combos_s / block_size)
     for (bi in seq_len(n_blocks_s)) {
-      start_0based <- (bi - 1L) * block_size
-      len <- min(block_size, n_combos_s - start_0based)
+      start_0based <- (bi - 1.0) * block_size
+      len <- as.integer(min(block_size, n_combos_s - start_0based))
       block_descriptors[[length(block_descriptors) + 1L]] <- list(
         block_index  = block_idx,
         s            = s,
@@ -1629,12 +1755,79 @@ cross_size_cv <- function(data,
     prg$finish()
   }
 
+  settings_obj <- list(
+    outcome_name       = outcome_name,
+    item_names         = item_names,
+    model_sizes        = sizes,
+    cv_method          = cv_method,
+    selection_metric   = selection_metric,
+    cutoff_method      = cutoff_method,
+    sensitivity_min    = sensitivity_min,
+    specificity_min    = specificity_min,
+    requested_folds    = requested_folds,
+    folds_requested    = requested_folds,
+    effective_folds    = effective_folds,
+    repeats            = repeats,
+    stratified         = stratified,
+    seed               = seed,
+    prefer_fewer_items = prefer_fewer_items,
+    engine             = engine,
+    parallel           = parallel_mode,
+    n_workers          = n_workers_res,
+    threads_per_worker = 1L,
+    ci                 = ci,
+    conf_level         = conf_level
+  )
+  if (!is.null(execution_plan_metadata)) {
+    capability <- .progress_capability("cross_size_cv", parallel_mode, progress,
+                                       exact_candidates = TRUE)
+    execution_plan_metadata$progress_mode <- capability$progress_mode
+    execution_plan_metadata$progress_unit <- capability$progress_unit
+    settings_obj$execution_plan <- execution_plan_metadata
+  }
+
   if (is.null(running_buffer) || nrow(running_buffer) == 0L) {
-    stop(sprintf(
-      "No candidate models satisfied the specified OOF constraints (sensitivity_min = %s, specificity_min = %s).",
-      if (is.null(sensitivity_min)) "NULL" else as.character(sensitivity_min),
-      if (is.null(specificity_min)) "NULL" else as.character(specificity_min)
-    ), call. = FALSE)
+    if (isTRUE(error_on_empty)) {
+      stop(sprintf(
+        "No candidate models satisfied the specified OOF constraints (sensitivity_min = %s, specificity_min = %s).",
+        if (is.null(sensitivity_min)) "NULL" else as.character(sensitivity_min),
+        if (is.null(specificity_min)) "NULL" else as.character(specificity_min)
+      ), call. = FALSE)
+    } else {
+      size_summary_df <- do.call(rbind, lapply(sizes, function(s) {
+        n_cand_total <- choose(n_items_total, s)
+        data.frame(
+          n_items             = s,
+          n_candidates_total  = n_cand_total,
+          n_evaluated_in_top  = 0L,
+          best_items          = NA_character_,
+          best_metric_value   = NA_real_,
+          stringsAsFactors    = FALSE
+        )
+      }))
+
+      return(structure(
+        list(
+          final_selected_model   = NULL,
+          candidate_ranking      = data.frame(),
+          model_size_summary     = size_summary_df,
+          oof_predictions        = data.frame(),
+          fold_results           = data.frame(),
+          repeat_metrics         = data.frame(),
+          cv_performance         = data.frame(),
+          cv_cutoff_distribution = list(mean = NA_real_, sd = NA_real_),
+          final_full_data_cutoff = NA_real_,
+          final_selection_status = "no_feasible_candidate",
+          n_feasible_candidates  = 0L,
+          n_candidates_total     = as.numeric(total_combos),
+          model_sizes            = sizes,
+          total_combinations     = total_combos,
+          cv_method              = cv_method,
+          settings               = settings_obj
+        ),
+        class = "cross_size_cv_result"
+      ))
+    }
   }
 
   best_candidate <- running_buffer[1, , drop = FALSE]
@@ -1644,17 +1837,34 @@ cross_size_cv <- function(data,
 
   # Run CV on selected best model only to generate complete oof_predictions and fold_results
   best_cv <- .run_fixed_model_cv(
-    itemset       = best_items_vec,
-    data          = dat_prep,
-    y             = y,
-    cv_folds      = cv_folds,
-    cutoff_method = cutoff_method
+    itemset         = best_items_vec,
+    data            = dat_prep,
+    y               = y,
+    cv_folds        = cv_folds,
+    cutoff_method   = cutoff_method,
+    sensitivity_min = sensitivity_min,
+    specificity_min = specificity_min
   )
   best_agg <- .aggregate_oof_metrics(
     oof_df       = best_cv$oof_predictions,
     repeats      = repeats,
     fold_results = best_cv$fold_results
   )
+
+  # Full-data cutoff refit
+  full_scores  <- rowSums(dat_prep[, best_items_vec, drop = FALSE])
+  full_freq    <- compute_score_frequencies(full_scores, y)
+  full_metrics <- compute_roc_metrics_from_table(full_freq$pos_counts, full_freq$neg_counts)
+  full_auc     <- compute_auc_from_table(full_freq$pos_counts, full_freq$neg_counts)
+  best_full    <- select_operating_point(
+    full_metrics,
+    method          = cutoff_method,
+    sensitivity_min = sensitivity_min,
+    specificity_min = specificity_min
+  )
+
+  final_selection_status <- if (!is.null(best_full)) "selected" else "no_feasible_cutoff_on_full_data"
+  final_full_data_cutoff <- if (!is.null(best_full)) best_full$cutoff else NA_real_
 
   final_model_df <- data.frame(
     items                  = best_candidate_items_str,
@@ -1668,13 +1878,16 @@ cross_size_cv <- function(data,
     cv_npv                 = best_agg$summary$mean[best_agg$summary$metric == "npv"],
     cv_cutoff_mean         = best_agg$cv_cutoff_distribution$mean,
     cv_cutoff_sd           = best_agg$cv_cutoff_distribution$sd,
-    final_full_data_cutoff = best_candidate$final_full_data_cutoff,
+    final_full_data_cutoff = final_full_data_cutoff,
     selection_metric       = selection_metric,
-    sensitivity            = best_agg$summary$mean[best_agg$summary$metric == "sensitivity"],
-    specificity            = best_agg$summary$mean[best_agg$summary$metric == "specificity"],
-    accuracy               = best_agg$summary$mean[best_agg$summary$metric == "accuracy"],
-    ppv                    = best_agg$summary$mean[best_agg$summary$metric == "ppv"],
-    npv                    = best_agg$summary$mean[best_agg$summary$metric == "npv"],
+    auc                    = full_auc,
+    cutoff                 = final_full_data_cutoff,
+    sensitivity            = if (!is.null(best_full)) best_full$sensitivity else NA_real_,
+    specificity            = if (!is.null(best_full)) best_full$specificity else NA_real_,
+    youden                 = if (!is.null(best_full)) best_full$youden else NA_real_,
+    accuracy               = if (!is.null(best_full)) best_full$accuracy else NA_real_,
+    ppv                    = if (!is.null(best_full)) best_full$ppv else NA_real_,
+    npv                    = if (!is.null(best_full)) best_full$npv else NA_real_,
     n_positive             = sum(y == 1L),
     n_negative             = sum(y == 0L),
     stringsAsFactors       = FALSE
@@ -1741,37 +1954,6 @@ cross_size_cv <- function(data,
     }
   }))
 
-  settings_obj <- list(
-    outcome_name       = outcome_name,
-    item_names         = item_names,
-    model_sizes        = sizes,
-    cv_method          = cv_method,
-    selection_metric   = selection_metric,
-    cutoff_method      = cutoff_method,
-    sensitivity_min    = sensitivity_min,
-    specificity_min    = specificity_min,
-    requested_folds    = requested_folds,
-    folds_requested    = requested_folds,
-    effective_folds    = effective_folds,
-    repeats            = repeats,
-    stratified         = stratified,
-    seed               = seed,
-    prefer_fewer_items = prefer_fewer_items,
-    engine             = engine,
-    parallel           = parallel_mode,
-    n_workers          = n_workers_res,
-    threads_per_worker = 1L,
-    ci                 = ci,
-    conf_level         = conf_level
-  )
-  if (!is.null(execution_plan_metadata)) {
-    capability <- .progress_capability("cross_size_cv", parallel_mode, progress,
-                                       exact_candidates = TRUE)
-    execution_plan_metadata$progress_mode <- capability$progress_mode
-    execution_plan_metadata$progress_unit <- capability$progress_unit
-    settings_obj$execution_plan <- execution_plan_metadata
-  }
-
   structure(
     list(
       final_selected_model   = final_model_df,
@@ -1782,7 +1964,10 @@ cross_size_cv <- function(data,
       repeat_metrics         = best_agg$repeat_metrics,
       cv_performance         = best_agg$summary,
       cv_cutoff_distribution = best_agg$cv_cutoff_distribution,
-      final_full_data_cutoff = best_candidate$final_full_data_cutoff,
+      final_full_data_cutoff = final_full_data_cutoff,
+      final_selection_status = final_selection_status,
+      n_feasible_candidates  = as.integer(nrow(running_buffer)),
+      n_candidates_total     = as.numeric(total_combos),
       model_sizes            = sizes,
       total_combinations     = total_combos,
       cv_method              = cv_method,
@@ -1888,6 +2073,7 @@ cross_size_loocv <- function(data,
   outcome_name <- .resolve_outcome(substitute(outcome), env)
   item_names   <- .resolve_items(data, substitute(items), env)
   selection_metric <- match.arg(selection_metric)
+  .ncvroc_reject_deployment_only_methods(cutoff_method)
   cutoff_method    <- match.arg(cutoff_method)
   engine           <- match.arg(engine)
 
@@ -2006,6 +2192,7 @@ cv_select_sum_roc <- function(data,
   outcome_name <- .resolve_outcome(substitute(outcome), env)
   item_names   <- .resolve_items(data, substitute(items), env)
   selection_metric <- match.arg(selection_metric)
+  .ncvroc_reject_deployment_only_methods(cutoff_method)
   cutoff_method    <- match.arg(cutoff_method)
   engine           <- match.arg(engine)
 
@@ -2107,6 +2294,7 @@ loocv_select_sum_roc <- function(data,
   outcome_name <- .resolve_outcome(substitute(outcome), env)
   item_names   <- .resolve_items(data, substitute(items), env)
   selection_metric <- match.arg(selection_metric)
+  .ncvroc_reject_deployment_only_methods(cutoff_method)
   cutoff_method    <- match.arg(cutoff_method)
   engine           <- match.arg(engine)
 

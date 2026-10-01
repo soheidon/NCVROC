@@ -44,6 +44,10 @@ run_ncvroc <- function(data,
     stop("config must be an object created by ncvroc_config().", call. = FALSE)
   }
 
+  if (!is.null(config$cutoff_method)) {
+    .ncvroc_reject_deployment_only_methods(config$cutoff_method)
+  }
+
   return <- match.arg(return)
 
   # Revalidate item_count when config was created with items=NULL

@@ -4,15 +4,24 @@
 \alias{find_optimal_cutoff}
 \title{Find the optimal cutoff using a specified method}
 \usage{
-find_optimal_cutoff(metrics, method = c("youden", "closest_topleft"))
+find_optimal_cutoff(
+  metrics,
+  method = c("youden", "closest_topleft", "sensitivity_target", "clinical_constraint"),
+  sensitivity_min = NULL,
+  specificity_min = NULL
+)
 }
 \arguments{
 \item{metrics}{A data.frame from `compute_roc_metrics_from_table()`.}
 
-\item{method}{Character, one of `"youden"` or `"closest_topleft"`.}
+\item{method}{Character, one of `"youden"`, `"closest_topleft"`, `"sensitivity_target"`, or `"clinical_constraint"`.}
+
+\item{sensitivity_min}{Numeric threshold in [0, 1].}
+
+\item{specificity_min}{Numeric threshold in [0, 1].}
 }
 \value{
-A single-row data.frame (from `metrics`) for the optimal cutoff.
+A single-row data.frame (from `metrics`) for the optimal cutoff, or NULL.
 }
 \description{
 Find the optimal cutoff using a specified method

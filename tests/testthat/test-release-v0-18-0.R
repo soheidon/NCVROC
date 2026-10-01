@@ -1,18 +1,18 @@
 # test-release-v0-18-0.R — Release sanity and integrity tests for NCVROC
 
-test_that("Package version in DESCRIPTION and NEWS is synchronized for v0.20.0", {
+test_that("Package version in DESCRIPTION and NEWS is synchronized for v0.21.0", {
   desc_file <- testthat::test_path("../../DESCRIPTION")
   desc_ver <- if (file.exists(desc_file)) {
     read.dcf(desc_file, fields = "Version")[1, 1]
   } else {
     as.character(utils::packageVersion("NCVROC"))
   }
-  expect_match(unname(desc_ver), "^0\\.20\\.0$")
+  expect_match(unname(desc_ver), "^0\\.21\\.0$")
 
   news_file <- testthat::test_path("../../NEWS.md")
   if (file.exists(news_file)) {
     news_lines <- readLines(news_file, n = 5)
-    expect_true(any(grepl("NCVROC 0.20.0", news_lines)))
+    expect_true(any(grepl("NCVROC 0.21.0", news_lines)))
   }
 })
 
@@ -33,7 +33,7 @@ test_that("NAMESPACE exports all intended public API functions", {
   expect_true(all(expected_api %in% ns_exports))
 
   # Ensure no internal helpers leaked into exports
-  internal_patterns <- c("^\\.", "block_stream", "eval_single_combo", "resolve_model_sizes", "evaluate_combos_cv_cpp", "evaluate_candidate_stability")
+  internal_patterns <- c("^\\.", "block_stream", "eval_single_combo", "resolve_model_sizes", "evaluate_combos_cv_cpp", "evaluate_candidate_stability", "select_operating_point", "normalize_candidate_payload")
   for (pat in internal_patterns) {
     leaked <- grep(pat, ns_exports, value = TRUE)
     expect_length(leaked, 0L)

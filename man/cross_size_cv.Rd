@@ -17,7 +17,8 @@ cross_size_cv(
   repeats = 1,
   stratified = TRUE,
   selection_metric = c("auc", "youden", "sensitivity", "specificity", "accuracy"),
-  cutoff_method = c("youden", "closest_topleft"),
+  cutoff_method = c("youden", "closest_topleft", "sensitivity_target",
+    "clinical_constraint"),
   sensitivity_min = NULL,
   specificity_min = NULL,
   top_n = 20,
@@ -32,7 +33,8 @@ cross_size_cv(
   conf_level = 0.95,
   seed = NULL,
   progress = interactive(),
-  progress_callback = NULL
+  progress_callback = NULL,
+  error_on_empty = TRUE
 )
 }
 \arguments{
@@ -64,11 +66,17 @@ Must be 1 for LOOCV.}
 \item{selection_metric}{Metric for candidate ranking and model selection:
 `"auc"` (default), `"youden"`, `"sensitivity"`, `"specificity"`, or `"accuracy"`.}
 
-\item{cutoff_method}{Cutoff selection rule: `"youden"` (default) or `"closest_topleft"`.}
+\item{cutoff_method}{Cutoff selection rule: `"youden"` (default), `"closest_topleft"`,
+`"sensitivity_target"` (target sensitivity with maximum specificity), or
+`"clinical_constraint"` (joint sensitivity and specificity constraints with maximum Youden).}
 
-\item{sensitivity_min}{Optional minimum OOF sensitivity threshold (numeric in `[0, 1]`, default `NULL`).}
+\item{sensitivity_min}{Minimum sensitivity threshold (numeric in `[0, 1]`).
+Required when `cutoff_method = "sensitivity_target"` or `"clinical_constraint"`.
+Optional post-evaluation candidate-level filter when `cutoff_method = "youden"` or `"closest_topleft"`.}
 
-\item{specificity_min}{Optional minimum OOF specificity threshold (numeric in `[0, 1]`, default `NULL`).}
+\item{specificity_min}{Minimum specificity threshold (numeric in `[0, 1]`).
+Required when `cutoff_method = "clinical_constraint"`. Prohibited when `cutoff_method = "sensitivity_target"`.
+Optional post-evaluation candidate-level filter when `cutoff_method = "youden"` or `"closest_topleft"`.}
 
 \item{top_n}{Integer, number of top candidates to return in `candidate_ranking` (default 20).}
 
@@ -106,6 +114,9 @@ reports only truthful start and successful completion, with no percentage or
 ETA. Approximate ETA is based only on observed progress. `FALSE` is silent.}
 
 \item{progress_callback}{Optional callback function receiving progress increment counts (internal use).}
+
+\item{error_on_empty}{Logical, throw error when no candidate models satisfy constraints (default `TRUE`).
+If `FALSE`, returns an empty result object with `final_selection_status = "no_feasible_candidate"`.}
 }
 \value{
 An S3 object of class `"cross_size_cv_result"`, containing:

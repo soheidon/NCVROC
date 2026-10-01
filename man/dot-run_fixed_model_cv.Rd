@@ -9,7 +9,10 @@
   data,
   y,
   cv_folds,
-  cutoff_method = c("youden", "closest_topleft")
+  cutoff_method = c("youden", "closest_topleft", "sensitivity_target",
+    "clinical_constraint"),
+  sensitivity_min = NULL,
+  specificity_min = NULL
 )
 }
 \arguments{

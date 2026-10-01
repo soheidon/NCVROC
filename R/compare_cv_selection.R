@@ -116,6 +116,7 @@ compare_cv_selection <- function(data,
   item_names   <- .resolve_items(data, substitute(items), env)
 
   selection_metric <- match.arg(selection_metric)
+  .ncvroc_reject_deployment_only_methods(cutoff_method)
   cutoff_method    <- match.arg(cutoff_method)
   engine           <- match.arg(engine)
 

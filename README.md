@@ -1,12 +1,26 @@
 [English](README.md) | [日本語 README](README-ja.md) | [日本語詳細リファレンス](docs/reference-ja.md)
 
-# NCVROC 0.20.0
+# NCVROC 0.21.0
 
 **N**ested **C**ross-**V**alidation for Combinatorial **ROC**-based Selection of Item-set Scores
 
 NCVROC develops short item-based screening scales through combinatorial item-set selection, Receiver Operating Characteristic (ROC) curve evaluation, ordinary and nested cross-validation, and selection optimism assessment. For psychological and clinical questionnaire data, NCVROC identifies which small subset of items best predicts a binary outcome using unweighted sum scores.
 
 Assume higher sum scores indicate higher probability of a positive outcome. Users must reverse-code items beforehand.
+
+---
+
+## What's new in NCVROC 0.21.0
+
+- **Clinical operating-point cutoff selection**:
+  - Added `"sensitivity_target"` (target Sensitivity with maximum Specificity) and `"clinical_constraint"` (joint Sensitivity & Specificity thresholds with maximum Youden) cutoff optimization methods to `cross_size_cv()` and `cross_size_nested_cv()`.
+  - Enforced strict contract rules: `sensitivity_target` requires `sensitivity_min` and prohibits `specificity_min`; `clinical_constraint` requires both.
+  - Legacy methods (`"youden"`, `"closest_topleft"`) continue to treat thresholds as candidate-level constraints with full backward compatibility.
+- **Full-data deployment cutoff refitting**:
+  - The final selected model systematically refits its deployment cutoff on full dataset observations using the same cutoff rule and clinical constraints.
+  - Returns robust status values (`"selected"`, `"no_feasible_cutoff_on_full_data"`, `"no_feasible_candidate"`).
+- **16-column standardized nested CV schema**:
+  - `outer_fold_results` now provides consistent 16-column structure across all cutoff methods with typed NAs on failed folds.
 
 ---
 

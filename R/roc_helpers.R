@@ -143,15 +143,105 @@ compute_roc_metrics_from_table <- function(pos_counts, neg_counts) {
   )
 }
 
-#' Find the optimal cutoff using a specified method
+#' Reject deployment-only cutoff methods in unsupported entry points
+#'
+#' @param cutoff_method Cutoff method argument.
+#' @keywords internal
+#' @noRd
+.ncvroc_reject_deployment_only_methods <- function(cutoff_method) {
+  if (is.character(cutoff_method) && length(cutoff_method) == 1L) {
+    if (cutoff_method %in% c("sensitivity_target", "clinical_constraint")) {
+      stop(sprintf('"%s" is supported only by cross_size_cv() and cross_size_nested_cv() in NCVROC v0.21.0.', cutoff_method),
+           call. = FALSE)
+    }
+  }
+  invisible(NULL)
+}
+
+#' Normalize candidate payload for parity comparison
+#'
+#' @param payload A list or data.frame representing a candidate payload.
+#' @return A normalized list with standard names and types.
+#' @keywords internal
+#' @noRd
+normalize_candidate_payload <- function(payload) {
+  if (is.data.frame(payload)) {
+    payload <- as.list(payload[1, , drop = FALSE])
+  }
+  res <- list()
+  discrete_fields <- c("selected_items", "items", "canonical_rank", "cutoff",
+                       "n_cutoff_feasible_folds", "n_total_folds",
+                       "cutoff_feasible", "candidate_feasible", "selection_status")
+  continuous_fields <- c("auc", "sensitivity", "specificity", "youden",
+                         "accuracy", "ppv", "npv",
+                         "cv_auc", "cv_sensitivity", "cv_specificity", "cv_youden",
+                         "cv_accuracy", "cv_ppv", "cv_npv")
+
+  for (f in names(payload)) {
+    val <- payload[[f]]
+    if (f %in% discrete_fields) {
+      if (is.factor(val)) val <- as.character(val)
+      res[[f]] <- val
+    } else if (f %in% continuous_fields) {
+      res[[f]] <- as.numeric(val)
+    } else {
+      res[[f]] <- val
+    }
+  }
+  res
+}
+
+#' Select operating-point cutoff from ROC metrics table
 #'
 #' @param metrics A data.frame from `compute_roc_metrics_from_table()`.
-#' @param method Character, one of `"youden"` or `"closest_topleft"`.
+#' @param method Character, one of `"youden"`, `"closest_topleft"`, `"sensitivity_target"`, or `"clinical_constraint"`.
+#' @param sensitivity_min Numeric threshold in [0, 1]. Required for `"sensitivity_target"` and `"clinical_constraint"`.
+#' @param specificity_min Numeric threshold in [0, 1]. Prohibited for `"sensitivity_target"`, required for `"clinical_constraint"`.
 #'
-#' @return A single-row data.frame (from `metrics`) for the optimal cutoff.
+#' @return A single-row data.frame for the selected cutoff, or NULL if no cutoff satisfies the constraints.
 #' @keywords internal
-find_optimal_cutoff <- function(metrics, method = c("youden", "closest_topleft")) {
+#' @noRd
+select_operating_point <- function(metrics,
+                                   method = c("youden", "closest_topleft", "sensitivity_target", "clinical_constraint"),
+                                   sensitivity_min = NULL,
+                                   specificity_min = NULL) {
   method <- match.arg(method)
+
+  if (method == "sensitivity_target") {
+    if (is.null(sensitivity_min)) {
+      stop("`sensitivity_min` is required when `cutoff_method = \"sensitivity_target\"`.", call. = FALSE)
+    }
+    if (!is.null(specificity_min)) {
+      stop("`specificity_min` is prohibited and must not be specified when `cutoff_method = \"sensitivity_target\"`.", call. = FALSE)
+    }
+    sub_m <- metrics[metrics$sensitivity >= sensitivity_min, , drop = FALSE]
+    if (nrow(sub_m) == 0L) return(NULL)
+    idx <- order(
+      -sub_m$specificity,
+      -sub_m$sensitivity,
+      -sub_m$youden,
+      sub_m$cutoff
+    )
+    return(sub_m[idx[1], , drop = FALSE])
+  }
+
+  if (method == "clinical_constraint") {
+    if (is.null(sensitivity_min)) {
+      stop("`sensitivity_min` is required when `cutoff_method = \"clinical_constraint\"`.", call. = FALSE)
+    }
+    if (is.null(specificity_min)) {
+      stop("`specificity_min` is required when `cutoff_method = \"clinical_constraint\"`.", call. = FALSE)
+    }
+    sub_m <- metrics[metrics$sensitivity >= sensitivity_min & metrics$specificity >= specificity_min, , drop = FALSE]
+    if (nrow(sub_m) == 0L) return(NULL)
+    idx <- order(
+      -sub_m$youden,
+      -sub_m$sensitivity,
+      -sub_m$specificity,
+      sub_m$cutoff
+    )
+    return(sub_m[idx[1], , drop = FALSE])
+  }
 
   if (method == "youden") {
     # Max Youden index; tie-break by higher sensitivity, then higher specificity
@@ -172,6 +262,27 @@ find_optimal_cutoff <- function(metrics, method = c("youden", "closest_topleft")
   }
 
   stop("Unknown cutoff_method: '", method, "'.", call. = FALSE)
+}
+
+#' Find the optimal cutoff using a specified method
+#'
+#' @param metrics A data.frame from `compute_roc_metrics_from_table()`.
+#' @param method Character, one of `"youden"`, `"closest_topleft"`, `"sensitivity_target"`, or `"clinical_constraint"`.
+#' @param sensitivity_min Numeric threshold in [0, 1].
+#' @param specificity_min Numeric threshold in [0, 1].
+#'
+#' @return A single-row data.frame (from `metrics`) for the optimal cutoff, or NULL.
+#' @keywords internal
+find_optimal_cutoff <- function(metrics,
+                                method = c("youden", "closest_topleft", "sensitivity_target", "clinical_constraint"),
+                                sensitivity_min = NULL,
+                                specificity_min = NULL) {
+  select_operating_point(
+    metrics         = metrics,
+    method          = method,
+    sensitivity_min = sensitivity_min,
+    specificity_min = specificity_min
+  )
 }
 
 #' Compute Clopper-Pearson exact binomial confidence intervals
