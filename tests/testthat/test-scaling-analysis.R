@@ -94,7 +94,7 @@ test_that("workload insufficiency is explicit and excluded from selection", {
   expect_identical(selected$selected_parallel, "none")
 })
 
-test_that("workload gate and secondary budget rule operate correctly", {
+test_that("workload gate operates deterministically based on threshold", {
   # Below threshold -> benchmark not required
   below <- NCVROC:::.planner_should_benchmark(120.0, threshold = 180.0)
   expect_false(below$backend_benchmark_required)
@@ -103,12 +103,7 @@ test_that("workload gate and secondary budget rule operate correctly", {
   # Above threshold -> benchmark required
   above <- NCVROC:::.planner_should_benchmark(240.0, threshold = 180.0)
   expect_true(above$backend_benchmark_required)
-  allowed <- NCVROC:::.planner_sweep_gate(240, expected_sweep_seconds = 12, threshold = 180, estimated_serial_runtime = 240)
-  expect_true(allowed$allowed)
-  expect_equal(allowed$overhead_budget_seconds, 12)
-  denied <- NCVROC:::.planner_sweep_gate(240, expected_sweep_seconds = 12.1, threshold = 180, estimated_serial_runtime = 240)
-  expect_false(denied$allowed)
-  expect_identical(denied$reason, "benchmark_budget_insufficient")
+  expect_match(above$reason, "workload exceeds threshold")
 })
 
 test_that("cross_size_cv with exhaustive sweep preserves statistical invariance and RNG", {

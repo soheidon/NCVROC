@@ -1,3 +1,15 @@
+# NCVROC 0.22.0
+
+## Execution planning and tuning progress
+
+* Multi-configuration benchmarking in `tuning = "auto"` mode is governed strictly by a deterministic candidate-workload threshold (default 5,000,000 candidate evaluations). The obsolete 180-second serial-runtime gate and 5% runtime-overhead budget gate have been removed.
+* Runtime estimation (`estimated_serial_runtime`) is decoupled from benchmark admission and serves strictly as diagnostic metadata. Unavailability of a serial runtime estimate does not abort or block benchmarking when the workload threshold is met or when explicit tuning is requested.
+* Unified `tuning = "always"` and `tuning = "benchmark"` semantics across all four workflow entry points (`exhaustive_sum_roc()`, `cross_size_cv()`, `nested_sum_roc()`, `cross_size_nested_cv()`), unconditionally evaluating legal execution configurations.
+* Added dedicated progress reporting for execution planner tuning sweeps (`.planner_progress_make()`), providing clean progress output in `[k/M plans]` format with elapsed time while avoiding misleading percentage completion or ETA predictions. Tuning progress is completely silent when `progress = FALSE`.
+* Audited legal execution-plan generators across all workflows to ensure strict validity, verifying that illegal configurations (e.g., zero workers, unsupported backend pairings) are never emitted.
+* Updated documentation, roxygen parameter descriptions, and preview formatting to clarify empirical execution-plan selection from measured legal plans within a 5% tolerance with lower-resource preference, removing misleading claims of globally optimal execution plans or guaranteed runtimes.
+* Preserved strict caller RNG isolation during benchmarking sweeps via `.planner_with_preserved_rng()` and verified statistical invariance across all workflows and parallel execution backends.
+
 # NCVROC 0.21.0
 
 ## Clinical operating-point cutoff selection

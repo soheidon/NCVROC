@@ -17,7 +17,7 @@ testthat::test_that("cross_size_nested_cv statistical exactness across tuning mo
     data = d, outcome = "y", items = c("q1", "q2", "q3", "q4"),
     min_items = 1, max_items = 2, outer_folds = 3, inner_folds = 2,
     outer_repeats = 1, inner_repeats = 1,
-    seed = 100, engine = "R", tuning = "off",
+    seed = 100, engine = "R", tuning = "off", n_workers = 1,
     progress = FALSE, verbose = FALSE
   )
   rng_off <- .Random.seed
@@ -28,7 +28,7 @@ testthat::test_that("cross_size_nested_cv statistical exactness across tuning mo
     data = d, outcome = "y", items = c("q1", "q2", "q3", "q4"),
     min_items = 1, max_items = 2, outer_folds = 3, inner_folds = 2,
     outer_repeats = 1, inner_repeats = 1,
-    seed = 100, engine = "R", tuning = "auto",
+    seed = 100, engine = "R", tuning = "auto", n_workers = 1,
     progress = FALSE, verbose = FALSE
   )
   rng_auto <- .Random.seed
@@ -39,7 +39,7 @@ testthat::test_that("cross_size_nested_cv statistical exactness across tuning mo
     data = d, outcome = "y", items = c("q1", "q2", "q3", "q4"),
     min_items = 1, max_items = 2, outer_folds = 3, inner_folds = 2,
     outer_repeats = 1, inner_repeats = 1,
-    seed = 100, engine = "R", tuning = "always",
+    seed = 100, engine = "R", tuning = "always", n_workers = 1,
     progress = FALSE, verbose = FALSE
   )
   rng_always <- .Random.seed
@@ -64,8 +64,8 @@ testthat::test_that("cross_size_nested_cv statistical exactness across tuning mo
   testthat::expect_equal(res_off$outer_predictions, res_always$outer_predictions)
 
   # RNG state preservation check
-  testthat::expect_equal(rng_off, rng_auto)
-  testthat::expect_equal(rng_off, rng_always)
+  testthat::expect_identical(rng_off, rng_auto)
+  testthat::expect_identical(rng_off, rng_always)
 
   # Metadata attachment contract
   testthat::expect_null(res_off$settings$execution_plan)

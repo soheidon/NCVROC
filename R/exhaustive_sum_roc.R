@@ -424,12 +424,10 @@
 #'   from. When set together with `chunk_size`, only that range is evaluated.
 #' @param chunk_size Combinations per chunk (default 200000 when chunking).
 #' @param tuning Execution-planning mode: `"off"` preserves the manual
-#'   execution path, `"auto"` considers a legal resource sweep only when the
-#'   empirical serial estimate reaches 180 seconds, and `"always"` requests the
-#'   same safe planning process. A sweep is budgeted to at most 5 percent of the
-#'   estimated runtime and otherwise falls back to the manual configuration.
-#'   Runtime estimates use observed pilot timings; a two-point affine estimate is
-#'   used when suitable measurements are available. Default `"off"`.
+#'   execution path, `"auto"` triggers a legal resource sweep when the workload
+#'   reaches the deterministic threshold (default 5,000,000 candidate evaluations),
+#'   and `"always"` requests the same safe planning process unconditionally.
+#'   Default `"off"`.
 #' @param progress_callback Optional internal callback function receiving progress updates.
 #'
 #' @details
@@ -556,7 +554,8 @@ exhaustive_sum_roc <- function(data,
       min_items = min_items, max_items = max_items,
       cutoff_method = cutoff_method, engine = engine, tuning = tuning,
       manual_parallel_mode = parallel_mode, manual_n_workers = n_workers,
-      chunk_size = if (is.null(chunk_size)) 200000L else chunk_size
+      chunk_size = if (is.null(chunk_size)) 200000L else chunk_size,
+      progress = progress
     )
     execution_metadata <- planned$metadata
     execution_parallel_mode <- planned$plan$parallel[[1L]]

@@ -72,7 +72,7 @@ test_that("plan_ncvroc_execution preserves the caller RNG state for every workfl
   }
 })
 
-test_that("print and format methods for ncvroc_execution_plan return human-readable text", {
+test_that("print and format methods for ncvroc_execution_plan return human-readable text with proper terminology", {
   d <- .preview_test_data(6L)
   plan <- plan_ncvroc_execution(
     data = d, outcome = y, workflow = "cross_size_cv",
@@ -85,11 +85,34 @@ test_that("print and format methods for ncvroc_execution_plan return human-reada
   expect_match(formatted, "Workflow: cross_size_cv")
   expect_match(formatted, "Total Candidates:")
   expect_match(formatted, "Suggested Configuration")
-  expect_false(grepl("Initial Serial Estimate", formatted))
+  expect_match(formatted, "Resource Sweep Benchmark")
+
+  # Absence of misleading claims in user-facing output
+  expect_false(grepl("optimal plan", formatted, ignore.case = TRUE))
+  expect_false(grepl("guaranteed", formatted, ignore.case = TRUE))
+  expect_false(grepl("ETA", formatted))
   expect_false(grepl("Estimated Runtime", formatted))
+  expect_false(grepl("Initial Serial Estimate", formatted))
 
   # Print should run cleanly
   expect_output(print(plan), "NCVROC Execution Plan")
+})
+
+test_that("benchmarked execution plan format reports evaluated plan count and empirical selection basis", {
+  d <- .preview_test_data(6L)
+  plan <- plan_ncvroc_execution(
+    data = d, outcome = y, workflow = "cross_size_cv",
+    model_sizes = 1:2, folds = 3, threshold = 0
+  )
+
+  formatted <- format(plan)
+  expect_type(formatted, "character")
+  if (isTRUE(plan$backend_benchmark_performed)) {
+    expect_match(formatted, "evaluated")
+    expect_match(formatted, "Benchmark-based empirical selection from measured legal plans")
+  }
+  expect_false(grepl("predicted total runtime", formatted, ignore.case = TRUE))
+  expect_false(grepl("optimal", formatted, ignore.case = TRUE))
 })
 
 test_that("plot.ncvroc_execution_plan generates base R plots without error", {
@@ -103,10 +126,15 @@ test_that("plot.ncvroc_execution_plan generates base R plots without error", {
   on.exit(unlink(pdf_tmp), add = TRUE)
   grDevices::pdf(pdf_tmp)
 
-  expect_message(plot(plan, type = "runtime"), "No successful")
-  expect_message(plot(plan, type = "speedup"), "No successful")
-  expect_message(plot(plan, type = "efficiency"), "No successful")
-  expect_message(plot(plan, type = "all"), "No successful")
+  expect_silent(plot(plan, type = "runtime"))
+  expect_silent(plot(plan, type = "speedup"))
+  expect_silent(plot(plan, type = "efficiency"))
+  expect_silent(plot(plan, type = "all"))
+
+  # Test unbenchmarked plan message
+  unmeasured_plan <- plan
+  unmeasured_plan$benchmark_table <- data.frame()
+  expect_message(plot(unmeasured_plan, type = "runtime"), "No benchmark table")
 
   grDevices::dev.off()
 })

@@ -901,7 +901,8 @@ nested_sum_roc <- function(data,
       manual_parallel_mode      = parallel_mode,
       manual_n_workers          = n_workers,
       manual_threads_per_worker = threads_per_worker,
-      outer_folds               = outer_folds
+      outer_folds               = outer_folds,
+      progress                  = progress
     )
     execution_metadata <- planned$metadata
     parallel_mode <- planned$plan$parallel[[1L]]

@@ -477,7 +477,8 @@ cross_size_nested_cv <- function(data,
       manual_parallel_mode       = parallel_mode,
       manual_n_workers           = n_workers,
       manual_threads_per_worker  = threads_per_worker,
-      fold_seeds                 = fold_seeds
+      fold_seeds                 = fold_seeds,
+      progress                   = progress
     )
     execution_metadata <- planned$metadata
     parallel_mode <- planned$plan$parallel[[1L]]

@@ -104,8 +104,8 @@ test_that("R engine creates no threads automatic plans and all failures use manu
   )
   expect_false("threads" %in% plans_seen)
   expect_identical(result$plan$parallel[[1L]], "chunks")
-  expect_false(result$warn)
-  expect_match(result$metadata$fallback_reason, "runtime estimate unavailable")
+  expect_true(result$warn)
+  expect_match(result$metadata$fallback_reason, "all benchmark plans failed")
   one_worker <- NCVROC:::.planner_manual_exhaustive_plan("chunks", 1L, 25, 5L)
   expect_identical(one_worker$n_workers[[1L]], 1L)
 })
@@ -203,7 +203,7 @@ test_that("clock and failed micro-pilot flags deterministically govern fallback"
   )
   expect_true(is.na(result$metadata$estimated_serial_runtime))
   expect_identical(result$plan$n_workers[[1L]], 1L)
-  expect_match(result$metadata$fallback_reason, "runtime estimate unavailable")
+  expect_match(result$metadata$fallback_reason, "degenerate workload")
   expect_equal(result$metadata$planner_elapsed, 1)
 })
 
@@ -221,9 +221,9 @@ test_that("benchmark all-failure fallback retains NA estimated runtime", {
                              auto_runtime_threshold = 0)
   )
   expect_true(is.na(result$metadata$estimated_runtime))
-  expect_match(result$metadata$fallback_reason, "runtime estimate unavailable")
+  expect_match(result$metadata$fallback_reason, "all benchmark plans failed")
   expect_identical(result$metadata$decision_reason, result$metadata$fallback_reason)
-  expect_false(result$warn)
+  expect_true(result$warn)
 })
 
 test_that("closest-to-topleft ties and top_n remain exact under tuning", {

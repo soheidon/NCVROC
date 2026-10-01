@@ -86,12 +86,10 @@ from. When set together with `chunk_size`, only that range is evaluated.}
 \item{chunk_size}{Combinations per chunk (default 200000 when chunking).}
 
 \item{tuning}{Execution-planning mode: `"off"` preserves the manual
-execution path, `"auto"` considers a legal resource sweep only when the
-empirical serial estimate reaches 180 seconds, and `"always"` requests the
-same safe planning process. A sweep is budgeted to at most 5 percent of the
-estimated runtime and otherwise falls back to the manual configuration.
-Runtime estimates use observed pilot timings; a two-point affine estimate is
-used when suitable measurements are available. Default `"off"`.}
+execution path, `"auto"` triggers a legal resource sweep when the workload
+reaches the deterministic threshold (default 5,000,000 candidate evaluations),
+and `"always"` requests the same safe planning process unconditionally.
+Default `"off"`.}
 
 \item{progress_callback}{Optional internal callback function receiving progress updates.}
 }

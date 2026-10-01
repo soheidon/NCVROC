@@ -270,3 +270,88 @@
     }
   )
 }
+
+#' Create a progress reporting context for execution planner tuning sweeps
+#'
+#' @param total_plans Total number of candidate execution plans to benchmark.
+#' @param label Character label for tuning progress. Default `"NCVROC tuning"`.
+#' @param enabled Logical indicating whether progress reporting is active. Default `TRUE`.
+#' @param interactive_override Internal test hook to force interactive/non-interactive rendering.
+#' @return A list with functions: `tick(n)`, `finish()`, and `close()`.
+#' @keywords internal
+#' @noRd
+.planner_progress_make <- function(total_plans,
+                                   label = "NCVROC tuning",
+                                   enabled = TRUE,
+                                   interactive_override = NULL) {
+  total_num <- as.numeric(total_plans)
+  if (!isTRUE(enabled) || !is.numeric(total_num) || !is.finite(total_num) || total_num <= 0) {
+    return(list(
+      enabled = FALSE,
+      tick    = function(n = 1L) invisible(NULL),
+      finish  = function() invisible(NULL),
+      close   = function() invisible(NULL)
+    ))
+  }
+
+  is_interactive <- if (!is.null(interactive_override)) {
+    isTRUE(interactive_override)
+  } else {
+    interactive() && !isTRUE(getOption("knitr.in.progress"))
+  }
+
+  t0 <- proc.time()[["elapsed"]]
+  total_plans_int <- as.integer(total_num)
+  done <- 0L
+  closed <- FALSE
+  finished <- FALSE
+
+  render_line <- function(force_final = FALSE) {
+    if (isTRUE(closed)) return(invisible(NULL))
+    now <- proc.time()[["elapsed"]]
+    elapsed <- max(now - t0, 0.0)
+    line <- sprintf("%s [%d/%d plans] [Elapsed: %.1fs]",
+                    label, done, total_plans_int, elapsed)
+    if (is_interactive) {
+      if (force_final) {
+        cat(sprintf("\r%s\n", line), file = stderr())
+      } else {
+        cat(sprintf("\r%s", line), file = stderr())
+      }
+      utils::flush.console()
+    } else {
+      message(line)
+    }
+  }
+
+  # Emit initial 0/M state before the first benchmark
+  render_line(force_final = FALSE)
+
+  list(
+    enabled = TRUE,
+    tick = function(n = 1L) {
+      if (isTRUE(closed) || isTRUE(finished)) return(invisible(NULL))
+      done <<- min(done + as.integer(n), total_plans_int)
+      if (done >= total_plans_int) {
+        render_line(force_final = TRUE)
+        finished <<- TRUE
+      } else {
+        render_line(force_final = FALSE)
+      }
+    },
+    finish = function() {
+      if (isTRUE(closed) || isTRUE(finished)) return(invisible(NULL))
+      if (done == total_plans_int) {
+        render_line(force_final = TRUE)
+        finished <<- TRUE
+      }
+    },
+    close = function() {
+      if (isTRUE(closed)) return(invisible(NULL))
+      if (is_interactive && !finished) {
+        cat("\n", file = stderr())
+      }
+      closed <<- TRUE
+    }
+  )
+}

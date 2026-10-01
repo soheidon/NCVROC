@@ -3,13 +3,12 @@
 #' Plan and Preview Execution for NCVROC Workflows
 #'
 #' Evaluates candidate workload, conducts a lightweight deterministic probe, and
-#' for flat exhaustive/CV workflows may benchmark legal resource configurations
-#' before selecting a measured near-best plan. The primary gate is an empirical
-#' 180-second serial estimate, with benchmark overhead capped at 5 percent of
-#' that estimate. Suitable two-point pilot timings use an affine runtime model.
-#' Nested workflows use only candidate-bounded runtime probing in v0.19.0: their
-#' full resource sweep is deferred when a rank-bounded evaluator is unavailable,
-#' and the manual/default configuration is retained.
+#' for supported workflows compares legal resource configurations when benchmarking
+#' is triggered.
+#' Benchmarking is triggered by a deterministic workload threshold.
+#' When benchmarking is performed, supported legal execution plans are
+#' compared on a bounded representative workload and a plan is selected
+#' empirically from the observed benchmark results.
 #'
 #' @param data A `data.frame` or `matrix` containing the predictor variables and outcome.
 #' @param outcome Column name of the binary outcome (as string or unquoted symbol).
@@ -46,7 +45,7 @@
 #'   \item{cheap_probe}{Initial serial timing and rough runtime estimate from deterministic probe.}
 #'   \item{benchmark_table}{Data frame of all benchmarked resource configurations with speedup, efficiency, and estimated full runtime.}
 #'   \item{scaling}{Summary of empirical scaling curves and saturation status.}
-#'   \item{selected_plan}{The selected near-best execution plan and resource allocation.}
+#'   \item{selected_plan}{The selected execution plan and resource allocation.}
 #'   \item{decision_reason}{Rationale for the execution plan selection.}
 #'   \item{environment}{Summary of host CPU cores, memory, and OS architecture.}
 #'
@@ -295,8 +294,11 @@ format.ncvroc_execution_plan <- function(x, ...) {
                             x$workload$n_items))
 
   lines <- c(lines, "")
-  lines <- c(lines, "--- Resource Sweep Benchmark ---")
-  if (is.data.frame(x$benchmark_table) && nrow(x$benchmark_table) > 0L) {
+  benchmark_performed <- isTRUE(x$backend_benchmark_performed)
+  n_plans <- if (is.data.frame(x$benchmark_table)) nrow(x$benchmark_table) else 0L
+  if (benchmark_performed && n_plans > 0L) {
+    lines <- c(lines, sprintf("--- Resource Sweep Benchmark (%d legal plan%s evaluated) ---",
+                              n_plans, if (n_plans == 1L) "" else "s"))
     tb <- x$benchmark_table
     show_cols <- intersect(
       c("plan_id", "parallel", "n_workers", "threads_per_worker",
@@ -316,6 +318,7 @@ format.ncvroc_execution_plan <- function(x, ...) {
     }
     lines <- c(lines, utils::capture.output(print(df_show, row.names = FALSE)))
   } else {
+    lines <- c(lines, "--- Resource Sweep Benchmark ---")
     lines <- c(lines, "  (No multi-backend benchmark sweep performed)")
   }
 
@@ -330,8 +333,8 @@ format.ncvroc_execution_plan <- function(x, ...) {
     sprintf("%s (%d resources)", x$selected_plan$parallel, x$selected_plan$resource_count)
   }
   lines <- c(lines, sprintf("Plan: %s", plan_desc))
-  basis_str <- if (!is.null(x$decision_reason) && grepl("benchmark", x$decision_reason, ignore.case = TRUE)) {
-    "Benchmark-based suggestion"
+  basis_str <- if (benchmark_performed && !is.null(x$decision_reason) && grepl("benchmark", x$decision_reason, ignore.case = TRUE)) {
+    "Benchmark-based empirical selection from measured legal plans"
   } else if (!is.null(x$decision_reason) && is.character(x$decision_reason) && nzchar(x$decision_reason)) {
     x$decision_reason
   } else {

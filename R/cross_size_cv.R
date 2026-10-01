@@ -1064,12 +1064,10 @@
 #'   or `"chunks"` (PSOCK cluster).
 #' @param n_workers Integer, number of workers or threads (default `NULL` = auto).
 #' @param tuning Automatic execution-planning mode: `"off"` (default; manual
-#'   execution configuration is authoritative), `"auto"` (considers a legal
-#'   resource sweep at an empirical 180-second serial-runtime gate), or
-#'   `"always"` (requests the same safe planning process). The benchmark budget
-#'   is at most 5 percent of the estimated runtime; unavailable or insufficient
-#'   pilots fall back to the manual configuration. Suitable two-point pilot
-#'   measurements use an empirical affine runtime estimate.
+#'   execution configuration is authoritative), `"auto"` (triggers a legal
+#'   resource sweep when the workload reaches the deterministic threshold,
+#'   default 5,000,000 candidate evaluations), or `"always"` (requests the
+#'   same safe planning process unconditionally).
 #' @param ci Logical, compute confidence intervals for full-data apparent metrics of final model (default `FALSE`).
 #' @param conf_level Numeric, confidence level (default 0.95).
 #' @param seed Integer, random seed for reproducible fold generation.
@@ -1318,7 +1316,8 @@ cross_size_cv <- function(data,
       engine               = engine,
       tuning               = tuning,
       manual_parallel_mode = parallel_mode,
-      manual_n_workers     = n_workers
+      manual_n_workers     = n_workers,
+      progress             = progress
     )
     if (isTRUE(planner_outcome$warn)) {
       warning("Automatic execution planning failed; falling back to manual execution configuration.", call. = FALSE)

@@ -188,7 +188,7 @@ test_that("cross_size_cv tuning='always' degenerate workload uses manual plan", 
   expect_match(plan$decision_reason, "degenerate workload")
 })
 
-test_that("cross_size_cv tuning='always' respects the 180-second and 5-percent gates", {
+test_that("cross_size_cv tuning='always' produces exact statistical equivalence", {
   d <- .planner_cv_test_data(8L)
 
   res_off <- cross_size_cv(
@@ -224,11 +224,9 @@ test_that("cross_size_cv tuning='always' respects the 180-second and 5-percent g
 
   plan <- res_always$settings$execution_plan
   expect_true(plan$tuning_performed)
-  expect_false(plan$backend_benchmark_performed)
+  expect_true(plan$backend_benchmark_performed)
   expect_identical(plan$tuning_mode, "always")
   expect_true(nrow(plan$benchmark_table) >= 1L)
-  expect_true(plan$decision_reason %in% c("estimated workload too small for backend benchmarking",
-                                           "benchmark_budget_insufficient"))
   expect_identical(plan$cv_method, "kfold")
   expect_identical(plan$k, 5L)
   expect_identical(plan$repeats, 1L)
@@ -299,8 +297,8 @@ test_that("cross_size_cv Strategy 1 (AUC) supports tuning without changing stati
 })
 
 test_that("planner controller handles mocked benchmark failure and fallback gracefully", {
-  d <- .planner_cv_test_data(5L)
-  dat_mat <- as.matrix(d[, paste0("Q", 1:5)])
+  d <- .planner_cv_test_data(8L)
+  dat_mat <- as.matrix(d[, paste0("Q", 1:8)])
   y_int <- as.integer(d$y)
   cv_folds <- .build_cv_folds(y_int, cv_method = "kfold", folds = 5L, repeats = 1L, seed = 42L)
 
@@ -312,8 +310,8 @@ test_that("planner controller handles mocked benchmark failure and fallback grac
   outcome <- .planner_cross_size_cv_controller(
     data_matrix          = dat_mat,
     y                    = y_int,
-    item_names           = paste0("Q", 1:5),
-    sizes                = 1:2,
+    item_names           = paste0("Q", 1:8),
+    sizes                = 1:4,
     cv_folds             = cv_folds,
     folds                = 5L,
     repeats              = 1L,
@@ -333,7 +331,7 @@ test_that("planner controller handles mocked benchmark failure and fallback grac
   expect_true(outcome$warn)
   expect_identical(outcome$plan$parallel[[1L]], "none")
   expect_identical(outcome$plan$n_workers[[1L]], 1L)
-  expect_match(outcome$metadata$fallback_reason, "manual plan")
+  expect_match(outcome$metadata$fallback_reason, "all benchmark plans failed")
 })
 
 test_that("planner controller respects the pre-launch budget gate", {
@@ -367,11 +365,11 @@ test_that("planner controller respects the pre-launch budget gate", {
     tuning               = "always",
     manual_parallel_mode = "none",
     manual_n_workers     = NULL,
-    dependencies         = list(clock = mock_clock, auto_runtime_threshold = 0)
+    dependencies         = list(clock = mock_clock, auto_runtime_threshold = 0, tuning_budget_seconds = 1.0)
   )
 
   expect_type(outcome$metadata, "list")
-  expect_false(outcome$metadata$backend_benchmark_performed)
+  expect_true(outcome$metadata$tuning_budget_exhausted)
   expect_identical(outcome$metadata$decision_reason, "benchmark_budget_insufficient")
 })
 

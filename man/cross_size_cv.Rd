@@ -94,12 +94,10 @@ or `"chunks"` (PSOCK cluster).}
 \item{n_workers}{Integer, number of workers or threads (default `NULL` = auto).}
 
 \item{tuning}{Automatic execution-planning mode: `"off"` (default; manual
-execution configuration is authoritative), `"auto"` (considers a legal
-resource sweep at an empirical 180-second serial-runtime gate), or
-`"always"` (requests the same safe planning process). The benchmark budget
-is at most 5 percent of the estimated runtime; unavailable or insufficient
-pilots fall back to the manual configuration. Suitable two-point pilot
-measurements use an empirical affine runtime estimate.}
+execution configuration is authoritative), `"auto"` (triggers a legal
+resource sweep when the workload reaches the deterministic threshold,
+default 5,000,000 candidate evaluations), or `"always"` (requests the
+same safe planning process unconditionally).}
 
 \item{ci}{Logical, compute confidence intervals for full-data apparent metrics of final model (default `FALSE`).}
 

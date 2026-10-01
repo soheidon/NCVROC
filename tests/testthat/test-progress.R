@@ -343,3 +343,125 @@ test_that("no clusterApplyLB exists in codebase", {
                  info = sprintf("Found clusterApplyLB in %s", basename(f)))
   }
 })
+
+test_that(".planner_progress_make satisfies v0.22.0 tuning progress contract", {
+  # 1. enabled = FALSE is completely silent
+  msgs_off <- character()
+  withCallingHandlers(
+    {
+      prg_off <- NCVROC:::.planner_progress_make(5L, enabled = FALSE)
+      prg_off$tick(1L)
+      prg_off$tick(1L)
+      prg_off$finish()
+      prg_off$close()
+    },
+    message = function(m) {
+      msgs_off <<- c(msgs_off, conditionMessage(m))
+      invokeRestart("muffleMessage")
+    }
+  )
+  expect_identical(length(msgs_off), 0L)
+
+  # 2. enabled = TRUE emits initial 0/M, increments on tick, emits final M/M, no ETA, no %
+  msgs_on <- character()
+  withCallingHandlers(
+    {
+      prg_on <- NCVROC:::.planner_progress_make(3L, enabled = TRUE, interactive_override = FALSE)
+      prg_on$tick(1L)
+      prg_on$tick(1L)
+      prg_on$tick(1L)
+      prg_on$finish()
+      prg_on$close()
+    },
+    message = function(m) {
+      msgs_on <<- c(msgs_on, conditionMessage(m))
+      invokeRestart("muffleMessage")
+    }
+  )
+
+  # Expected: initial 0/3, 1/3, 2/3, 3/3
+  expect_equal(length(msgs_on), 4L)
+  expect_match(msgs_on[1], "NCVROC tuning \\[0/3 plans\\] \\[Elapsed: [0-9.]+s\\]")
+  expect_match(msgs_on[2], "NCVROC tuning \\[1/3 plans\\] \\[Elapsed: [0-9.]+s\\]")
+  expect_match(msgs_on[3], "NCVROC tuning \\[2/3 plans\\] \\[Elapsed: [0-9.]+s\\]")
+  expect_match(msgs_on[4], "NCVROC tuning \\[3/3 plans\\] \\[Elapsed: [0-9.]+s\\]")
+
+  # Strictly no ETA, no percentage
+  for (msg in msgs_on) {
+    expect_false(grepl("remaining", msg, ignore.case = TRUE))
+    expect_false(grepl("%", msg))
+    expect_false(grepl("ETA", msg, ignore.case = TRUE))
+  }
+
+  # 3. Interrupted sweep does not emit false M/M
+  msgs_abort <- character()
+  withCallingHandlers(
+    {
+      prg_abort <- NCVROC:::.planner_progress_make(4L, enabled = TRUE, interactive_override = FALSE)
+      prg_abort$tick(1L)
+      # Simulating early exit before completing all 4
+      prg_abort$finish()
+      prg_abort$close()
+    },
+    message = function(m) {
+      msgs_abort <<- c(msgs_abort, conditionMessage(m))
+      invokeRestart("muffleMessage")
+    }
+  )
+  expect_equal(length(msgs_abort), 2L)
+  expect_match(msgs_abort[1], "NCVROC tuning \\[0/4 plans\\]")
+  expect_match(msgs_abort[2], "NCVROC tuning \\[1/4 plans\\]")
+  expect_false(any(grepl("\\[4/4 plans\\]", msgs_abort)))
+})
+
+test_that("planner tuning progress is observable in controller benchmark sweeps", {
+  set.seed(42)
+  d <- data.frame(y = c(rep(1L, 15L), rep(0L, 15L)))
+  for (i in 1:20) {
+    d[[paste0("item_", i)]] <- rnorm(30)
+  }
+  mock_executor <- function(x_mat, y, items, min_items, max_items, cutoff_method,
+                             engine, global_ranks, plan, timer) {
+    list(elapsed = 0.001, success = TRUE, failure_reason = NA_character_)
+  }
+
+  # When progress = TRUE, tuning progress messages are emitted
+  msgs <- character()
+  withCallingHandlers(
+    {
+      res <- NCVROC:::.planner_exhaustive_controller(
+        as.matrix(d[, -1L]), d$y, names(d)[-1L], 1L, 5L, "youden", "Rcpp", "always",
+        "none", 2L, 5L,
+        dependencies = list(resource_detector = function() 2L, benchmark_executor = mock_executor,
+                            auto_runtime_threshold = 0),
+        progress = TRUE
+      )
+    },
+    message = function(m) {
+      msgs <<- c(msgs, conditionMessage(m))
+      invokeRestart("muffleMessage")
+    }
+  )
+  tuning_msgs <- msgs[grepl("NCVROC tuning \\[", msgs)]
+  expect_true(length(tuning_msgs) >= 2L)
+  expect_match(tuning_msgs[1], "NCVROC tuning \\[0/")
+
+  # When progress = FALSE, zero progress messages emitted
+  msgs_silent <- character()
+  withCallingHandlers(
+    {
+      res_silent <- NCVROC:::.planner_exhaustive_controller(
+        as.matrix(d[, -1L]), d$y, names(d)[-1L], 1L, 5L, "youden", "Rcpp", "always",
+        "none", 2L, 5L,
+        dependencies = list(resource_detector = function() 2L, benchmark_executor = mock_executor,
+                            auto_runtime_threshold = 0),
+        progress = FALSE
+      )
+    },
+    message = function(m) {
+      msgs_silent <<- c(msgs_silent, conditionMessage(m))
+      invokeRestart("muffleMessage")
+    }
+  )
+  expect_equal(length(msgs_silent[grepl("NCVROC", msgs_silent)]), 0L)
+})

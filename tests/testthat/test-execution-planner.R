@@ -149,6 +149,34 @@ test_that("legal plans respect machine, task, and explicit user caps", {
   )
 })
 
+test_that("flat legal plan generator guarantees strict validity and no illegal configurations", {
+  # 1. Extreme low resources (1 worker or 1 task) yields only serial
+  for (res in c(0L, 1L)) {
+    p_low <- .planner_generate_legal_plans("exhaustive_sum_roc", available_resources = res, engine = "Rcpp")
+    expect_identical(nrow(p_low), 1L)
+    expect_identical(p_low$plan_id, "none_1")
+    expect_identical(p_low$n_workers, 1L)
+  }
+
+  p_single_task <- .planner_generate_legal_plans("cross_size_cv", available_resources = 8L, task_count = 1L, engine = "Rcpp")
+  expect_identical(nrow(p_single_task), 1L)
+  expect_identical(p_single_task$plan_id, "none_1")
+
+  # 2. Invariants across arbitrary configurations
+  for (res in c(2L, 4L, 12L)) {
+    for (eng in c("Rcpp", "R")) {
+      p <- .planner_generate_legal_plans("exhaustive_sum_roc", available_resources = res, engine = eng)
+      expect_true(all(p$n_workers >= 1L))
+      expect_true(all(p$resource_count >= 1L))
+      expect_true(all(p$resource_count <= res))
+      expect_identical(anyDuplicated(p$plan_id), 0L)
+      if (eng == "R") {
+        expect_false(any(p$parallel %in% c("threads", "outer", "hybrid")))
+      }
+    }
+  }
+})
+
 test_that("timing aggregation uses medians and records failed plans", {
   raw <- data.frame(
     plan_id = rep(c("none_1", "threads_2"), each = 3L),
@@ -418,4 +446,61 @@ test_that("environment summary excludes identifying machine fields", {
   expect_identical(summary$detected_physical_cores, 3L)
   expect_false(any(c("username", "user", "hostname", "path", "home") %in%
                      names(summary)))
+})
+
+test_that("deterministic workload threshold governs benchmark admission without 5% budget gating", {
+  # 1. Below threshold: skipped
+  below <- .planner_should_benchmark(4999999, threshold = 5000000)
+  expect_false(below$backend_benchmark_required)
+  expect_identical(below$reason, "workload below threshold; skipping backend benchmarking")
+
+  # 2. At or above threshold: admitted
+  at_thresh <- .planner_should_benchmark(5000000, threshold = 5000000)
+  expect_true(at_thresh$backend_benchmark_required)
+  expect_identical(at_thresh$reason, "workload exceeds threshold; backend benchmarking required")
+
+  above_thresh <- .planner_should_benchmark(10000000, threshold = 5000000)
+  expect_true(above_thresh$backend_benchmark_required)
+
+  # 3. Validation on threshold input
+  expect_error(.planner_should_benchmark(-1), "non-negative")
+  expect_error(.planner_should_benchmark(100, threshold = -5), "non-negative")
+})
+
+test_that("controllers benchmark when threshold is met or tuning='always' even with unavailable serial runtime estimate", {
+  d <- data.frame(
+    y = rep(c(0L, 1L), each = 10L),
+    q1 = rnorm(20), q2 = rnorm(20), q3 = rnorm(20), q4 = rnorm(20), q5 = rnorm(20)
+  )
+
+  mock_est <- function(workload, pilot) list(
+    estimated_serial_runtime = NA_real_,
+    runtime_estimation_method = "unavailable",
+    by_size = data.frame(),
+    fallback_reason = "injected unavailable"
+  )
+
+  ctrl_res <- .planner_exhaustive_controller(
+    x_mat = as.matrix(d[, -1L]),
+    y = d$y,
+    items = names(d)[-1L],
+    min_items = 1L,
+    max_items = 2L,
+    cutoff_method = "youden",
+    engine = "Rcpp",
+    tuning = "always",
+    manual_parallel_mode = "chunks",
+    manual_n_workers = 2L,
+    chunk_size = 5L,
+    dependencies = list(
+      resource_detector = function() 2L,
+      auto_runtime_threshold = 5000000,
+      runtime_estimator = mock_est
+    ),
+    progress = FALSE
+  )
+
+  expect_true(ctrl_res$metadata$backend_benchmark_performed)
+  expect_true(is.na(ctrl_res$metadata$estimated_serial_runtime))
+  expect_false(is.null(ctrl_res$plan))
 })

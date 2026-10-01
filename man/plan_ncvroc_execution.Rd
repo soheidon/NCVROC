@@ -89,19 +89,18 @@ An S3 object of class `"ncvroc_execution_plan"` containing:
   \item{cheap_probe}{Initial serial timing and rough runtime estimate from deterministic probe.}
   \item{benchmark_table}{Data frame of all benchmarked resource configurations with speedup, efficiency, and estimated full runtime.}
   \item{scaling}{Summary of empirical scaling curves and saturation status.}
-  \item{selected_plan}{The selected near-best execution plan and resource allocation.}
+  \item{selected_plan}{The selected execution plan and resource allocation.}
   \item{decision_reason}{Rationale for the execution plan selection.}
   \item{environment}{Summary of host CPU cores, memory, and OS architecture.}
 }
 \description{
 Evaluates candidate workload, conducts a lightweight deterministic probe, and
-for flat exhaustive/CV workflows may benchmark legal resource configurations
-before selecting a measured near-best plan. The primary gate is an empirical
-180-second serial estimate, with benchmark overhead capped at 5 percent of
-that estimate. Suitable two-point pilot timings use an affine runtime model.
-Nested workflows use only candidate-bounded runtime probing in v0.19.0: their
-full resource sweep is deferred when a rank-bounded evaluator is unavailable,
-and the manual/default configuration is retained.
+for supported workflows compares legal resource configurations when benchmarking
+is triggered.
+Benchmarking is triggered by a deterministic workload threshold.
+When benchmarking is performed, supported legal execution plans are
+compared on a bounded representative workload and a plan is selected
+empirically from the observed benchmark results.
 }
 \examples{
 \donttest{

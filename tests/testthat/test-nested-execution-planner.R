@@ -51,6 +51,47 @@ testthat::test_that(".planner_generate_nested_legal_plans creates valid nested p
   testthat::expect_false("threads" %in% pR$parallel)
   testthat::expect_false("hybrid" %in% pR$parallel)
   testthat::expect_true(all(pR$parallel %in% c("none", "outer")))
+
+  # 4. Insufficient outer tasks (n_outer_tasks = 1L) prohibits outer and hybrid
+  p_single_outer <- .planner_generate_nested_legal_plans(
+    api = "nested_sum_roc",
+    available_resources = 8L,
+    n_outer_tasks = 1L,
+    inner_candidate_tasks = 50L,
+    engine = "Rcpp"
+  )
+  testthat::expect_false("outer" %in% p_single_outer$parallel)
+  testthat::expect_false("hybrid" %in% p_single_outer$parallel)
+  testthat::expect_true(all(p_single_outer$parallel %in% c("none", "threads", "chunks")))
+
+  # 5. Insufficient inner tasks (inner_candidate_tasks = 1L) prohibits threads and hybrid
+  p_single_inner <- .planner_generate_nested_legal_plans(
+    api = "nested_sum_roc",
+    available_resources = 8L,
+    n_outer_tasks = 5L,
+    inner_candidate_tasks = 1L,
+    engine = "Rcpp"
+  )
+  testthat::expect_false("threads" %in% p_single_inner$parallel)
+  testthat::expect_false("hybrid" %in% p_single_inner$parallel)
+  testthat::expect_true(all(p_single_inner$parallel %in% c("none", "outer")))
+
+  # 6. Global plan invariants
+  for (res in c(1L, 2L, 4L, 8L)) {
+    p_check <- .planner_generate_nested_legal_plans(
+      api = "nested_sum_roc",
+      available_resources = res,
+      n_outer_tasks = 4L,
+      inner_candidate_tasks = 20L,
+      engine = "Rcpp"
+    )
+    testthat::expect_true(all(p_check$n_workers >= 1L))
+    testthat::expect_true(all(p_check$outer_workers >= 1L))
+    testthat::expect_true(all(p_check$threads_per_worker >= 1L))
+    testthat::expect_true(all(p_check$resource_count >= 1L))
+    testthat::expect_true(all(p_check$resource_count <= res))
+    testthat::expect_identical(anyDuplicated(p_check$plan_id), 0L)
+  }
 })
 
 testthat::test_that("nested_sum_roc statistical exactness across tuning modes", {
@@ -69,7 +110,7 @@ testthat::test_that("nested_sum_roc statistical exactness across tuning modes", 
   res_off <- nested_sum_roc(
     data = d, outcome = "y", items = c("q1", "q2", "q3", "q4"),
     min_items = 1, max_items = 2, outer_k = 3, inner_k = 2,
-    seed = 100, engine = "R", tuning = "off",
+    seed = 100, engine = "R", tuning = "off", n_workers = 1,
     progress = FALSE, verbose = FALSE
   )
   rng_off <- .Random.seed
@@ -79,7 +120,7 @@ testthat::test_that("nested_sum_roc statistical exactness across tuning modes", 
   res_auto <- nested_sum_roc(
     data = d, outcome = "y", items = c("q1", "q2", "q3", "q4"),
     min_items = 1, max_items = 2, outer_k = 3, inner_k = 2,
-    seed = 100, engine = "R", tuning = "auto",
+    seed = 100, engine = "R", tuning = "auto", n_workers = 1,
     progress = FALSE, verbose = FALSE
   )
   rng_auto <- .Random.seed
@@ -89,7 +130,7 @@ testthat::test_that("nested_sum_roc statistical exactness across tuning modes", 
   res_always <- nested_sum_roc(
     data = d, outcome = "y", items = c("q1", "q2", "q3", "q4"),
     min_items = 1, max_items = 2, outer_k = 3, inner_k = 2,
-    seed = 100, engine = "R", tuning = "always",
+    seed = 100, engine = "R", tuning = "always", n_workers = 1,
     progress = FALSE, verbose = FALSE
   )
   rng_always <- .Random.seed
@@ -108,8 +149,8 @@ testthat::test_that("nested_sum_roc statistical exactness across tuning modes", 
   testthat::expect_equal(res_off$outer_predictions, res_always$outer_predictions)
 
   # RNG state preservation check
-  testthat::expect_equal(rng_off, rng_auto)
-  testthat::expect_equal(rng_off, rng_always)
+  testthat::expect_identical(rng_off, rng_auto)
+  testthat::expect_identical(rng_off, rng_always)
 
   # Metadata attachment contract
   testthat::expect_null(res_off$settings$execution_plan)
@@ -160,7 +201,7 @@ testthat::test_that("nested execution planning never runs an unbounded resource 
                   q1 = sample(0:2, 24, TRUE), q2 = sample(0:2, 24, TRUE),
                   q3 = sample(0:2, 24, TRUE), q4 = sample(0:2, 24, TRUE))
   res <- nested_sum_roc(d, "y", c("q1", "q2", "q3", "q4"), max_items = 2,
-                        outer_k = 2, inner_k = 2, engine = "Rcpp", tuning = "always",
+                        outer_k = 2, inner_k = 2, engine = "Rcpp", tuning = "auto",
                         seed = 11, progress = FALSE, verbose = FALSE)
   plan <- res$settings$execution_plan
   expect_false(plan$backend_benchmark_performed)

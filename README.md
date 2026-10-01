@@ -66,9 +66,8 @@ Assume higher sum scores indicate higher probability of a positive outcome. User
 - **Empirical Setup-Aware Affine Runtime Estimation**:
   - Models execution scaling via an affine formulation $T(n) = a + b \cdot n$, distinguishing fixed cluster startup/export overhead ($a$) from candidate-dependent throughput ($b$) so cluster initialization time is not multiplied linearly by massive candidate counts.
   - Invalid, negative, or unstable fits safely fall back to conservative linear estimates without claiming exact or guaranteed runtimes.
-- **Two-Gate Benchmark Trigger**:
-  - **180-Second Primary Gate**: In `tuning = "auto"` mode, full multi-configuration benchmarking is triggered only when estimated serial runtime meets or exceeds 180 seconds (3 minutes); smaller workloads proceed directly with default/manual execution.
-  - **5% Predicted Overhead Gate**: Caps benchmark sweep time at 5% of estimated production runtime; safely falls back to manual/default plans if the benchmark budget is insufficient.
+- **Deterministic Workload Benchmark Trigger**:
+  - In `tuning = "auto"` mode, multi-configuration benchmarking is triggered when the candidate workload meets or exceeds the deterministic threshold (default 5,000,000 candidate evaluations); smaller workloads proceed directly with default/manual execution.
 - **Bounded Exhaustive Resource Sweep (Flat & CV Workflows)**:
   - Exhaustively evaluates all legal integer worker allocations (threads, socket chunks) up to the system/user CPU cap for `exhaustive_sum_roc()` and `cross_size_cv()`, applying the formal 5% near-best resource-efficient selection rule.
 - **Explicit Nested Workflow Limitation**:
