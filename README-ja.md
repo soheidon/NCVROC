@@ -1,12 +1,18 @@
 [English README](README.md) | [日本語詳細リファレンス](docs/reference-ja.md)
 
-# NCVROC 0.23.0
+# NCVROC 0.23.1
 
 **N**ested **C**ross-**V**alidation for Combinatorial **ROC**-based Selection of Item-set Scores（項目セット得点の組み合わせROC選択のためのネスト交差検証）
 
 NCVROC は、項目の組み合わせ選択、Receiver Operating Characteristic (ROC) 曲線評価、通常およびネスト交差検証（Nested CV）、ならびにモデル選択に伴う楽観度（Selection Optimism）の評価を通じて、短い項目ベースのスクリーニング尺度を開発するための R パッケージです。心理・臨床質問紙データにおいて、単純な非重み付け合計得点を用いて二値アウトカムを最もよく予測する項目の小サブセットを厳密に特定します。
 
 合計得点が高いほど陽性アウトカムの確率が高いと仮定します。必要に応じて事前に項目を逆転処理してください。
+
+---
+
+## NCVROC 0.23.1 の主要新機能
+
+- **リポジトリ側ベンチマーク ETA ハーネス**: 長時間ベンチマークスケジュール向けの ETA 計測・推定ハーネスをリポジトリ内（`benchmarks/`）に追加。本開発者用ツールはビルド済み R パッケージには含まれず、NCVROC のランタイム API やパッケージ本体の進捗表示挙動には影響を与えません。
 
 ---
 

@@ -1,3 +1,10 @@
+# NCVROC 0.23.1 (2026-10-07)
+
+## Benchmarking tooling
+
+* Added a repository-side benchmark ETA harness (`benchmarks/benchmark_eta.R`, `benchmarks/benchmark_runner_v0231.R`) for long-running benchmark schedules. This developer/benchmark tooling is excluded from the built R package and does not change NCVROC runtime APIs or package-level progress behavior.
+* Phase 4B-E Stage 2 confirmation and automatic planner integration remain deferred and are not included in v0.23.1.
+
 # NCVROC 0.23.0 (2026-10-07)
 
 ## Parallel execution

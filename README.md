@@ -1,12 +1,18 @@
 [English](README.md) | [日本語 README](README-ja.md) | [日本語詳細リファレンス](docs/reference-ja.md)
 
-# NCVROC 0.23.0
+# NCVROC 0.23.1
 
 **N**ested **C**ross-**V**alidation for Combinatorial **ROC**-based Selection of Item-set Scores
 
 NCVROC develops short item-based screening scales through combinatorial item-set selection, Receiver Operating Characteristic (ROC) curve evaluation, ordinary and nested cross-validation, and selection optimism assessment. For psychological and clinical questionnaire data, NCVROC identifies which small subset of items best predicts a binary outcome using unweighted sum scores.
 
 Assume higher sum scores indicate higher probability of a positive outcome. Users must reverse-code items beforehand.
+
+---
+
+## What's new in NCVROC 0.23.1
+
+- **Repository benchmark ETA tooling**: Added a repository-side benchmark ETA harness for long-running benchmark schedules. This developer and benchmarking infrastructure resides in the repository and does not alter NCVROC runtime APIs, package functions, or package-level progress reporting.
 
 ---
 
