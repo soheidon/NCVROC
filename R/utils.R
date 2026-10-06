@@ -391,7 +391,7 @@ CACHE_FORMAT_VERSION <- 1L     # bump when cache storage format changes
 #' @param parallel Logical or character indicating parallel mode.
 #' @param context Character, "nested" (default), "exhaustive", or "ordinary_cv".
 #' @param allowed Character vector of allowed modes. Default NULL (auto-resolved per context).
-#' @return Character: "none", "outer", "chunks", "threads", or "hybrid".
+#' @return Character: "none", "outer", "chunks", "threads", "hybrid", or "native_tbb".
 #' @keywords internal
 .resolve_parallel_mode <- function(parallel,
                                    context = c("nested", "exhaustive", "ordinary_cv"),
@@ -399,7 +399,7 @@ CACHE_FORMAT_VERSION <- 1L     # bump when cache storage format changes
   context <- match.arg(context)
   if (is.null(allowed)) {
     allowed <- if (context == "nested") {
-      c("none", "outer", "chunks", "threads", "hybrid")
+      c("none", "outer", "chunks", "threads", "hybrid", "native_tbb")
     } else if (context == "ordinary_cv") {
       c("none", "threads", "chunks")
     } else {
@@ -420,13 +420,13 @@ CACHE_FORMAT_VERSION <- 1L     # bump when cache storage format changes
 
   if (is.character(parallel)) {
     if (length(parallel) != 1L || is.na(parallel)) {
-      stop("`parallel` must be TRUE or FALSE, or a string ('none', 'outer', 'chunks', 'threads', 'hybrid').", call. = FALSE)
+      stop("`parallel` must be TRUE or FALSE, or a string ('none', 'outer', 'chunks', 'threads', 'hybrid', 'native_tbb').", call. = FALSE)
     }
     if (identical(parallel, "auto")) {
-      stop("`parallel = 'auto'` is reserved for a future release. Use 'none', 'outer', 'chunks', 'threads', or 'hybrid'.", call. = FALSE)
+      stop("`parallel = 'auto'` is reserved for a future release. Use 'none', 'outer', 'chunks', 'threads', 'hybrid', or 'native_tbb'.", call. = FALSE)
     }
-    if (!parallel %in% c("none", "outer", "chunks", "threads", "hybrid")) {
-      stop("`parallel` must be TRUE or FALSE, or one of 'none', 'outer', 'chunks', 'threads', 'hybrid'.", call. = FALSE)
+    if (!parallel %in% c("none", "outer", "chunks", "threads", "hybrid", "native_tbb")) {
+      stop("`parallel` must be TRUE or FALSE, or one of 'none', 'outer', 'chunks', 'threads', 'hybrid', 'native_tbb'.", call. = FALSE)
     }
     if (!parallel %in% allowed) {
       stop(sprintf("parallel mode '%s' is not supported for context '%s'. Allowed: %s.",
@@ -435,7 +435,7 @@ CACHE_FORMAT_VERSION <- 1L     # bump when cache storage format changes
     return(parallel)
   }
 
-  stop("`parallel` must be TRUE or FALSE, or character ('none', 'outer', 'chunks', 'threads', 'hybrid').", call. = FALSE)
+  stop("`parallel` must be TRUE or FALSE, or character ('none', 'outer', 'chunks', 'threads', 'hybrid', 'native_tbb').", call. = FALSE)
 }
 
 #' Deterministically order and rank candidate models preserving serial tie-breaking

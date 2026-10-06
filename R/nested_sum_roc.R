@@ -373,6 +373,81 @@
   best_so_far
 }
 
+#' Evaluate inner CV, select best model, and test on outer fold given preselected candidates
+#'
+#' @noRd
+.evaluate_outer_fold_from_candidates <- function(top_candidates,
+                                                 i,
+                                                 outer_folds,
+                                                 full_data,
+                                                 y,
+                                                 n_total,
+                                                 selection_criterion,
+                                                 inner_k,
+                                                 inner_repeats,
+                                                 cutoff_method,
+                                                 seed,
+                                                 progress,
+                                                 verbose) {
+  test_idx  <- outer_folds[[i]]
+  train_idx <- setdiff(seq_len(n_total), test_idx)
+  fold_name <- names(outer_folds)[i]
+
+  # Step 3: inner CV for each candidate
+  inner_seed <- if (!is.null(seed)) seed + i else NULL
+  inner_results <- .evaluate_candidates_inner_cv(
+    candidates_df  = top_candidates,
+    data           = full_data[train_idx, , drop = FALSE],
+    y              = y[train_idx],
+    inner_k        = inner_k,
+    inner_repeats  = as.integer(inner_repeats),
+    cutoff_method  = cutoff_method,
+    seed_offset    = inner_seed,
+    progress       = progress && verbose
+  )
+
+  # Step 4: select best model by inner CV criterion
+  criterion_col <- paste0("mean_", selection_criterion)
+  best_idx <- which.max(inner_results[[criterion_col]])
+  # Tie-break: highest mean_youden, then fewest items
+  if (length(best_idx) > 1) {
+    tie_scores <- inner_results$mean_youden[best_idx] -
+      inner_results$n_items[best_idx] * 0.001
+    best_idx <- best_idx[which.max(tie_scores)]
+  }
+  best_row <- inner_results[best_idx, ]
+
+  # Step 5: apply best model to outer test
+  test_result <- .apply_model_to_test(
+    itemset       = best_row$items,
+    data_train    = full_data[train_idx, , drop = FALSE],
+    y_train       = y[train_idx],
+    data_test     = full_data[test_idx, , drop = FALSE],
+    y_test        = y[test_idx],
+    cutoff_method = cutoff_method
+  )
+
+  # Map predictions row_index back to original row numbers
+  test_result$predictions$row_index <- test_idx
+
+  list(
+    outer_fold         = fold_name,
+    selected_items     = best_row$items,
+    n_items            = best_row$n_items,
+    inner_mean_auc     = best_row$mean_auc,
+    inner_mean_youden  = best_row$mean_youden,
+    auc                = test_result$auc,
+    sensitivity        = test_result$sensitivity,
+    specificity        = test_result$specificity,
+    youden             = test_result$youden,
+    accuracy           = test_result$accuracy,
+    ppv                = test_result$ppv,
+    npv                = test_result$npv,
+    cutoff             = test_result$cutoff,
+    predictions        = test_result$predictions
+  )
+}
+
 #' Evaluate a single outer fold
 #'
 #' @noRd
@@ -473,58 +548,96 @@
     message("  Pre-selected ", nrow(top_candidates), " candidate(s) for inner CV")
   }
 
-  # Step 3: inner CV for each candidate
-  inner_seed <- if (!is.null(seed)) seed + i else NULL
-  inner_results <- .evaluate_candidates_inner_cv(
-    candidates_df  = top_candidates,
-    data           = full_data[train_idx, , drop = FALSE],
-    y              = y[train_idx],
-    inner_k        = inner_k,
-    inner_repeats  = as.integer(inner_repeats),
-    cutoff_method  = cutoff_method,
-    seed_offset    = inner_seed,
-    progress       = progress && verbose
+  .evaluate_outer_fold_from_candidates(
+    top_candidates      = top_candidates,
+    i                   = i,
+    outer_folds         = outer_folds,
+    full_data           = full_data,
+    y                   = y,
+    n_total             = n_total,
+    selection_criterion = selection_criterion,
+    inner_k             = inner_k,
+    inner_repeats       = inner_repeats,
+    cutoff_method       = cutoff_method,
+    seed                = seed,
+    progress            = progress,
+    verbose             = verbose
   )
+}
 
-  # Step 4: select best model by inner CV criterion
-  criterion_col <- paste0("mean_", selection_criterion)
-  best_idx <- which.max(inner_results[[criterion_col]])
-  # Tie-break: highest mean_youden, then fewest items
-  if (length(best_idx) > 1) {
-    tie_scores <- inner_results$mean_youden[best_idx] -
-      inner_results$n_items[best_idx] * 0.001
-    best_idx <- best_idx[which.max(tie_scores)]
+#' Maximum candidate space size supported by the Scope A native prototype
+#'
+#' The Scope A native candidate-search prototype executes an unchunked single-pass
+#' evaluation per worker thread. For candidate spaces larger than this bound or
+#' exceeding signed 32-bit integer limits, execution deterministically falls back
+#' to the existing streaming / reference path.
+#' @keywords internal
+.NATIVE_OUTER_PROTOTYPE_MAX_CANDIDATES <- 2000000L
+
+#' Check eligibility for native outer candidate search prototype
+#'
+#' Evaluates whether the candidate space is within the bounded single-pass capacity
+#' of the native C++ outer candidate search prototype.
+#'
+#' @param n_items Integer, number of predictors available.
+#' @param min_items Integer, minimum items per combination.
+#' @param max_items Integer, maximum items per combination.
+#' @param total_combos Numeric, total combination count.
+#' @return Logical TRUE if eligible for native outer candidate search prototype, FALSE otherwise.
+#' @keywords internal
+.is_native_outer_candidate_search_eligible <- function(n_items, min_items, max_items, total_combos = NULL) {
+  if (is.null(total_combos)) {
+    if (!is.numeric(n_items) || !is.numeric(min_items) || !is.numeric(max_items) ||
+        length(n_items) != 1L || length(min_items) != 1L || length(max_items) != 1L ||
+        is.na(n_items) || is.na(min_items) || is.na(max_items) ||
+        min_items < 1L || max_items < min_items || max_items > n_items) {
+      return(FALSE)
+    }
+    # Compute candidate count using double precision arithmetic with early termination
+    total <- 0.0
+    for (k in seq.int(as.integer(min_items), as.integer(max_items))) {
+      total <- total + choose(as.double(n_items), as.double(k))
+      if (total > .NATIVE_OUTER_PROTOTYPE_MAX_CANDIDATES || total > 2147483647) {
+        return(FALSE)
+      }
+    }
+    total_combos <- total
   }
-  best_row <- inner_results[best_idx, ]
 
-  # Step 5: apply best model to outer test
-  test_result <- .apply_model_to_test(
-    itemset       = best_row$items,
-    data_train    = full_data[train_idx, , drop = FALSE],
-    y_train       = y[train_idx],
-    data_test     = full_data[test_idx, , drop = FALSE],
-    y_test        = y[test_idx],
-    cutoff_method = cutoff_method
-  )
+  if (!is.numeric(total_combos) || length(total_combos) != 1L ||
+      is.na(total_combos) || !is.finite(total_combos) ||
+      total_combos <= 0 ||
+      total_combos > .NATIVE_OUTER_PROTOTYPE_MAX_CANDIDATES ||
+      total_combos > 2147483647) {
+    return(FALSE)
+  }
+  TRUE
+}
 
-  # Map predictions row_index back to original row numbers
-  test_result$predictions$row_index <- test_idx
-
-  list(
-    outer_fold         = fold_name,
-    selected_items     = best_row$items,
-    n_items            = best_row$n_items,
-    inner_mean_auc     = best_row$mean_auc,
-    inner_mean_youden  = best_row$mean_youden,
-    auc                = test_result$auc,
-    sensitivity        = test_result$sensitivity,
-    specificity        = test_result$specificity,
-    youden             = test_result$youden,
-    accuracy           = test_result$accuracy,
-    ppv                = test_result$ppv,
-    npv                = test_result$npv,
-    cutoff             = test_result$cutoff,
-    predictions        = test_result$predictions
+#' Internal dispatch wrapper for native outer candidate search C++ prototype
+#'
+#' @keywords internal
+.run_native_outer_candidate_search <- function(x_mat,
+                                               y_vec,
+                                               train_indices_0based,
+                                               min_items,
+                                               max_items,
+                                               cutoff_method,
+                                               rank_by,
+                                               top_n,
+                                               prefer_fewer_items = TRUE,
+                                               num_threads = 1L) {
+  evaluate_outer_candidate_search_native_cpp(
+    x                  = x_mat,
+    y                  = y_vec,
+    train_indices      = train_indices_0based,
+    min_items          = as.integer(min_items),
+    max_items          = as.integer(max_items),
+    cutoff_method      = cutoff_method,
+    rank_by            = rank_by,
+    top_n              = as.integer(top_n),
+    prefer_fewer_items = prefer_fewer_items,
+    num_threads        = as.integer(num_threads)
   )
 }
 
@@ -532,6 +645,7 @@
 #' @noRd
 .OUTER_WORKER_EXPORT_SYMBOLS <- c(
   ".evaluate_single_outer_fold",
+  ".evaluate_outer_fold_from_candidates",
   ".streaming_top_n_exhaustive",
   ".select_top_candidates",
   ".evaluate_candidates_inner_cv",
@@ -694,17 +808,20 @@
 #'   searches use C++ multi-threading within the main R process via RcppParallel.
 #'   If `"hybrid"`, outer folds use socket workers and each worker uses C++
 #'   multi-threading for its exhaustive candidate evaluation.
+#'   If `"native_tbb"`, outer candidate search is evaluated across folds using native
+#'   C++/TBB multi-threading.
 #'   Default `FALSE`.
 #' @param n_workers Integer, number of worker processes (for `"outer"` or `"chunks"`),
-#'   threads (for `"threads"`), or outer PSOCK workers (for `"hybrid"`), or
+#'   threads (for `"threads"` or `"native_tbb"`), or outer PSOCK workers (for `"hybrid"`), or
 #'   `NULL` (default) for automatic detection. In hybrid mode, the outer worker
 #'   count is resolved first; `threads_per_worker` is then capped to the remaining
-#'   CPU budget.
+#'   CPU budget. For `"native_tbb"`, `n_workers` specifies the requested native TBB thread count,
+#'   automatically capped by outer folds, available CPU cores, and `_R_CHECK_LIMIT_CORES_`.
 #'   Ignored when `parallel = FALSE` or `"none"`.
 #'   When `parallel = TRUE` and `n_workers = NULL`, worker count defaults to
 #'   \code{max(1L, parallel::detectCores(logical = FALSE) - 1L)}. The effective
 #'   worker count is automatically capped by available CPU cores and CRAN core limits
-#'   (\code{_R_CHECK_LIMIT_CORES_}). For `"outer"`, it is additionally capped by the
+#'   (\code{_R_CHECK_LIMIT_CORES_}). For `"outer"` and `"native_tbb"`, it is additionally capped by the
 #'   number of outer folds.
 #' @param threads_per_worker Positive integer, requested number of C++ threads
 #'   used inside each outer socket worker when `parallel = "hybrid"` (default 1).
@@ -713,6 +830,7 @@
 #'   remain 1.
 #' @param tuning Automatic execution-planning mode: `"off"` (default; manual
 #'   execution configuration is authoritative), `"auto"`, or `"always"`.
+#'   Must be `"off"` when `parallel = "native_tbb"`.
 #'   Nested runtime probing is candidate-bounded and preserves the complete fold
 #'   structure. v0.19.0 does not perform a nested resource sweep when the nested
 #'   evaluator cannot accept rank-bounded candidates; in that case it retains the
@@ -720,8 +838,14 @@
 #' @param progress Logical, report observable progress (default \code{TRUE}).
 #'   Sequential outer-fold work may show observed progress and approximate ETA.
 #'   PSOCK `"outer"`, `"chunks"`, and `"hybrid"` paths report only truthful start
-#'   and successful completion, with no percentage or ETA. `FALSE` is silent.
-#' @param verbose Logical, print progress messages? Default `TRUE`.
+#'   and successful completion, with no percentage or ETA. Native TBB never emits
+#'   candidate percentages or ETA. \code{FALSE} disables progress indicators and
+#'   progress-callback reporting. Complete console silence requires both
+#'   \code{progress = FALSE} and \code{verbose = FALSE}.
+#' @param verbose Logical, print verbose status and completion messages? Default \code{TRUE}.
+#'   \code{FALSE} suppresses verbose status messages (including native TBB start, fold,
+#'   and completion messages). Complete console silence requires both \code{progress = FALSE}
+#'   and \code{verbose = FALSE}.
 #' @param return Character, `"full"` (all details) or `"summary"` (summary
 #'   only). Only `"full"` is implemented in v0.1.
 #' @param output_dir Character, directory for CSV output. Deferred to v0.2;
@@ -839,7 +963,7 @@ nested_sum_roc <- function(data,
   parallel_mode <- .resolve_parallel_mode(
     parallel,
     context = "nested",
-    allowed = c("none", "outer", "chunks", "threads", "hybrid")
+    allowed = c("none", "outer", "chunks", "threads", "hybrid", "native_tbb")
   )
 
   if (!is.null(n_workers)) {
@@ -857,6 +981,12 @@ nested_sum_roc <- function(data,
   }
   if (parallel_mode == "hybrid" && engine != "Rcpp") {
     stop("`parallel = 'hybrid'` requires `engine = 'Rcpp'`.", call. = FALSE)
+  }
+  if (parallel_mode == "native_tbb" && engine != "Rcpp") {
+    stop("`parallel = 'native_tbb'` requires `engine = 'Rcpp'`.", call. = FALSE)
+  }
+  if (parallel_mode == "native_tbb" && tuning != "off") {
+    stop("`tuning` must be 'off' when `parallel = 'native_tbb'`.", call. = FALSE)
   }
 
   # ---- Validate inputs ----
@@ -925,7 +1055,7 @@ nested_sum_roc <- function(data,
     } else {
       NULL
     }
-    actual_workers <- if (parallel_mode == "outer") {
+    actual_workers <- if (parallel_mode %in% c("outer", "native_tbb")) {
       .resolve_n_workers(parallel = TRUE, n_workers = n_workers, n_folds = n_folds)
     } else if (parallel_mode == "hybrid") {
       hybrid_budget$n_workers
@@ -946,11 +1076,21 @@ nested_sum_roc <- function(data,
       settings$effective_threads_per_worker <- actual_threads_per_worker
       settings$effective_total_parallelism <- hybrid_budget$total_parallelism
       settings$effective_max_cores <- hybrid_budget$max_cores
+    } else if (parallel_mode == "native_tbb") {
+      settings$requested_threads <- if (is.null(n_workers)) NA_integer_ else n_workers
+      settings$effective_threads <- actual_workers
+      settings$effective_total_parallelism <- actual_workers
+      settings$effective_max_cores <- .get_max_workers()
     }
   }
 
   # ---- Determine if nested CV needs streaming ----
   total_ncv_combos <- .count_total_combos(length(items), min_items, max_items)
+  if (parallel_mode == "native_tbb") {
+    if (!.is_native_outer_candidate_search_eligible(length(items), min_items, max_items, total_ncv_combos)) {
+      stop("Candidate space exceeds safe bounds for `parallel = 'native_tbb'` (maximum 2,000,000 combinations).", call. = FALSE)
+    }
+  }
   use_streaming_ncv <- total_ncv_combos > AUTO_MEMORY_LIMIT
 
   if (verbose && use_streaming_ncv) {
@@ -970,14 +1110,87 @@ nested_sum_roc <- function(data,
                     " outer worker", if (actual_workers == 1L) "" else "s",
                     " x ", actual_threads_per_worker, " threads = ",
                     hybrid_budget$total_parallelism, " total)")
+    } else if (parallel_mode == "native_tbb") {
+      msg <- paste0(msg, " (parallel: native_tbb, ", actual_workers,
+                    " thread", if (actual_workers == 1L) "" else "s", ")")
     } else if (parallel_mode != "none" && actual_workers > 1L) {
       msg <- paste0(msg, " (parallel: ", parallel_mode, ", ", actual_workers, " workers)")
     }
     message(msg)
   }
 
-  # ---- Main loop over outer folds (Serial, Outer-Parallel, Chunks-Parallel, or Threads-Parallel) ----
-  if (parallel_mode %in% c("outer", "hybrid") && actual_workers > 1L) {
+  # ---- Main loop over outer folds (Native TBB, PSOCK Outer, PSOCK Chunks, Intra-Process Threads, or Serial) ----
+  if (parallel_mode == "native_tbb") {
+    x_mat <- as.matrix(full_data[, items, drop = FALSE])
+
+    # Prepare and validate 1-based training indices on main R thread
+    train_indices_1based <- lapply(outer_folds, function(test_idx) {
+      setdiff(seq_len(n_total), test_idx)
+    })
+
+    for (f_i in seq_along(train_indices_1based)) {
+      f_idx <- train_indices_1based[[f_i]]
+      if (length(f_idx) < 1L) {
+        stop(sprintf("Outer fold %d has no training samples.", f_i), call. = FALSE)
+      }
+      if (anyNA(f_idx) || any(!is.finite(f_idx)) || any(floor(f_idx) != f_idx) || any(f_idx < 1L) || any(f_idx > n_total)) {
+        stop(sprintf("Outer fold %d contains invalid 1-based training indices.", f_i), call. = FALSE)
+      }
+    }
+
+    # Convert strictly once on main thread to canonical 0-based integer vectors for C++
+    train_indices_0based <- lapply(train_indices_1based, function(idx) {
+      as.integer(idx - 1L)
+    })
+
+    if (verbose) {
+      message("Running ", n_folds, " outer folds via native TBB (", actual_workers,
+              " thread", if (actual_workers == 1L) "" else "s", ")...")
+    }
+
+    native_candidates_list <- .run_native_outer_candidate_search(
+      x_mat                = x_mat,
+      y_vec                = y,
+      train_indices_0based = train_indices_0based,
+      min_items            = as.integer(min_items),
+      max_items            = as.integer(max_items),
+      cutoff_method        = cutoff_method,
+      rank_by              = preselect_by,
+      top_n                = as.integer(preselect_top_n),
+      prefer_fewer_items   = TRUE,
+      num_threads          = actual_workers
+    )
+
+    per_fold <- vector("list", n_folds)
+    for (i in seq_len(n_folds)) {
+      cand_df <- native_candidates_list[[i]]
+      # Materialize candidate items from .global_combo_index on main R thread
+      cand_df <- .materialize_candidate_items(cand_df, items, min_items, max_items)
+      top_candidates <- cand_df
+      if (verbose) {
+        message("Outer fold ", i, "/", n_folds, " (", names(outer_folds)[i], "): ",
+                nrow(top_candidates), " candidate(s) evaluated via native C++")
+      }
+      per_fold[[i]] <- .evaluate_outer_fold_from_candidates(
+        top_candidates      = top_candidates,
+        i                   = i,
+        outer_folds         = outer_folds,
+        full_data           = full_data,
+        y                   = y,
+        n_total             = n_total,
+        selection_criterion = selection_criterion,
+        inner_k             = inner_k,
+        inner_repeats       = inner_repeats,
+        cutoff_method       = cutoff_method,
+        seed                = seed,
+        progress            = FALSE,
+        verbose             = verbose
+      )
+    }
+    if (verbose) {
+      message("All outer folds complete.")
+    }
+  } else if (parallel_mode %in% c("outer", "hybrid") && actual_workers > 1L) {
     cl <- parallel::makePSOCKcluster(actual_workers)
     on.exit(parallel::stopCluster(cl), add = TRUE)
 

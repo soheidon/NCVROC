@@ -210,3 +210,159 @@ test_that("HIGH-3: Mandatory batching runs correctly when progress = FALSE on la
 
   expect_identical(res_prog_f, res_prog_t)
 })
+
+test_that("ExhaustiveCandidateComparator: exact match against .order_and_rank_candidates under massive metric ties", {
+  set.seed(2026)
+  n <- 60
+  p <- 8
+  items <- sprintf("X%02d", 1:p)
+  mat <- matrix(sample(0:1, n * p, replace = TRUE), nrow = n, ncol = p)
+  mat[, 3] <- mat[, 1]
+  mat[, 5] <- mat[, 2]
+  mat[, 7] <- mat[, 1]
+  dat <- as.data.frame(mat)
+  names(dat) <- items
+  dat$y <- sample(c(0L, 1L), n, replace = TRUE)
+
+  metrics <- c("auc", "youden", "sensitivity", "specificity", "accuracy")
+  pfis <- c(TRUE, FALSE)
+  top_ns <- c(3L, 10L, 25L)
+
+  for (m in metrics) {
+    for (pfi in pfis) {
+      ref_full <- exhaustive_sum_roc(
+        data               = dat,
+        outcome            = "y",
+        items              = items,
+        min_items          = 1,
+        max_items          = 3,
+        cutoff_method      = "youden",
+        rank_by            = m,
+        prefer_fewer_items = pfi,
+        top_n              = NULL,
+        engine             = "R",
+        parallel           = "none",
+        progress           = FALSE
+      )
+
+      for (tn in top_ns) {
+        ref_topn <- utils::head(ref_full, tn)
+        rownames(ref_topn) <- NULL
+
+        topn_serial <- exhaustive_sum_roc(
+          data               = dat,
+          outcome            = "y",
+          items              = items,
+          min_items          = 1,
+          max_items          = 3,
+          cutoff_method      = "youden",
+          rank_by            = m,
+          prefer_fewer_items = pfi,
+          top_n              = tn,
+          engine             = "Rcpp",
+          parallel           = "none",
+          progress           = FALSE
+        )
+
+        topn_threads2 <- exhaustive_sum_roc(
+          data               = dat,
+          outcome            = "y",
+          items              = items,
+          min_items          = 1,
+          max_items          = 3,
+          cutoff_method      = "youden",
+          rank_by            = m,
+          prefer_fewer_items = pfi,
+          top_n              = tn,
+          engine             = "Rcpp",
+          parallel           = "threads",
+          n_workers          = 2,
+          progress           = FALSE
+        )
+
+        topn_threads4 <- exhaustive_sum_roc(
+          data               = dat,
+          outcome            = "y",
+          items              = items,
+          min_items          = 1,
+          max_items          = 3,
+          cutoff_method      = "youden",
+          rank_by            = m,
+          prefer_fewer_items = pfi,
+          top_n              = tn,
+          engine             = "Rcpp",
+          parallel           = "threads",
+          n_workers          = 4,
+          progress           = FALSE
+        )
+
+        expect_identical(topn_serial, ref_topn)
+        expect_identical(topn_threads2, ref_topn)
+        expect_identical(topn_threads4, ref_topn)
+      }
+    }
+  }
+})
+
+test_that("ExhaustiveCandidateComparator: global_rank matches R stable order() when all metrics are perfectly tied", {
+  n <- 30
+  p <- 6
+  items <- paste0("I", 1:p)
+  # All constant -> identical metric across all combinations
+  dat <- as.data.frame(matrix(1.0, nrow = n, ncol = p))
+  names(dat) <- items
+  dat$y <- rep(c(0L, 1L), each = n / 2)
+
+  for (pfi in c(TRUE, FALSE)) {
+    ref_all <- exhaustive_sum_roc(
+      data               = dat,
+      outcome            = "y",
+      items              = items,
+      min_items          = 1,
+      max_items          = 3,
+      cutoff_method      = "youden",
+      rank_by            = "auc",
+      prefer_fewer_items = pfi,
+      top_n              = NULL,
+      engine             = "R",
+      parallel           = "none",
+      progress           = FALSE
+    )
+    ref_top10 <- utils::head(ref_all, 10L)
+    rownames(ref_top10) <- NULL
+
+    res_cpp_serial <- exhaustive_sum_roc(
+      data               = dat,
+      outcome            = "y",
+      items              = items,
+      min_items          = 1,
+      max_items          = 3,
+      cutoff_method      = "youden",
+      rank_by            = "auc",
+      prefer_fewer_items = pfi,
+      top_n              = 10L,
+      engine             = "Rcpp",
+      parallel           = "none",
+      progress           = FALSE
+    )
+
+    res_cpp_th2 <- exhaustive_sum_roc(
+      data               = dat,
+      outcome            = "y",
+      items              = items,
+      min_items          = 1,
+      max_items          = 3,
+      cutoff_method      = "youden",
+      rank_by            = "auc",
+      prefer_fewer_items = pfi,
+      top_n              = 10L,
+      engine             = "Rcpp",
+      parallel           = "threads",
+      n_workers          = 2,
+      progress           = FALSE
+    )
+
+    expect_identical(res_cpp_serial, ref_top10)
+    expect_identical(res_cpp_th2, ref_top10)
+  }
+})

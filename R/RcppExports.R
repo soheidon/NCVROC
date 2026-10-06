@@ -13,6 +13,10 @@ evaluate_combos_cpp_chunk_parallel <- function(x, y, min_items, max_items, cutof
     .Call(`_NCVROC_evaluate_combos_cpp_chunk_parallel`, x, y, min_items, max_items, cutoff_method, chunk_start, chunk_size, num_threads, grain_size)
 }
 
+evaluate_outer_candidate_search_native_cpp <- function(x, y, train_indices, min_items, max_items, cutoff_method, rank_by, top_n, prefer_fewer_items = TRUE, num_threads = -1L) {
+    .Call(`_NCVROC_evaluate_outer_candidate_search_native_cpp`, x, y, train_indices, min_items, max_items, cutoff_method, rank_by, top_n, prefer_fewer_items, num_threads)
+}
+
 evaluate_combos_cpp_chunk_parallel_topn <- function(x, y, min_items, max_items, cutoff_method, rank_by, top_n, prefer_fewer_items, chunk_start, chunk_size, num_threads = -1L, grain_size = 1000L) {
     .Call(`_NCVROC_evaluate_combos_cpp_chunk_parallel_topn`, x, y, min_items, max_items, cutoff_method, rank_by, top_n, prefer_fewer_items, chunk_start, chunk_size, num_threads, grain_size)
 }
@@ -32,4 +36,3 @@ evaluate_candidate_stability_cv_cpp <- function(x, y, combo_indices, test_indice
 evaluate_candidate_stability_bootstrap_cpp <- function(x, y, combo_indices, train_indices, oob_indices, bootstrap_test, cutoff_method, apparent_auc, num_threads = 1L) {
     .Call(`_NCVROC_evaluate_candidate_stability_bootstrap_cpp`, x, y, combo_indices, train_indices, oob_indices, bootstrap_test, cutoff_method, apparent_auc, num_threads)
 }
-

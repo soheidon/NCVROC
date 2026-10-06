@@ -906,14 +906,487 @@ static inline double get_candidate_metric(const CandidateRecord& c, RankMetric r
   return c.auc;
 }
 
-struct CandidateComparator {
+struct NestedCandidateComparator {
   RankMetric rank_metric;
   bool prefer_fewer_items;
 
-  CandidateComparator(RankMetric rm, bool pfi) : rank_metric(rm), prefer_fewer_items(pfi) {}
+  NestedCandidateComparator(RankMetric rm, bool pfi) : rank_metric(rm), prefer_fewer_items(pfi) {}
 
   // Returns true if "a" is strictly BETTER than "b" in candidate ranking.
   // In std::priority_queue, this establishes a min-heap where the WORST candidate in the top-N set sits at top().
+  // Matching R's .select_top_candidates:
+  // 1. primary metric desc
+  // 2. youden desc
+  // 3. sensitivity desc
+  // 4. specificity desc
+  // 5. n_items asc (if prefer_fewer_items)
+  // 6. global_rank asc (colexicographical enumeration order / row index)
+  bool operator()(const CandidateRecord& a, const CandidateRecord& b) const {
+    // 1. Primary metric (descending: higher is better)
+    double ma = get_candidate_metric(a, rank_metric);
+    double mb = get_candidate_metric(b, rank_metric);
+
+    bool a_nan = std::isnan(ma);
+    bool b_nan = std::isnan(mb);
+    if (a_nan && !b_nan) return false; // b is better
+    if (!a_nan && b_nan) return true;  // a is better
+    if (!a_nan && !b_nan && ma != mb) {
+      return ma > mb; // higher primary metric is better
+    }
+
+    // 2. Youden index (descending: higher is better)
+    bool ya_nan = std::isnan(a.youden);
+    bool yb_nan = std::isnan(b.youden);
+    if (ya_nan && !yb_nan) return false;
+    if (!ya_nan && yb_nan) return true;
+    if (!ya_nan && !yb_nan && a.youden != b.youden) {
+      return a.youden > b.youden;
+    }
+
+    // 3. Sensitivity (descending: higher is better)
+    bool sa_nan = std::isnan(a.sensitivity);
+    bool sb_nan = std::isnan(b.sensitivity);
+    if (sa_nan && !sb_nan) return false;
+    if (!sa_nan && sb_nan) return true;
+    if (!sa_nan && !sb_nan && a.sensitivity != b.sensitivity) {
+      return a.sensitivity > b.sensitivity;
+    }
+
+    // 4. Specificity (descending: higher is better)
+    bool spa_nan = std::isnan(a.specificity);
+    bool spb_nan = std::isnan(b.specificity);
+    if (spa_nan && !spb_nan) return false;
+    if (!spa_nan && spb_nan) return true;
+    if (!spa_nan && !spb_nan && a.specificity != b.specificity) {
+      return a.specificity > b.specificity;
+    }
+
+    // 5. Number of items (ascending: fewer items is better)
+    if (prefer_fewer_items && a.n_items != b.n_items) {
+      return a.n_items < b.n_items; // fewer items is better
+    }
+
+    // 6. Global combination rank (ascending: smaller rank is better / earlier combination in enumeration)
+    return a.global_rank < b.global_rank;
+  }
+};
+
+// Pure C++ serial candidate evaluation kernel (zero R/Rcpp API calls)
+static inline void evaluate_combos_topn_kernel(
+    const double* x_ptr,
+    const int* y_ptr,
+    int n,
+    int n_cols,
+    int min_items,
+    int max_items,
+    CutoffMethod cutoff_method,
+    RankMetric rank_metric,
+    bool prefer_fewer_items,
+    int top_n,
+    std::vector<CandidateRecord>& out_top
+) {
+  int n_k = max_items - min_items + 1;
+  std::vector<double> level_sizes(n_k);
+  std::vector<double> level_starts(n_k);
+  double total = 0.0;
+  for (int ki = 0; ki < n_k; ki++) {
+    int k = min_items + ki;
+    level_sizes[ki] = binom(n_cols, k);
+    level_starts[ki] = total;
+    total += level_sizes[ki];
+  }
+
+  int total_pos = 0, total_neg = 0;
+  for (int i = 0; i < n; i++) {
+    if (y_ptr[i] == 1) total_pos++; else total_neg++;
+  }
+  int total_n = total_pos + total_neg;
+
+  NestedCandidateComparator comp(rank_metric, prefer_fewer_items);
+  std::priority_queue<CandidateRecord, std::vector<CandidateRecord>, NestedCandidateComparator> heap(comp);
+  ThreadLocalBuffer buf(n);
+
+  for (double global_rank = 0.0; global_rank < total; global_rank += 1.0) {
+    int n_items_val = 0;
+    double auc_val = 0.0, cutoff_val = 0.0, sens_val = 0.0, spec_val = 0.0;
+    double youden_val = 0.0, acc_val = 0.0, ppv_val = 0.0, npv_val = 0.0;
+
+    evaluate_single_candidate(
+      global_rank,
+      x_ptr,
+      y_ptr,
+      n,
+      n_cols,
+      min_items,
+      n_k,
+      level_starts,
+      total_pos,
+      total_neg,
+      total_n,
+      cutoff_method,
+      buf,
+      n_items_val,
+      auc_val,
+      cutoff_val,
+      sens_val,
+      spec_val,
+      youden_val,
+      acc_val,
+      ppv_val,
+      npv_val
+    );
+
+    CandidateRecord cand;
+    cand.global_rank = global_rank;
+    cand.n_items = n_items_val;
+    cand.auc = auc_val;
+    cand.cutoff = cutoff_val;
+    cand.sensitivity = sens_val;
+    cand.specificity = spec_val;
+    cand.youden = youden_val;
+    cand.accuracy = acc_val;
+    cand.ppv = ppv_val;
+    cand.npv = npv_val;
+    cand.n_positive = total_pos;
+    cand.n_negative = total_neg;
+
+    if ((int)heap.size() < top_n) {
+      heap.push(cand);
+    } else if (comp(cand, heap.top())) {
+      heap.pop();
+      heap.push(cand);
+    }
+  }
+
+  out_top.clear();
+  out_top.reserve(heap.size());
+  while (!heap.empty()) {
+    out_top.push_back(heap.top());
+    heap.pop();
+  }
+  std::reverse(out_top.begin(), out_top.end());
+}
+
+// ---------------------------------------------------------------------------
+// Outer Candidate Search Prototype (Scope A)
+// Pure C++ / TBB outer-fold parallel candidate search
+// ---------------------------------------------------------------------------
+
+struct OuterFoldCandidateTask {
+  int fold_idx;
+  int n_train;
+  std::vector<int> train_row_indices; // 0-based row indices into full matrix
+  std::vector<CandidateRecord> top_candidates;
+  int status_code;
+  std::string error_message;
+
+  OuterFoldCandidateTask() : fold_idx(0), n_train(0), status_code(0) {}
+};
+
+struct OuterCandidateSearchWorker : public RcppParallel::Worker {
+  const double* x_full;
+  const int* y_full;
+  int n_full;
+  int n_cols;
+  int min_items;
+  int max_items;
+  CutoffMethod cutoff_method;
+  RankMetric rank_metric;
+  bool prefer_fewer_items;
+  int top_n;
+  std::vector<OuterFoldCandidateTask>& tasks;
+
+  OuterCandidateSearchWorker(
+      const double* x_full_,
+      const int* y_full_,
+      int n_full_,
+      int n_cols_,
+      int min_items_,
+      int max_items_,
+      CutoffMethod cutoff_method_,
+      RankMetric rank_metric_,
+      bool prefer_fewer_items_,
+      int top_n_,
+      std::vector<OuterFoldCandidateTask>& tasks_
+  ) : x_full(x_full_), y_full(y_full_), n_full(n_full_), n_cols(n_cols_),
+      min_items(min_items_), max_items(max_items_), cutoff_method(cutoff_method_),
+      rank_metric(rank_metric_), prefer_fewer_items(prefer_fewer_items_),
+      top_n(top_n_), tasks(tasks_) {}
+
+  void operator()(std::size_t begin, std::size_t end) {
+    for (std::size_t fi = begin; fi < end; ++fi) {
+      OuterFoldCandidateTask& task = tasks[fi];
+      try {
+        int n_train = task.n_train;
+        std::vector<double> x_train(n_train * n_cols);
+        std::vector<int> y_train(n_train);
+
+        for (int r = 0; r < n_train; ++r) {
+          int row_orig = task.train_row_indices[r];
+          y_train[r] = y_full[row_orig];
+          for (int c = 0; c < n_cols; ++c) {
+            x_train[r + c * n_train] = x_full[row_orig + c * n_full];
+          }
+        }
+
+        evaluate_combos_topn_kernel(
+          x_train.data(),
+          y_train.data(),
+          n_train,
+          n_cols,
+          min_items,
+          max_items,
+          cutoff_method,
+          rank_metric,
+          prefer_fewer_items,
+          top_n,
+          task.top_candidates
+        );
+
+        task.status_code = 0;
+      } catch (const std::exception& e) {
+        task.status_code = 1;
+        task.error_message = e.what();
+      } catch (...) {
+        task.status_code = 2;
+        task.error_message = "Unknown exception in outer fold candidate search";
+      }
+    }
+  }
+};
+
+static const double NATIVE_OUTER_PROTOTYPE_MAX_CANDIDATES = 2000000.0;
+
+// [[Rcpp::export]]
+List evaluate_outer_candidate_search_native_cpp(
+    NumericMatrix x,
+    IntegerVector y,
+    List train_indices,
+    int min_items,
+    int max_items,
+    std::string cutoff_method,
+    std::string rank_by,
+    int top_n,
+    bool prefer_fewer_items = true,
+    int num_threads = -1
+) {
+  // Main-thread defensive validation
+  int n_full = x.nrow();
+  int n_cols = x.ncol();
+
+  if (n_full < 1 || n_cols < 1) {
+    stop("x must have at least 1 row and 1 column.");
+  }
+  if (y.length() != n_full) {
+    stop("Length of y (%d) must match nrow(x) (%d).", (int)y.length(), n_full);
+  }
+  for (int i = 0; i < n_full; ++i) {
+    if (IntegerVector::is_na(y[i])) {
+      stop("y contains NA values.");
+    }
+    if (y[i] != 0 && y[i] != 1) {
+      stop("y must contain binary values (0 or 1).");
+    }
+  }
+
+  if (IntegerVector::is_na(num_threads) || num_threads <= 0) {
+    stop("num_threads must be a valid positive integer.");
+  }
+
+  int n_folds = train_indices.size();
+  if (n_folds < 1) {
+    stop("train_indices must be a non-empty list of training fold indices.");
+  }
+
+  if (IntegerVector::is_na(top_n) || top_n < 1) {
+    stop("top_n must be a valid integer >= 1.");
+  }
+  if (IntegerVector::is_na(min_items) || min_items < 1) {
+    stop("min_items must be a valid integer >= 1.");
+  }
+  if (IntegerVector::is_na(max_items) || max_items < min_items) {
+    stop("max_items must be a valid integer >= min_items.");
+  }
+  if (max_items > n_cols) {
+    stop("max_items (%d) cannot exceed ncol(x) (%d).", max_items, n_cols);
+  }
+
+  CutoffMethod cm;
+  if (cutoff_method == "youden") cm = CUTOFF_YOUDEN;
+  else if (cutoff_method == "closest_topleft") cm = CUTOFF_CLOSEST_TOPLEFT;
+  else stop("Unknown cutoff_method: '%s'", cutoff_method.c_str());
+
+  RankMetric rm;
+  if (rank_by == "auc") rm = RANK_AUC;
+  else if (rank_by == "youden") rm = RANK_YOUDEN;
+  else if (rank_by == "sensitivity") rm = RANK_SENSITIVITY;
+  else if (rank_by == "specificity") rm = RANK_SPECIFICITY;
+  else if (rank_by == "accuracy") rm = RANK_ACCURACY;
+  else stop("Unknown rank_by metric: '%s'", rank_by.c_str());
+
+  // Defense-in-depth: check candidate space bounds (consistent with R-side 2,000,000 ceiling)
+  int n_k = max_items - min_items + 1;
+  double total_combos = 0.0;
+  for (int ki = 0; ki < n_k; ki++) {
+    total_combos += binom(n_cols, min_items + ki);
+  }
+  if (!std::isfinite(total_combos) || total_combos <= 0.0 || total_combos > NATIVE_OUTER_PROTOTYPE_MAX_CANDIDATES) {
+    stop("Candidate space (%.0f) exceeds safe native prototype single-pass bounds (max 2,000,000).", total_combos);
+  }
+
+  // Validate 0-based train indices on main thread
+  std::vector<OuterFoldCandidateTask> tasks(n_folds);
+  for (int f = 0; f < n_folds; ++f) {
+    SEXP fold_sexp = train_indices[f];
+    int sexp_type = TYPEOF(fold_sexp);
+    if (sexp_type != INTSXP && sexp_type != REALSXP) {
+      stop("train_indices fold %d must be an integer or numeric vector.", f + 1);
+    }
+
+    if (sexp_type == REALSXP) {
+      NumericVector r_indices(fold_sexp);
+      int n_tr = r_indices.size();
+      if (n_tr < 1) {
+        stop("train_indices contains an empty fold at index %d.", f + 1);
+      }
+
+      tasks[f].fold_idx = f;
+      tasks[f].n_train = n_tr;
+      tasks[f].train_row_indices.resize(n_tr);
+      tasks[f].status_code = -1;
+
+      for (int i = 0; i < n_tr; ++i) {
+        double val = r_indices[i];
+        if (!R_finite(val) || NumericVector::is_na(val)) {
+          stop("train_indices contains NA/non-finite value at fold %d, element %d.", f + 1, i + 1);
+        }
+        if (std::floor(val) != val) {
+          stop("train_indices contains fractional non-integer value %.4f at fold %d, element %d.", val, f + 1, i + 1);
+        }
+        if (val < 0.0 || val >= (double)n_full) {
+          stop("train_indices contains invalid row index %.0f (must be 0 <= idx < %d) at fold %d.",
+               val, n_full, f + 1);
+        }
+        tasks[f].train_row_indices[i] = (int)val;
+      }
+    } else {
+      IntegerVector r_indices(fold_sexp);
+      int n_tr = r_indices.size();
+      if (n_tr < 1) {
+        stop("train_indices contains an empty fold at index %d.", f + 1);
+      }
+
+      tasks[f].fold_idx = f;
+      tasks[f].n_train = n_tr;
+      tasks[f].train_row_indices.resize(n_tr);
+      tasks[f].status_code = -1;
+
+      for (int i = 0; i < n_tr; ++i) {
+        if (IntegerVector::is_na(r_indices[i])) {
+          stop("train_indices contains NA at fold %d, element %d.", f + 1, i + 1);
+        }
+        int row_idx = r_indices[i];
+        if (row_idx < 0 || row_idx >= n_full) {
+          stop("train_indices contains invalid row index %d (must be 0 <= idx < %d) at fold %d.",
+               row_idx, n_full, f + 1);
+        }
+        tasks[f].train_row_indices[i] = row_idx;
+      }
+    }
+  }
+
+  const double* x_full = &x[0];
+  const int* y_full = &y[0];
+
+  OuterCandidateSearchWorker worker(
+    x_full,
+    y_full,
+    n_full,
+    n_cols,
+    min_items,
+    max_items,
+    cm,
+    rm,
+    prefer_fewer_items,
+    top_n,
+    tasks
+  );
+
+  if (num_threads == 1) {
+    worker(0, n_folds);
+  } else {
+    RcppParallel::parallelFor(0, (std::size_t)n_folds, worker, 1, num_threads);
+  }
+
+  for (int f = 0; f < n_folds; ++f) {
+    if (tasks[f].status_code != 0) {
+      stop("Native outer candidate search failed in fold %d: %s", f + 1, tasks[f].error_message.c_str());
+    }
+  }
+
+  List out_list(n_folds);
+  for (int f = 0; f < n_folds; ++f) {
+    const auto& top_list = tasks[f].top_candidates;
+    int res_n = top_list.size();
+
+    IntegerVector out_n_items(res_n);
+    NumericVector out_auc(res_n);
+    NumericVector out_cutoff(res_n);
+    NumericVector out_sensitivity(res_n);
+    NumericVector out_specificity(res_n);
+    NumericVector out_youden(res_n);
+    NumericVector out_accuracy(res_n);
+    NumericVector out_ppv(res_n);
+    NumericVector out_npv(res_n);
+    IntegerVector out_n_positive(res_n);
+    IntegerVector out_n_negative(res_n);
+    NumericVector out_g_idx(res_n);
+
+    for (int i = 0; i < res_n; i++) {
+      const CandidateRecord& c = top_list[i];
+      out_n_items[i]     = c.n_items;
+      out_auc[i]         = c.auc;
+      out_cutoff[i]      = c.cutoff;
+      out_sensitivity[i] = c.sensitivity;
+      out_specificity[i] = c.specificity;
+      out_youden[i]      = c.youden;
+      out_accuracy[i]    = c.accuracy;
+      out_ppv[i]         = c.ppv;
+      out_npv[i]         = c.npv;
+      out_n_positive[i]  = c.n_positive;
+      out_n_negative[i]  = c.n_negative;
+      out_g_idx[i]       = c.global_rank + 1.0;
+    }
+
+    out_list[f] = DataFrame::create(
+      _["n_items"]             = out_n_items,
+      _["auc"]                 = out_auc,
+      _["cutoff"]              = out_cutoff,
+      _["sensitivity"]         = out_sensitivity,
+      _["specificity"]         = out_specificity,
+      _["youden"]              = out_youden,
+      _["accuracy"]            = out_accuracy,
+      _["ppv"]                 = out_ppv,
+      _["npv"]                 = out_npv,
+      _["n_positive"]          = out_n_positive,
+      _["n_negative"]          = out_n_negative,
+      _[".global_combo_index"] = out_g_idx
+    );
+  }
+
+  return out_list;
+}
+
+struct ExhaustiveCandidateComparator {
+  RankMetric rank_metric;
+  bool prefer_fewer_items;
+
+  ExhaustiveCandidateComparator(RankMetric rm, bool pfi) : rank_metric(rm), prefer_fewer_items(pfi) {}
+
+  // Matching R's .order_and_rank_candidates:
+  // 1. primary metric desc
+  // 2. n_items asc (if prefer_fewer_items)
+  // 3. global_rank asc
   bool operator()(const CandidateRecord& a, const CandidateRecord& b) const {
     double ma = get_candidate_metric(a, rank_metric);
     double mb = get_candidate_metric(b, rank_metric);
@@ -949,10 +1422,10 @@ struct TopNEvaluatorWorker : public RcppParallel::Worker {
   double chunk_start;
   const double* explicit_ranks;
   int top_n;
-  CandidateComparator comp;
+  ExhaustiveCandidateComparator comp;
 
   // Thread-local min-heap
-  std::priority_queue<CandidateRecord, std::vector<CandidateRecord>, CandidateComparator> heap;
+  std::priority_queue<CandidateRecord, std::vector<CandidateRecord>, ExhaustiveCandidateComparator> heap;
 
   // Primary constructor
   TopNEvaluatorWorker(

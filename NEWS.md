@@ -1,3 +1,16 @@
+# NCVROC 0.23.0 (2026-10-07)
+
+## Parallel execution
+
+* Added explicit `parallel = "native_tbb"` opt-in to `nested_sum_roc()` for native C++/TBB outer candidate search. This backend is not integrated into or selected by the automatic execution planner.
+* Native TBB requires `engine = "Rcpp"`, `tuning = "off"`, and `threads_per_worker = 1`; `n_workers` requests the thread count, which is capped by the CPU budget, outer-fold count, and `_R_CHECK_LIMIT_CORES_`. The supported candidate-space limit is 2,000,000 combinations.
+* Preserved candidate ranking, tie-breaking, statistical results, and caller RNG state across supported thread counts. Native TBB reports no candidate percentage or ETA and reports successful completion only after the native work returns successfully. `progress = FALSE` disables progress indicators and callbacks; complete silence requires both `progress = FALSE` and `verbose = FALSE`.
+* Phase 4B-E Stage 2 confirmation and automatic planner integration are deferred and are not included in v0.23.0.
+
+# NCVROC 0.23.0 Development Notes (superseded by the release notes above)
+
+The development notes below are retained as historical context for the v0.23.0 work.
+
 # NCVROC 0.22.0
 
 ## Execution planning and tuning progress

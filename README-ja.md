@@ -1,12 +1,22 @@
 [English README](README.md) | [日本語詳細リファレンス](docs/reference-ja.md)
 
-# NCVROC 0.21.0
+# NCVROC 0.23.0
 
 **N**ested **C**ross-**V**alidation for Combinatorial **ROC**-based Selection of Item-set Scores（項目セット得点の組み合わせROC選択のためのネスト交差検証）
 
 NCVROC は、項目の組み合わせ選択、Receiver Operating Characteristic (ROC) 曲線評価、通常およびネスト交差検証（Nested CV）、ならびにモデル選択に伴う楽観度（Selection Optimism）の評価を通じて、短い項目ベースのスクリーニング尺度を開発するための R パッケージです。心理・臨床質問紙データにおいて、単純な非重み付け合計得点を用いて二値アウトカムを最もよく予測する項目の小サブセットを厳密に特定します。
 
 合計得点が高いほど陽性アウトカムの確率が高いと仮定します。必要に応じて事前に項目を逆転処理してください。
+
+---
+
+## NCVROC 0.23.0 の主要新機能
+
+- **ネスト探索向け Native TBB オプション**: `nested_sum_roc()` で `parallel = "native_tbb"` を指定し、外側候補探索を native C++/TBB スレッドで実行できます。これはユーザーによる明示的な opt-in であり、自動実行プランナーはこの backend を選択しません。
+- **安全要件**: Native TBB では `engine = "Rcpp"`、`tuning = "off"`、`threads_per_worker = 1` が必要です。要求スレッド数は `n_workers` で指定し、利用可能な CPU 予算、外側 fold 数、`_R_CHECK_LIMIT_CORES_` に応じて上限が適用されます。現在のプロトタイプでは候補空間は最大 2,000,000 組です。
+- **結果と RNG の不変性**: 対応するスレッド数の間で候補順位、同点処理、統計結果、および呼び出し元の RNG 状態を維持します。Native TBB は候補数のパーセントや ETA を表示せず、処理が正常終了した場合にのみ完了を通知します。
+
+自動実行プランナーは変更されておらず、`native_tbb` を選択しません。
 
 ---
 
@@ -43,7 +53,7 @@ NCVROC は、項目の組み合わせ選択、Receiver Operating Characteristic 
   - **厳密な完了候補数表示**: コンパイル済み C++ パスにおいて、バッチ境界で厳密な完了候補数（例: `25,000 / 100,000 complete (25.0%)`）を正確に報告。
   - **実測ベース ETA**: 完了したバッチの実測値のみから近似残り時間を安定更新。
   - **PSOCK 境界の誠実な通知**: 内部状況が不透明な PSOCK ソケット処理では開始・完了メッセージのみを出力し（`progress_unit = "none"`, `progress_mode = "start_completion"`）、未検証のパーセントや架空のハートビートを表示しません。
-  - **完全沈黙契約**: `progress = FALSE` ではコンソール出力を完全停止。
+  - **完全沈黙契約**: `progress = FALSE` は進捗表示およびコールバック通知を無効化し、`verbose = FALSE` は詳細メッセージを抑制します（完全なコンソール沈黙には `progress = FALSE` と `verbose = FALSE` の両方が必要です）。
 - **統一実行メタデータ**:
   - 結果オブジェクトの `execution_plan` メタデータに `$progress_mode`, `$progress_unit`, `$benchmark_table`, `$saturation_summary` を格納。
 
@@ -149,7 +159,7 @@ fit <- cross_size_cv(data = d, outcome = y, items = Q1:Q10, model_sizes = 1:4, t
 
 ## 並列計算
 
-NCVROC は 4 種類の並列実行モードをサポートします。`parallel`（手動実行モード）と `tuning`（自動計画）は独立したパラメータです：
+NCVROC は 4 種類の一般的な並列実行モードと、ネスト探索専用の Native TBB オプションを提供します。`parallel`（手動実行モード）と `tuning`（自動計画）は独立したパラメータです。`parallel = "native_tbb"` は `nested_sum_roc()` 専用の明示的 opt-in であり、自動プランナーでは選択されません：
 
 | モード | `parallel` | 特徴 | 推奨用途 |
 |---|---|---|---|
@@ -157,6 +167,15 @@ NCVROC は 4 種類の並列実行モードをサポートします。`parallel`
 | **外側フォールド並列** | `"outer"`（または `TRUE`） | PSOCK ワーカプロセスを用いて外側交差検証フォールドを並列化。 | 標準的なネスト交差検証（`nested_sum_roc()`, `cross_size_nested_cv()`, `ncvroc()`）。 |
 | **ハイブリッド並列** | `"hybrid"` | PSOCK ワーカで外側フォールドを、C++ スレッドでフォールド内探索を多重並列化。 | 多数コア環境での大規模ネスト交差検証。 |
 | **チャンク並列** | `"chunks"`（または `TRUE`） | PSOCK ワーカプロセスにチャンク単位で処理を分散。 | ディスク保存を併用する超大規模探索。 |
+| **Native TBB 外側探索** | `"native_tbb"` | `nested_sum_roc()` の外側候補探索を native C++/TBB スレッドで実行。`engine = "Rcpp"`、`tuning = "off"`、候補数 2,000,000 以下が必要です。`n_workers` で要求スレッド数を指定し、安全な上限が適用されます。 | 対応するネスト探索での手動 opt-in。 |
+
+```r
+# nested_sum_roc() で Native TBB を明示的に opt-in（自動プランナーでは使用されません）
+res <- nested_sum_roc(data = d, outcome = y, items = Q1:Q10,
+                      min_items = 1, max_items = 3, outer_k = 5, inner_k = 4,
+                      engine = "Rcpp", parallel = "native_tbb", n_workers = 4,
+                      tuning = "off")
+```
 
 ---
 
@@ -167,7 +186,7 @@ NCVROC は 4 種類の並列実行モードをサポートします。`parallel`
 - **厳密な完了件数表示**: コンパイル済みループでは、バッチ境界ごとに厳密な完了候補数（例: `Evaluating 25,000 / 100,000 combinations (25.0%)`）を表示。
 - **実測ベース ETA**: 完了バッチの実測速度のみから安定した推定残り時間を算出。
 - **PSOCK 境界での誠実な通知**: ソケット通信中は開始・完了メッセージのみを出力し、不正確なパーセント表示を回避。
-- **沈黙契約**: `progress = FALSE` ではコンソール出力を完全に停止。
+- **沈黙契約**: `progress = FALSE` は進捗表示およびコールバック通知を無効化し、`verbose = FALSE` は詳細メッセージを抑制します（完全なコンソール沈黙には `progress = FALSE` と `verbose = FALSE` の両方が必要です）。
 
 ---
 

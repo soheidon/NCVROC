@@ -84,18 +84,21 @@ workers. If `"threads"`, outer folds are evaluated serially while inner exhausti
 searches use C++ multi-threading within the main R process via RcppParallel.
 If `"hybrid"`, outer folds use socket workers and each worker uses C++
 multi-threading for its exhaustive candidate evaluation.
+If `"native_tbb"`, outer candidate search is evaluated across folds using native
+C++/TBB multi-threading.
 Default `FALSE`.}
 
 \item{n_workers}{Integer, number of worker processes (for `"outer"` or `"chunks"`),
-threads (for `"threads"`), or outer PSOCK workers (for `"hybrid"`), or
+threads (for `"threads"` or `"native_tbb"`), or outer PSOCK workers (for `"hybrid"`), or
 `NULL` (default) for automatic detection. In hybrid mode, the outer worker
 count is resolved first; `threads_per_worker` is then capped to the remaining
-CPU budget.
+CPU budget. For `"native_tbb"`, `n_workers` specifies the requested native TBB thread count,
+automatically capped by outer folds, available CPU cores, and `_R_CHECK_LIMIT_CORES_`.
 Ignored when `parallel = FALSE` or `"none"`.
 When `parallel = TRUE` and `n_workers = NULL`, worker count defaults to
 \code{max(1L, parallel::detectCores(logical = FALSE) - 1L)}. The effective
 worker count is automatically capped by available CPU cores and CRAN core limits
-(\code{_R_CHECK_LIMIT_CORES_}). For `"outer"`, it is additionally capped by the
+(\code{_R_CHECK_LIMIT_CORES_}). For `"outer"` and `"native_tbb"`, it is additionally capped by the
 number of outer folds.}
 
 \item{threads_per_worker}{Positive integer, requested number of C++ threads
@@ -106,6 +109,7 @@ remain 1.}
 
 \item{tuning}{Automatic execution-planning mode: `"off"` (default; manual
 execution configuration is authoritative), `"auto"`, or `"always"`.
+Must be `"off"` when `parallel = "native_tbb"`.
 Nested runtime probing is candidate-bounded and preserves the complete fold
 structure. v0.19.0 does not perform a nested resource sweep when the nested
 evaluator cannot accept rank-bounded candidates; in that case it retains the
@@ -114,9 +118,15 @@ manual/default configuration and records the fallback in `execution_plan`.}
 \item{progress}{Logical, report observable progress (default \code{TRUE}).
 Sequential outer-fold work may show observed progress and approximate ETA.
 PSOCK `"outer"`, `"chunks"`, and `"hybrid"` paths report only truthful start
-and successful completion, with no percentage or ETA. `FALSE` is silent.}
+and successful completion, with no percentage or ETA. Native TBB never emits
+candidate percentages or ETA. \code{FALSE} disables progress indicators and
+progress-callback reporting. Complete console silence requires both
+\code{progress = FALSE} and \code{verbose = FALSE}.}
 
-\item{verbose}{Logical, print progress messages? Default `TRUE`.}
+\item{verbose}{Logical, print verbose status and completion messages? Default \code{TRUE}.
+\code{FALSE} suppresses verbose status messages (including native TBB start, fold,
+and completion messages). Complete console silence requires both \code{progress = FALSE}
+and \code{verbose = FALSE}.}
 
 \item{return}{Character, `"full"` (all details) or `"summary"` (summary
 only). Only `"full"` is implemented in v0.1.}

@@ -1,12 +1,22 @@
 [English](README.md) | [日本語 README](README-ja.md) | [日本語詳細リファレンス](docs/reference-ja.md)
 
-# NCVROC 0.21.0
+# NCVROC 0.23.0
 
 **N**ested **C**ross-**V**alidation for Combinatorial **ROC**-based Selection of Item-set Scores
 
 NCVROC develops short item-based screening scales through combinatorial item-set selection, Receiver Operating Characteristic (ROC) curve evaluation, ordinary and nested cross-validation, and selection optimism assessment. For psychological and clinical questionnaire data, NCVROC identifies which small subset of items best predicts a binary outcome using unweighted sum scores.
 
 Assume higher sum scores indicate higher probability of a positive outcome. Users must reverse-code items beforehand.
+
+---
+
+## What's new in NCVROC 0.23.0
+
+- **Explicit native TBB option for nested search**: `nested_sum_roc()` now accepts `parallel = "native_tbb"` to run outer candidate search with native C++/TBB threads. This is a manual opt-in; the automatic execution planner does not select this backend.
+- **Safety requirements**: Native TBB requires `engine = "Rcpp"`, `tuning = "off"`, and `threads_per_worker = 1`. The requested thread count is supplied through `n_workers` and capped by the available CPU budget, outer-fold count, and `_R_CHECK_LIMIT_CORES_`. The prototype currently limits the candidate space to 2,000,000 combinations.
+- **Preserved results and RNG**: Candidate ranking, tie-breaking, statistical results, and caller RNG state are preserved across supported thread counts. Native TBB reports no candidate percentage or ETA; successful completion is reported only after the work returns successfully.
+
+The automatic execution planner is unchanged and will not select `native_tbb`.
 
 ---
 
@@ -77,7 +87,7 @@ Assume higher sum scores indicate higher probability of a positive outcome. User
   - **Exact Completed Counts**: Reports exact completed-candidate counts at observable C++ batch boundaries for compiled evaluation loops.
   - **Observed-Only ETA**: Displays stable approximate remaining-time updates derived strictly from completed work batches.
   - **Truthful PSOCK Observability**: Opaque PSOCK socket backends report concise start and completion messages (`progress_unit = "none"`, `progress_mode = "start_completion"`) without advertising unverified progress percentages, ETAs, or fake heartbeats.
-  - **Silence Contract**: `progress = FALSE` guarantees complete console silence and zero timing overhead.
+  - **Silence Contract**: `progress = FALSE` disables progress indicators and callback reporting (verbose status messages may still appear when `verbose = TRUE`; complete console silence requires both `progress = FALSE` and `verbose = FALSE`).
 - **Canonical Execution Metadata**:
   - Canonical `execution_plan` metadata includes `$progress_mode`, `$progress_unit`, `$benchmark_table`, and `$saturation_summary`.
 
@@ -97,7 +107,7 @@ Assume higher sum scores indicate higher probability of a positive outcome. User
 - **Canonical Execution Metadata**:
   - Attached to result objects (`$settings$execution_plan` or `attr(..., "execution_plan")`) with dedicated S3 formatters (`format()`, `print()`) detailing benchmark timings, candidate allocations, and decision rationale.
 - **Observation-Only Progress Reporting with Approximate ETA**:
-  - Displays lightweight progress bars and approximate remaining time estimates on observable loops without altering candidate ordering, statistics, or RNG determinism (`.Random.seed`). `progress = FALSE` guarantees complete silence.
+  - Displays lightweight progress bars and approximate remaining time estimates on observable loops without altering candidate ordering, statistics, or RNG determinism (`.Random.seed`). `progress = FALSE` disables progress indicators and callback reporting (complete console silence requires both `progress = FALSE` and `verbose = FALSE`).
 - **Strict Non-Statistical Invariance**:
   - Execution planning changes execution strategy only and never alters candidate spaces, fold/repeat partitions, classification cutoffs, candidate rankings, clinical constraints (`sens_min`, `spec_min`), out-of-fold predictions, final selected models, or final refits.
 
@@ -191,7 +201,7 @@ When benchmarking is performed, NCVROC evaluates legal execution configurations 
 
 ## Parallel Execution
 
-NCVROC supports four distinct parallel execution modes. `parallel` (manual execution mode) and `tuning` (automatic planning) are separate parameters:
+NCVROC supports four general parallel execution modes and a nested-only native TBB option. `parallel` (manual execution mode) and `tuning` (automatic planning) are separate parameters. `parallel = "native_tbb"` is an explicit opt-in for `nested_sum_roc()` only and is not selected by the automatic planner:
 
 | Mode | `parallel` | Description | Best For |
 |---|---|---|---|
@@ -199,6 +209,7 @@ NCVROC supports four distinct parallel execution modes. `parallel` (manual execu
 | **Outer Fold Parallel** | `"outer"` (or `TRUE` in nested CV) | Parallel outer cross-validation folds using PSOCK worker processes. | Standard nested CV workflows across multiple folds (`nested_sum_roc()`, `cross_size_nested_cv()`, `ncvroc()`). |
 | **Hybrid Nested CV** | `"hybrid"` | Evaluates outer folds with PSOCK workers and each fold's inner search with C++ threads. | High-core systems with large nested CV candidate spaces. |
 | **Chunk Process Parallel** | `"chunks"` (or `TRUE` in exhaustive search) | Evaluates combination chunks across persistent PSOCK socket worker processes. | Massive searches using disk-backed chunked storage and process isolation. |
+| **Native TBB Outer Search** | `"native_tbb"` | Runs `nested_sum_roc()` outer candidate search using native C++/TBB threads. Requires `engine = "Rcpp"`, `tuning = "off"`, and at most 2,000,000 candidates; `n_workers` requests the thread count and is safely capped. | Manual opt-in for supported nested searches. |
 
 ```r
 # Manual C++ multi-threading with 4 threads:
@@ -209,6 +220,12 @@ res <- cross_size_nested_cv(data = d, outcome = y, items = Q1:Q10, model_sizes =
 
 # Manual hybrid outer processes x inner C++ threads:
 res <- cross_size_nested_cv(data = d, outcome = y, items = Q1:Q10, model_sizes = 1:3, parallel = "hybrid", n_workers = 2, threads_per_worker = 2)
+
+# Explicit native TBB opt-in for nested_sum_roc() (not used by automatic planning):
+res <- nested_sum_roc(data = d, outcome = y, items = Q1:Q10,
+                      min_items = 1, max_items = 3, outer_k = 5, inner_k = 4,
+                      engine = "Rcpp", parallel = "native_tbb", n_workers = 4,
+                      tuning = "off")
 ```
 
 ---
@@ -220,7 +237,7 @@ NCVROC includes observation-only progress reporting controlled by `progress`:
 - **Exact Completed Counts**: On compiled serial and multithreaded loops, progress reports exact completed candidate counts at batch boundaries (e.g. `Evaluating 25,000 / 100,000 combinations (25.0%)`).
 - **Observed elapsed time**: Progress reports elapsed time from completed work; estimated time remaining is not displayed.
 - **Truthful PSOCK Boundaries**: PSOCK worker processes emit concise start and completion notifications (`progress_unit = "none"`) without generating unverified progress percentages.
-- **Silence Contract**: `progress = FALSE` guarantees complete console silence and minimal execution overhead.
+- **Silence Contract**: `progress = FALSE` disables progress indicators and progress-callback reporting, while `verbose = FALSE` suppresses verbose status messages (complete console silence is guaranteed only when both `progress = FALSE` and `verbose = FALSE`).
 
 ---
 
