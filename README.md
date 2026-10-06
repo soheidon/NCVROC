@@ -1,121 +1,19 @@
 [English](README.md) | [日本語 README](README-ja.md) | [日本語詳細リファレンス](docs/reference-ja.md)
 
-# NCVROC 0.23.1
+# NCVROC
 
 **N**ested **C**ross-**V**alidation for Combinatorial **ROC**-based Selection of Item-set Scores
 
-NCVROC develops short item-based screening scales through combinatorial item-set selection, Receiver Operating Characteristic (ROC) curve evaluation, ordinary and nested cross-validation, and selection optimism assessment. For psychological and clinical questionnaire data, NCVROC identifies which small subset of items best predicts a binary outcome using unweighted sum scores.
+NCVROC is an R package for developing short item-based screening scales. It performs combinatorial item-set selection, evaluates unweighted sum scores with Receiver Operating Characteristic (ROC) methods, and uses cross-validation—including nested cross-validation—to assess predictive performance and selection optimism. It is designed for binary outcomes in psychological and clinical questionnaire data.
 
-Assume higher sum scores indicate higher probability of a positive outcome. Users must reverse-code items beforehand.
+Higher sum scores are assumed to indicate a higher probability of a positive outcome. Reverse-code items before analysis when needed.
 
----
+## What the package does
 
-## What's new in NCVROC 0.23.1
-
-- **Repository benchmark ETA tooling**: Added a repository-side benchmark ETA harness for long-running benchmark schedules. This developer and benchmarking infrastructure resides in the repository and does not alter NCVROC runtime APIs, package functions, or package-level progress reporting.
-
----
-
-## What's new in NCVROC 0.23.0
-
-- **Explicit native TBB option for nested search**: `nested_sum_roc()` now accepts `parallel = "native_tbb"` to run outer candidate search with native C++/TBB threads. This is a manual opt-in; the automatic execution planner does not select this backend.
-- **Safety requirements**: Native TBB requires `engine = "Rcpp"`, `tuning = "off"`, and `threads_per_worker = 1`. The requested thread count is supplied through `n_workers` and capped by the available CPU budget, outer-fold count, and `_R_CHECK_LIMIT_CORES_`. The prototype currently limits the candidate space to 2,000,000 combinations.
-- **Preserved results and RNG**: Candidate ranking, tie-breaking, statistical results, and caller RNG state are preserved across supported thread counts. Native TBB reports no candidate percentage or ETA; successful completion is reported only after the work returns successfully.
-
-The automatic execution planner is unchanged and will not select `native_tbb`.
-
----
-
-## What's new in NCVROC 0.21.0
-
-- **Clinical operating-point cutoff selection**:
-  - Added `"sensitivity_target"` (target Sensitivity with maximum Specificity) and `"clinical_constraint"` (joint Sensitivity & Specificity thresholds with maximum Youden) cutoff optimization methods to `cross_size_cv()` and `cross_size_nested_cv()`.
-  - Enforced strict contract rules: `sensitivity_target` requires `sensitivity_min` and prohibits `specificity_min`; `clinical_constraint` requires both.
-  - Legacy methods (`"youden"`, `"closest_topleft"`) continue to treat thresholds as candidate-level constraints with full backward compatibility.
-- **Full-data deployment cutoff refitting**:
-  - The final selected model systematically refits its deployment cutoff on full dataset observations using the same cutoff rule and clinical constraints.
-  - Returns robust status values (`"selected"`, `"no_feasible_cutoff_on_full_data"`, `"no_feasible_candidate"`).
-- **16-column standardized nested CV schema**:
-  - `outer_fold_results` now provides consistent 16-column structure across all cutoff methods with typed NAs on failed folds.
-
----
-
-## What's new in NCVROC 0.20.0
-
-- **Automatic execution planning**:
-  - Benchmarks legal execution configurations for large exhaustive searches
-    and chooses a measured execution backend from serial, multithreaded,
-    outer-fold parallel, and hybrid strategies.
-  - The benchmark trigger is a deterministic workload threshold. Workloads
-    below that threshold use the safe baseline path without a backend sweep.
-  - Nested-CV planning uses a bounded pilot sample allocated across requested
-    model sizes. The pilot does not replace, screen, or prune the exhaustive
-    candidate search.
-  - Planning changes scheduling only; candidate generation, folds, ranking,
-    tie-breaking, cutoffs, predictions, and final model selection remain
-    unchanged.
-- **Parallel execution**:
-  - Improved C++ multithreaded exhaustive evaluation with `RcppParallel`.
-  - Added bounded nested resource-plan benchmarking for multithreaded,
-    outer-fold PSOCK, and hybrid execution modes.
-  - Production PSOCK paths continue to use standard R parallel infrastructure.
-- **Progress reporting**:
-  - Serial and multithreaded nested execution reports completed candidates
-    within each outer fold.
-  - Outer-fold parallel execution reports observable outer-task progress.
-  - Progress shows observed elapsed time only; NCVROC does not display ETA
-    estimates.
-- **Large-search reliability**:
-  - Added streaming C++ Top-N evaluation and rank-bounded nested evaluation
-    while preserving canonical combination identity and exact exhaustive
-    semantics.
-  - Expanded regression coverage for serial/parallel statistical and RNG
-    invariance.
-
----
-
-## What's new in NCVROC 0.19.0
-
-- **Public Execution Preview API (`plan_ncvroc_execution()`)**:
-  - Previews candidate combinatorial workloads, evaluates scaling across all legal resource configurations, and returns a dedicated S3 `"ncvroc_execution_plan"` object.
-  - Dedicated S3 methods: `print()`, `format()`, and base R diagnostic visualization `plot(plan, type = c("runtime", "speedup", "efficiency", "all"))`.
-- **Empirical Setup-Aware Affine Runtime Estimation**:
-  - Models execution scaling via an affine formulation $T(n) = a + b \cdot n$, distinguishing fixed cluster startup/export overhead ($a$) from candidate-dependent throughput ($b$) so cluster initialization time is not multiplied linearly by massive candidate counts.
-  - Invalid, negative, or unstable fits safely fall back to conservative linear estimates without claiming exact or guaranteed runtimes.
-- **Deterministic Workload Benchmark Trigger**:
-  - In `tuning = "auto"` mode, multi-configuration benchmarking is triggered when the candidate workload meets or exceeds the deterministic threshold (default 5,000,000 candidate evaluations); smaller workloads proceed directly with default/manual execution.
-- **Bounded Exhaustive Resource Sweep (Flat & CV Workflows)**:
-  - Exhaustively evaluates all legal integer worker allocations (threads, socket chunks) up to the system/user CPU cap for `exhaustive_sum_roc()` and `cross_size_cv()`, applying the formal 5% near-best resource-efficient selection rule.
-- **Explicit Nested Workflow Limitation**:
-  - Nested cross-validation workflows (`nested_sum_roc()`, `cross_size_nested_cv()`) use safe, candidate-bounded runtime probing where supported.
-  - Full nested resource sweep benchmarking is not performed in v0.19.0 when the evaluator cannot safely consume rank-bounded candidate subsets; in that case NCVROC preserves the manual/default execution plan and records the rationale in metadata. Full nested multi-configuration resource sweep is deferred to v0.20.0.
-- **Observable Long-Running Execution & Progress UX**:
-  - **Exact Completed Counts**: Reports exact completed-candidate counts at observable C++ batch boundaries for compiled evaluation loops.
-  - **Observed-Only ETA**: Displays stable approximate remaining-time updates derived strictly from completed work batches.
-  - **Truthful PSOCK Observability**: Opaque PSOCK socket backends report concise start and completion messages (`progress_unit = "none"`, `progress_mode = "start_completion"`) without advertising unverified progress percentages, ETAs, or fake heartbeats.
-  - **Silence Contract**: `progress = FALSE` disables progress indicators and callback reporting (verbose status messages may still appear when `verbose = TRUE`; complete console silence requires both `progress = FALSE` and `verbose = FALSE`).
-- **Canonical Execution Metadata**:
-  - Canonical `execution_plan` metadata includes `$progress_mode`, `$progress_unit`, `$benchmark_table`, and `$saturation_summary`.
-
----
-
-## What's new in NCVROC 0.18.0
-
-- **Automatic Execution Planning Foundation (`tuning = c("off", "auto", "always")`)**:
-  - Automatically identifies a measured near-best execution configuration (serial, C++ multithreading, or PSOCK worker processes) from deterministic pilot micro-benchmarking across core combinatorial workflows (`exhaustive_sum_roc()`, `cross_size_cv()`, `nested_sum_roc()`, `cross_size_nested_cv()`).
-  - **`tuning = "off"`**: Retains user-specified manual execution configuration (`parallel`, `n_workers`, `threads_per_worker`) without runtime probing overhead.
-  - **`tuning = "auto"`**: Probes and benchmarks legal execution configurations only when estimated serial runtime meets or exceeds the trigger threshold.
-  - **`tuning = "always"`**: Actively benchmarks legal execution configurations for all non-degenerate workloads.
-- **Deterministic Micro-Pilot Benchmarking**:
-  - Measures throughput over an evenly-spaced candidate subset while preserving the full sample size $N$, class proportions, and fold/repeat structure intact.
-- **Resource-Efficient Selection Rule**:
-  - Selects the fastest observed configuration, qualifies all plans within a 5% near-best envelope (`median_elapsed <= fastest * 1.05`), prioritizes the lowest resource allocation (`resource_count`), and applies deterministic backend priorities (`none` > `threads` > `outer` > `chunks` > `hybrid`).
-- **Canonical Execution Metadata**:
-  - Attached to result objects (`$settings$execution_plan` or `attr(..., "execution_plan")`) with dedicated S3 formatters (`format()`, `print()`) detailing benchmark timings, candidate allocations, and decision rationale.
-- **Observation-Only Progress Reporting with Approximate ETA**:
-  - Displays lightweight progress bars and approximate remaining time estimates on observable loops without altering candidate ordering, statistics, or RNG determinism (`.Random.seed`). `progress = FALSE` disables progress indicators and callback reporting (complete console silence requires both `progress = FALSE` and `verbose = FALSE`).
-- **Strict Non-Statistical Invariance**:
-  - Execution planning changes execution strategy only and never alters candidate spaces, fold/repeat partitions, classification cutoffs, candidate rankings, clinical constraints (`sens_min`, `spec_min`), out-of-fold predictions, final selected models, or final refits.
+- Enumerates item subsets over user-specified item-count ranges and evaluates their sum-score performance.
+- Uses ROC-based criteria to compare candidate item sets and select models.
+- Provides ordinary and nested cross-validation workflows to estimate generalization performance while accounting for model selection.
+- Reports out-of-fold predictions and model-selection results for supported workflows.
 
 ---
 
