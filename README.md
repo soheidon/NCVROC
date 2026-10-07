@@ -143,6 +143,27 @@ NCVROC includes observation-only progress reporting controlled by `progress`:
 - **Truthful PSOCK Boundaries**: PSOCK worker processes emit concise start and completion notifications (`progress_unit = "none"`) without generating unverified progress percentages.
 - **Silence Contract**: `progress = FALSE` disables progress indicators and progress-callback reporting, while `verbose = FALSE` suppresses verbose status messages (complete console silence is guaranteed only when both `progress = FALSE` and `verbose = FALSE`).
 
+### Saving and resuming completed analyses
+
+Long analyses do not have to fit into one sitting. You can start a time-consuming analysis before leaving it to run overnight, save its result when the call finishes, and load that result the next day to move on to the next analysis without repeating completed work. Save each completed result with `saveRDS()` and restore it in a later R session with `readRDS()`.
+
+This resumes a sequence at the last completed analysis call; it is not an internal checkpoint. If a `cross_size_nested_cv()` call is interrupted before it finishes, NCVROC cannot resume that call from an intermediate fold, so that call must be run again.
+
+For example, let a long analysis run overnight and save its result when it finishes:
+
+```r
+fit <- cross_size_nested_cv(data = analysis_data, outcome = "outcome", items = item_names)
+saveRDS(fit, "nested_cv_result.rds")
+```
+
+The next day—or in a later R session—load the completed result and continue with the next analysis without repeating this one:
+
+```r
+fit <- readRDS("nested_cv_result.rds")
+```
+
+Use a different, descriptive filename for each analysis, and choose a new filename when the data or analysis settings change. This makes it clear which saved result to load and helps avoid reusing a result from different conditions.
+
 ---
 
 ## Concise Item-Count Syntax
