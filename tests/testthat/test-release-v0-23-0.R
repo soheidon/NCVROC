@@ -1,18 +1,18 @@
 # Release sanity and integrity tests for NCVROC
 
-test_that("Package version in DESCRIPTION and NEWS is synchronized for v0.23.1", {
+test_that("Package version in DESCRIPTION and NEWS is synchronized for v0.23.2", {
   desc_file <- testthat::test_path("../../DESCRIPTION")
   desc_ver <- if (file.exists(desc_file)) {
     read.dcf(desc_file, fields = "Version")[1, 1]
   } else {
     as.character(utils::packageVersion("NCVROC"))
   }
-  expect_match(unname(desc_ver), "^0\\.23\\.1$")
+  expect_match(unname(desc_ver), "^0\\.23\\.2$")
 
   news_file <- testthat::test_path("../../NEWS.md")
   if (file.exists(news_file)) {
     news_lines <- readLines(news_file, n = 5)
-    expect_true(any(grepl("NCVROC 0.23.1", news_lines)))
+    expect_true(any(grepl("NCVROC 0.23.2", news_lines)))
   }
 })
 

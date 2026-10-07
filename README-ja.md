@@ -171,9 +171,49 @@ fit <- readRDS("nested_cv_result.rds")
 
 ## 結果の保存とキャッシュ
 
+### ネスト交差検証の結果 RDS 再利用 (`cross_size_nested_cv`)
+
+`cross_size_nested_cv()` では、`result_file` にファイルパスを指定することで、完了結果の保存と再利用を自動管理できます：
+
+```r
+# 1. 初回呼び出し：ネスト交差検証を実行し、完了結果を安全に保存
+fit <- cross_size_nested_cv(
+  data        = analysis_data,
+  outcome     = "outcome",
+  items       = item_names,
+  model_sizes = 1:3,
+  result_file = "results/nested_cv_m13.rds"
+)
+
+# 2. 同一条件での再呼び出し：分析同一性を検証し、再計算を行わずに結果を読み込み
+fit <- cross_size_nested_cv(
+  data        = analysis_data,
+  outcome     = "outcome",
+  items       = item_names,
+  model_sizes = 1:3,
+  result_file = "results/nested_cv_m13.rds"
+)
+
+# 3. 強制再計算：再計算を実行し、正常終了時のみ保存ファイルを更新
+fit <- cross_size_nested_cv(
+  data            = analysis_data,
+  outcome         = "outcome",
+  items           = item_names,
+  model_sizes     = 1:3,
+  result_file     = "results/nested_cv_m13.rds",
+  force_recompute = TRUE
+)
+```
+
+- **分析同一性の厳格な検証**: データ値、目的変数・項目名、分割数・反復数、カットオフ最適化設定、モデルサイズが保存されたエンベロープと完全に一致するか検証します。条件を変更した場合は別のファイルパスを指定するか、明示的な再計算が必要です。不一致のファイルが誤って再利用されることはありません。
+- **トランザクション保護と回復機能**: 排他ディレクトリロック、ステージング、バックアップ検証、読み戻し整合性確認により、ファイル更新時の破損リスクを低減します。置換中に中断した場合、パッケージはトランザクション状態とバックアップを検証して復旧を試みます。状態によっては自動復旧できず、手動確認が必要です。
+- **適用範囲**: 完了した分析呼び出し単位での再利用のみを管理します。実行途中で中断された場合、フォールド途中からの再開（チェックポイント）には対応しておらず、最初から再実行する必要があります。
+
+### 探索結果の保存とキャッシュ (`ncvroc`, `roc_bruteforce`)
+
 大規模探索では、`ncvroc()` および `roc_bruteforce()` がメモリ管理と再実行高速化のための機能を提供します：
 
-- **`results_storage = c("auto", "memory", "rds", "none")`**: `"auto"` では、小規模探索はメモリ内に保持し、100,000 通りを超える大規模探索はチャンク RDS ファイルとしてディスクにアトミック保存します。
+- **`results_storage = c("auto", "memory", "rds", "none")`**: `"auto"` では、小規模探索はメモリ内に保持し、100,000 通りを超える大規模探索はチャンク RDS ファイルとしてディスクに保存します。
 - **`cache = c("off", "reuse", "refresh")`**: `"reuse"` モードでは、データ・項目・探索設定のハッシュ値が完全に一致する場合、キャッシュされた結果を即座に再利用します。
 
 ---

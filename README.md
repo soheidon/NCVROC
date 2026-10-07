@@ -184,6 +184,46 @@ The `item_count` argument provides a concise alternative to `min_items` and `max
 
 ## Result Storage & Caching
 
+### Completed-Result RDS Reuse (`cross_size_nested_cv`)
+
+For `cross_size_nested_cv()`, you can pass a target file path via `result_file` to automatically manage completed result persistence and reuse:
+
+```r
+# 1. First call: computes nested CV and safely saves the completed result
+fit <- cross_size_nested_cv(
+  data        = analysis_data,
+  outcome     = "outcome",
+  items       = item_names,
+  model_sizes = 1:3,
+  result_file = "results/nested_cv_m13.rds"
+)
+
+# 2. Later identical call: validates identity and loads cached result without recomputing
+fit <- cross_size_nested_cv(
+  data        = analysis_data,
+  outcome     = "outcome",
+  items       = item_names,
+  model_sizes = 1:3,
+  result_file = "results/nested_cv_m13.rds"
+)
+
+# 3. Force recomputation: recomputes and replaces target using transactional staging upon success
+fit <- cross_size_nested_cv(
+  data            = analysis_data,
+  outcome         = "outcome",
+  items           = item_names,
+  model_sizes     = 1:3,
+  result_file     = "results/nested_cv_m13.rds",
+  force_recompute = TRUE
+)
+```
+
+- **Identity Verification**: The cache verifies that data values, outcome/items, fold/repeat counts, cutoff method, and model sizes match the serialized envelope. If parameters differ, it refuses to overwrite or return a mismatched file. Use a distinct file path when analysis conditions change.
+- **Transactional Safeguards**: Updates use exclusive directory locks, transactional staging, validated backups, and read-back verification to reduce the risk of corrupted or torn writes during replacement. If a replacement is interrupted, the transaction state and backup files preserve evidence for recovery.
+- **Scope Boundary**: Manages completed analysis calls only. If a run is interrupted before finishing, it cannot resume from an intermediate fold; the call must be re-executed.
+
+### Search Storage & Caching (`ncvroc`, `roc_bruteforce`)
+
 For large combinatorial searches, `ncvroc()` and `roc_bruteforce()` provide disk-backed storage and caching to manage memory and enable rapid re-runs:
 
 - **`results_storage = c("auto", "memory", "rds", "none")`**: In `"auto"` mode, small searches stay in RAM while large searches (> 100,000 combinations) are saved to disk as chunked RDS files.

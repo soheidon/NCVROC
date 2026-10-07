@@ -1,3 +1,13 @@
+# NCVROC 0.23.2 (2026-10-07)
+
+## Result RDS reuse
+
+* Added `result_file` and `force_recompute` arguments to `cross_size_nested_cv()` for completed-result RDS persistence and reuse.
+* When `result_file` is specified, `cross_size_nested_cv()` returns a valid matching cached result without re-executing nested cross-validation. Analysis identity is strictly verified against data and call parameters to prevent returning mismatched or partial results.
+* Setting `force_recompute = TRUE` forces recomputation and updates the target result file only upon successful completion.
+* Uses file-level safeguards including exclusive per-path directory locks, transactional staging, validated backups, read-back verification, and state recovery to reduce the risk of torn writes or concurrent collision during file updates.
+* This feature manages completed-result reuse only; interrupted executions cannot resume from intermediate folds or partial computations.
+
 # NCVROC 0.23.1 (2026-10-07)
 
 ## Benchmarking tooling
