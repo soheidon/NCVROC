@@ -34,7 +34,9 @@ cross_size_nested_cv(
   progress = interactive(),
   verbose = FALSE,
   outer_k = NULL,
-  inner_k = NULL
+  inner_k = NULL,
+  result_file = NULL,
+  force_recompute = FALSE
 )
 }
 \arguments{
@@ -119,6 +121,18 @@ only truthful start and successful completion, with no percentage or ETA.
 \item{outer_k}{Alias for `outer_folds`.}
 
 \item{inner_k}{Alias for `inner_folds`.}
+
+\item{result_file}{Optional character string specifying a file path (RDS) to store
+or load the completed analysis result. If the file exists and contains a valid,
+matching result for the current analysis, it is returned immediately without
+recomputation. If the file does not exist, the analysis runs normally and the
+completed result is atomically saved upon success. Default \code{NULL} disables
+result caching.}
+
+\item{force_recompute}{Logical, whether to force recomputation even if a valid
+cached result file exists at \code{result_file}. The existing file is only replaced
+after new computation finishes successfully. Default \code{FALSE}. Specifying
+\code{force_recompute = TRUE} when \code{result_file = NULL} raises an error.}
 }
 \value{
 An S3 object of class `"cross_size_nested_cv_result"`, containing:

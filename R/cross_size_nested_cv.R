@@ -282,6 +282,17 @@
 #' @param outer_k Alias for `outer_folds`.
 #' @param inner_k Alias for `inner_folds`.
 #'
+#' @param result_file Optional character string specifying a file path (RDS) to store
+#'   or load the completed analysis result. If the file exists and contains a valid,
+#'   matching result for the current analysis, it is returned immediately without
+#'   recomputation. If the file does not exist, the analysis runs normally and the
+#'   completed result is atomically saved upon success. Default \code{NULL} disables
+#'   result caching.
+#' @param force_recompute Logical, whether to force recomputation even if a valid
+#'   cached result file exists at \code{result_file}. The existing file is only replaced
+#'   after new computation finishes successfully. Default \code{FALSE}. Specifying
+#'   \code{force_recompute = TRUE} when \code{result_file = NULL} raises an error.
+#'
 #' @return An S3 object of class `"cross_size_nested_cv_result"`, containing:
 #' \describe{
 #'   \item{summary}{Summary data.frame of pooled outer-fold performance metrics (AUC, sensitivity, specificity, Youden index, accuracy, PPV, NPV).}
@@ -343,7 +354,25 @@ cross_size_nested_cv <- function(data,
                                  progress           = interactive(),
                                  verbose            = FALSE,
                                  outer_k            = NULL,
-                                 inner_k            = NULL) {
+                                 inner_k            = NULL,
+                                 result_file        = NULL,
+                                 force_recompute    = FALSE) {
+  # ---- Validate result_file and force_recompute ----
+  if (!is.logical(force_recompute) || length(force_recompute) != 1L || is.na(force_recompute)) {
+    stop("`force_recompute` must be a single logical value (TRUE or FALSE).", call. = FALSE)
+  }
+  if (isTRUE(force_recompute) && is.null(result_file)) {
+    stop("`force_recompute = TRUE` was specified, but `result_file` is NULL.", call. = FALSE)
+  }
+  if (!is.null(result_file)) {
+    if (!is.character(result_file) || length(result_file) != 1L || is.na(result_file) || nchar(trimws(result_file)) == 0L) {
+      stop("`result_file` must be a single non-empty character string (file path) or NULL.", call. = FALSE)
+    }
+    if (dir.exists(result_file)) {
+      stop(sprintf("`result_file` points to an existing directory, not a file path: '%s'.", result_file), call. = FALSE)
+    }
+  }
+
   # Handle aliases
   if (!is.null(outer_k)) outer_folds <- outer_k
   if (!is.null(inner_k)) inner_folds <- inner_k
@@ -435,6 +464,84 @@ cross_size_nested_cv <- function(data,
   if (parallel_mode %in% c("threads", "hybrid") && engine != "Rcpp") {
     stop(sprintf("`parallel = '%s'` requires `engine = 'Rcpp'`.", parallel_mode), call. = FALSE)
   }
+
+  # ---- Result-RDS Cache Check (v0.23.2-R1) ----
+  identity_obj <- NULL
+  lock_token <- NULL
+  canonical_target <- NULL
+  if (!is.null(result_file)) {
+    canonical_target <- .canonicalize_result_path(result_file)
+    identity_obj <- .compute_nested_cv_result_identity(
+      data               = dat_prep,
+      outcome_name       = outcome_name,
+      item_names         = item_names,
+      sizes              = sizes,
+      outer_folds        = outer_folds,
+      inner_folds        = inner_folds,
+      outer_repeats      = outer_repeats,
+      inner_repeats      = inner_repeats,
+      selection_metric   = selection_metric,
+      cutoff_method      = cutoff_method,
+      sensitivity_min    = sensitivity_min,
+      specificity_min    = specificity_min,
+      prefer_fewer_items = prefer_fewer_items,
+      stratified         = stratified,
+      positive_label     = positive_label,
+      negative_label     = negative_label,
+      engine             = engine,
+      parallel_mode      = parallel_mode,
+      n_workers          = n_workers,
+      threads_per_worker = threads_per_worker,
+      tuning             = tuning,
+      seed               = seed
+    )
+
+    # 1. Read-only cache hit check (if !force_recompute and target exists)
+    if (!force_recompute) {
+      cached_res <- .check_readonly_nested_cv_hit(
+        canonical_target = canonical_target,
+        identity_obj     = identity_obj,
+        verbose          = verbose
+      )
+      if (!is.null(cached_res)) {
+        return(cached_res)
+      }
+    }
+
+    # 2. Miss or force_recompute = TRUE: acquire lock, probe writable parent, recover transactions
+    parent_dir <- dirname(canonical_target)
+    if (parent_dir != "" && !dir.exists(parent_dir)) {
+      created <- dir.create(parent_dir, recursive = TRUE, showWarnings = FALSE)
+      if (!created && !dir.exists(parent_dir)) {
+        stop(sprintf("Failed to create parent directory for `result_file`: '%s'.", parent_dir), call. = FALSE)
+      }
+    }
+
+    # Acquire lock before any computation
+    lock_token <- .acquire_nested_cv_lock(canonical_target)
+    on.exit(.release_nested_cv_lock(lock_token), add = TRUE)
+
+    # Probe parent directory writable
+    if (!.probe_parent_writable(parent_dir)) {
+      stop(sprintf("Parent directory for `result_file` is not writable: '%s'.", parent_dir), call. = FALSE)
+    }
+
+    # Check/recover transaction crash state under lock
+    .recover_nested_cv_transactions(canonical_target, lock_token)
+
+    # 3. Post-lock recheck (if another writer completed just before lock acquisition)
+    if (!force_recompute && file.exists(canonical_target)) {
+      cached_env <- tryCatch(readRDS(canonical_target), error = function(e) e)
+      .validate_nested_cv_envelope(cached_env, identity_obj, canonical_target)
+      if (isTRUE(verbose)) {
+        message(sprintf("Loaded cached cross_size_nested_cv result from: %s", canonical_target))
+      }
+      return(cached_env$result)
+    }
+  }
+
+  # Test seam hook: increment computation count
+  .ncvroc_test_seams$computation_count <- .ncvroc_test_seams$computation_count + 1L
 
   # ---- Build Outer CV Folds ----
   outer_fold_indices <- .build_cv_folds(
@@ -708,7 +815,7 @@ cross_size_nested_cv <- function(data,
     )
   }
 
-  structure(
+  res <- structure(
     list(
       summary                              = summary_df,
       outer_fold_results                   = outer_fold_results_df,
@@ -752,6 +859,17 @@ cross_size_nested_cv <- function(data,
     ),
     class = "cross_size_nested_cv_result"
   )
+
+  if (!is.null(canonical_target)) {
+    .publish_nested_cv_result_transaction(
+      result_obj       = res,
+      identity_obj     = identity_obj,
+      canonical_target = canonical_target,
+      lock_token       = lock_token
+    )
+  }
+
+  res
 }
 
 #' Print method for cross_size_nested_cv_result
