@@ -15,6 +15,10 @@ Higher sum scores are assumed to indicate a higher probability of a positive out
 - Provides ordinary and nested cross-validation workflows to estimate generalization performance while accounting for model selection.
 - Reports out-of-fold predictions and model-selection results for supported workflows.
 
+## Release history and new features
+
+For new features and the history of changes by release, see [NEWS.md](NEWS.md).
+
 ---
 
 ## Installation
