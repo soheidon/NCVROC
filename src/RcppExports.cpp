@@ -11,8 +11,8 @@ Rcpp::Rostream<false>& Rcpp::Rcerr = Rcpp::Rcpp_cerr_get();
 #endif
 
 // evaluate_combos_cpp
-DataFrame evaluate_combos_cpp(NumericMatrix x, IntegerVector y, List combo_indices, std::string cutoff_method);
-RcppExport SEXP _NCVROC_evaluate_combos_cpp(SEXP xSEXP, SEXP ySEXP, SEXP combo_indicesSEXP, SEXP cutoff_methodSEXP) {
+DataFrame evaluate_combos_cpp(NumericMatrix x, IntegerVector y, List combo_indices, std::string cutoff_method, double sensitivity_min, double specificity_min);
+RcppExport SEXP _NCVROC_evaluate_combos_cpp(SEXP xSEXP, SEXP ySEXP, SEXP combo_indicesSEXP, SEXP cutoff_methodSEXP, SEXP sensitivity_minSEXP, SEXP specificity_minSEXP) {
 BEGIN_RCPP
     Rcpp::RObject rcpp_result_gen;
     Rcpp::RNGScope rcpp_rngScope_gen;
@@ -20,7 +20,9 @@ BEGIN_RCPP
     Rcpp::traits::input_parameter< IntegerVector >::type y(ySEXP);
     Rcpp::traits::input_parameter< List >::type combo_indices(combo_indicesSEXP);
     Rcpp::traits::input_parameter< std::string >::type cutoff_method(cutoff_methodSEXP);
-    rcpp_result_gen = Rcpp::wrap(evaluate_combos_cpp(x, y, combo_indices, cutoff_method));
+    Rcpp::traits::input_parameter< double >::type sensitivity_min(sensitivity_minSEXP);
+    Rcpp::traits::input_parameter< double >::type specificity_min(specificity_minSEXP);
+    rcpp_result_gen = Rcpp::wrap(evaluate_combos_cpp(x, y, combo_indices, cutoff_method, sensitivity_min, specificity_min));
     return rcpp_result_gen;
 END_RCPP
 }
@@ -179,7 +181,7 @@ END_RCPP
 }
 
 static const R_CallMethodDef CallEntries[] = {
-    {"_NCVROC_evaluate_combos_cpp", (DL_FUNC) &_NCVROC_evaluate_combos_cpp, 4},
+    {"_NCVROC_evaluate_combos_cpp", (DL_FUNC) &_NCVROC_evaluate_combos_cpp, 6},
     {"_NCVROC_evaluate_combos_cpp_chunk", (DL_FUNC) &_NCVROC_evaluate_combos_cpp_chunk, 7},
     {"_NCVROC_evaluate_combos_cpp_chunk_parallel", (DL_FUNC) &_NCVROC_evaluate_combos_cpp_chunk_parallel, 9},
     {"_NCVROC_evaluate_outer_candidate_search_native_cpp", (DL_FUNC) &_NCVROC_evaluate_outer_candidate_search_native_cpp, 10},

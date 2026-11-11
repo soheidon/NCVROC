@@ -1,0 +1,849 @@
+# bootstrap_select_sum_roc.R — Harrell-style Bootstrap Internal Validation & Selection Stability
+#
+# Provides:
+#   - bootstrap_select_sum_roc()
+#   - Internal helpers for candidate evaluation and validation
+
+#' Bootstrap Internal Validation and Selection Stability for Item-Set Scores
+#'
+#' Performs Harrell-style bootstrap internal validation of the complete unweighted
+#' sum-score item selection and cutoff determination procedure, and evaluates
+#' item selection stability across bootstrap resamples.
+#'
+#' @param data A data.frame containing item responses and the binary outcome column.
+#'   Missing values in item columns or outcome are rejected by default.
+#' @param outcome Character, name of the binary outcome column in \code{data}.
+#' @param items Character vector of item column names to include in exhaustive search.
+#' @param model_sizes Integer vector of combination sizes to explore. Default \code{1:6}.
+#' @param bootstrap_reps Integer scalar, number of bootstrap resamples. Default \code{1000L}.
+#' @param resampling Character, resampling scheme: \code{"stratified"} (preserves class counts, default)
+#'   or \code{"ordinary"} (standard unstratified bootstrap).
+#' @param selection_metric Character, candidate ranking metric: \code{"auc"} (default),
+#'   \code{"youden"}, \code{"sensitivity"}, \code{"specificity"}, or \code{"accuracy"}.
+#' @param cutoff_method Character, cutoff determination method: \code{"clinical_constraint"} (default),
+#'   \code{"youden"}, or \code{"closest_topleft"}.
+#' @param sensitivity_min Numeric threshold in \code{[0, 1]}. Required when \code{cutoff_method = "clinical_constraint"}.
+#' @param specificity_min Numeric threshold in \code{[0, 1]}. Required when \code{cutoff_method = "clinical_constraint"}.
+#' @param prefer_fewer_items Logical, whether to break metric ties in favor of models with fewer items. Default \code{TRUE}.
+#' @param no_feasible Character, action when no candidate meets feasibility constraints:
+#'   \code{"record_failure"} (default, records replicate as failed and treats metrics as NA) or
+#'   \code{"fallback_youden"} (selects optimal Youden model as fallback and applies the same fallback rule to full data).
+#' @param positive_label Value in \code{outcome} indicating positive diagnosis. Default \code{1}.
+#' @param negative_label Value in \code{outcome} indicating negative diagnosis. Default \code{0}.
+#' @param engine Character, computation engine: \code{"Rcpp"} (default) or \code{"R"}.
+#' @param parallel Character, parallel execution mode: \code{"none"} (default) or \code{"threads"}.
+#' @param n_workers Integer, number of worker threads for parallel execution. Default \code{NULL} (auto-detect).
+#' @param seed Integer scalar or NULL, random seed for reproducible bootstrap sampling.
+#'   When supplied, the caller's pre-existing \code{.Random.seed} is preserved and restored on exit.
+#' @param result_file Character path to RDS file for saving final results and periodic checkpoints. Default \code{NULL}.
+#' @param checkpoint_every Integer, checkpoint interval in completed replicates. Default \code{25L}.
+#' @param force_recompute Logical, if \code{TRUE} ignore existing compatible result files and recompute. Default \code{FALSE}.
+#' @param progress Logical, whether to display progress. Default \code{interactive()}.
+#'
+#' @return An S3 object of class \code{"bootstrap_select_sum_roc_result"}.
+#' @export
+bootstrap_select_sum_roc <- function(
+    data,
+    outcome,
+    items,
+    model_sizes        = 1:6,
+    bootstrap_reps     = 1000L,
+    resampling         = c("stratified", "ordinary"),
+    selection_metric   = c("auc", "youden", "sensitivity", "specificity", "accuracy"),
+    cutoff_method      = c("clinical_constraint", "youden", "closest_topleft"),
+    sensitivity_min    = NULL,
+    specificity_min    = NULL,
+    prefer_fewer_items = TRUE,
+    no_feasible        = c("record_failure", "fallback_youden"),
+    positive_label     = 1,
+    negative_label     = 0,
+    engine             = c("Rcpp", "R"),
+    parallel           = c("none", "threads"),
+    n_workers          = NULL,
+    seed               = NULL,
+    result_file        = NULL,
+    checkpoint_every   = 25L,
+    force_recompute    = FALSE,
+    progress           = interactive()
+) {
+  # ---- 1. Argument validation ----
+  resampling       <- match.arg(resampling)
+  selection_metric <- match.arg(selection_metric)
+  cutoff_method    <- match.arg(cutoff_method)
+  no_feasible      <- match.arg(no_feasible)
+  engine           <- match.arg(engine)
+  parallel         <- match.arg(parallel)
+
+  if (!is.data.frame(data)) {
+    stop("`data` must be a data.frame.", call. = FALSE)
+  }
+  if (!is.character(outcome) || length(outcome) != 1L || !(outcome %in% names(data))) {
+    stop("`outcome` must name a single column in `data`.", call. = FALSE)
+  }
+  if (!is.character(items) || length(items) < 1L || !all(items %in% names(data))) {
+    stop("`items` must be a character vector of column names in `data`.", call. = FALSE)
+  }
+  if (outcome %in% items) {
+    stop("`outcome` column must not be included in `items`.", call. = FALSE)
+  }
+
+  # Reject missing values by default
+  na_outcome <- is.na(data[[outcome]])
+  na_items   <- rowSums(is.na(data[, items, drop = FALSE])) > 0
+  if (any(na_outcome) || any(na_items)) {
+    stop(sprintf("Missing values detected in data (outcome NAs: %d, item NAs: %d rows). Missing values must be addressed prior to calling `bootstrap_select_sum_roc()`.",
+                 sum(na_outcome), sum(na_items)), call. = FALSE)
+  }
+
+  y_raw <- data[[outcome]]
+  unique_y <- unique(y_raw)
+  if (!all(unique_y %in% c(positive_label, negative_label))) {
+    stop("`outcome` contains values outside `positive_label` and `negative_label`.", call. = FALSE)
+  }
+  y <- ifelse(y_raw == positive_label, 1L, 0L)
+  n_pos <- sum(y == 1L)
+  n_neg <- sum(y == 0L)
+  n_obs <- length(y)
+  if (n_pos < 1L || n_neg < 1L) {
+    stop("Data must contain at least one positive and one negative observation.", call. = FALSE)
+  }
+
+  # Model sizes validation
+  model_sizes <- as.integer(sort(unique(model_sizes)))
+  if (any(model_sizes < 1L) || any(model_sizes > length(items))) {
+    stop(sprintf("`model_sizes` must be integers between 1 and length(items) (%d).", length(items)), call. = FALSE)
+  }
+
+  bootstrap_reps <- as.integer(bootstrap_reps)
+  if (length(bootstrap_reps) != 1L || is.na(bootstrap_reps) || bootstrap_reps < 1L) {
+    stop("`bootstrap_reps` must be a positive integer.", call. = FALSE)
+  }
+
+  # Constraints validation
+  if (cutoff_method == "clinical_constraint") {
+    if (is.null(sensitivity_min) || !is.numeric(sensitivity_min) || sensitivity_min < 0 || sensitivity_min > 1) {
+      stop("`sensitivity_min` in [0, 1] is required when `cutoff_method = \"clinical_constraint\"`.", call. = FALSE)
+    }
+    if (is.null(specificity_min) || !is.numeric(specificity_min) || specificity_min < 0 || specificity_min > 1) {
+      stop("`specificity_min` in [0, 1] is required when `cutoff_method = \"clinical_constraint\"`.", call. = FALSE)
+    }
+  }
+
+  checkpoint_every <- as.integer(checkpoint_every)
+  if (length(checkpoint_every) != 1L || is.na(checkpoint_every) || checkpoint_every < 1L) {
+    checkpoint_every <- 25L
+  }
+
+  # Prepare numeric matrix for items
+  x_mat <- as.matrix(data[, items, drop = FALSE])
+  mode(x_mat) <- "numeric"
+
+  # RNG state preservation
+  has_seed <- !is.null(seed)
+  if (has_seed) {
+    seed <- as.integer(seed)
+    had_seed <- exists(".Random.seed", envir = .GlobalEnv, inherits = FALSE)
+    if (had_seed) old_seed <- get(".Random.seed", envir = .GlobalEnv, inherits = FALSE)
+    on.exit({
+      if (had_seed) {
+        assign(".Random.seed", old_seed, envir = .GlobalEnv)
+      } else if (exists(".Random.seed", envir = .GlobalEnv, inherits = FALSE)) {
+        suppressWarnings(rm(".Random.seed", envir = .GlobalEnv))
+      }
+    }, add = TRUE)
+  }
+
+  # ---- 2. Result file compatibility check and resumption ----
+  canonical_result_file <- NULL
+  if (!is.null(result_file) && nzchar(result_file)) {
+    canonical_result_file <- normalizePath(result_file, mustWork = FALSE)
+  }
+
+  settings_list <- list(
+    outcome            = outcome,
+    items              = items,
+    model_sizes        = model_sizes,
+    bootstrap_reps     = bootstrap_reps,
+    resampling         = resampling,
+    selection_metric   = selection_metric,
+    cutoff_method      = cutoff_method,
+    sensitivity_min    = sensitivity_min,
+    specificity_min    = specificity_min,
+    prefer_fewer_items = prefer_fewer_items,
+    no_feasible        = no_feasible,
+    positive_label     = positive_label,
+    negative_label     = negative_label,
+    engine             = engine,
+    parallel           = parallel,
+    n_workers          = n_workers,
+    seed               = seed,
+    checkpoint_every   = checkpoint_every
+  )
+
+  # Checkpoint identity signature
+  raw_data_bytes <- serialize(list(x_mat, y), NULL, version = 3)
+  raw_file <- tempfile()
+  writeBin(raw_data_bytes, raw_file)
+  data_hash <- unname(tools::md5sum(raw_file))
+  unlink(raw_file)
+
+  compat_key <- list(
+    data_digest      = data_hash,
+    settings         = settings_list,
+    pkg_version      = as.character(utils::packageVersion("NCVROC"))
+  )
+
+  # Check if complete cached result exists
+  if (!is.null(canonical_result_file) && file.exists(canonical_result_file) && !force_recompute) {
+    cached_obj <- tryCatch(readRDS(canonical_result_file), error = function(e) NULL)
+    if (is.list(cached_obj) && inherits(cached_obj$result, "bootstrap_select_sum_roc_result") &&
+        .is_checkpoint_compatible(cached_obj$compat_key, compat_key)) {
+      if (isTRUE(progress)) {
+        message(sprintf("Loaded completed bootstrap_select_sum_roc result from '%s'.", canonical_result_file))
+      }
+      return(cached_obj$result)
+    }
+  }
+
+  # Check if resumable checkpoint exists
+  checkpoint_file <- NULL
+  resumed_replicates <- list()
+  if (!is.null(canonical_result_file)) {
+    checkpoint_file <- paste0(canonical_result_file, ".checkpoint.rds")
+    if (file.exists(checkpoint_file) && !force_recompute) {
+      chk_obj <- tryCatch(readRDS(checkpoint_file), error = function(e) NULL)
+      if (is.list(chk_obj) && .is_checkpoint_compatible(chk_obj$compat_key, compat_key)) {
+        resumed_replicates <- chk_obj$replicates
+        if (isTRUE(progress)) {
+          message(sprintf("Resuming bootstrap analysis from checkpoint '%s' (%d of %d replicates completed).",
+                          checkpoint_file, length(resumed_replicates), bootstrap_reps))
+        }
+      }
+    }
+  }
+
+  # ---- 3. Precompute combinations and structures ----
+  n_items <- length(items)
+  all_combos_list <- list()
+  for (sz in model_sizes) {
+    sz_combos <- utils::combn(seq_len(n_items), sz, simplify = FALSE)
+    all_combos_list <- c(all_combos_list, sz_combos)
+  }
+  n_combos_total <- length(all_combos_list)
+  combo_names <- vapply(all_combos_list, function(idx) format_items(items[idx]), character(1L))
+  combo_sizes <- vapply(all_combos_list, length, integer(1L))
+  # 0-based column indices for C++
+  combo_0based <- lapply(all_combos_list, function(idx) as.integer(idx - 1L))
+
+  # ---- 4. Reference Model Selection on Full Data ----
+  full_selection <- .select_optimal_model_internal(
+    x_mat              = x_mat,
+    y                  = y,
+    combo_0based       = combo_0based,
+    combo_names        = combo_names,
+    combo_sizes        = combo_sizes,
+    cutoff_method      = cutoff_method,
+    selection_metric   = selection_metric,
+    sensitivity_min    = sensitivity_min,
+    specificity_min    = specificity_min,
+    prefer_fewer_items = prefer_fewer_items,
+    no_feasible        = no_feasible,
+    engine             = engine
+  )
+
+  ref_model <- full_selection$selected_model
+  apparent_perf <- full_selection$apparent_performance
+
+  # ---- 5. Deterministic Bootstrap Sampling Generation ----
+  if (has_seed) {
+    set.seed(seed)
+  }
+
+  bootstrap_indices <- vector("list", bootstrap_reps)
+  pos_indices <- which(y == 1L)
+  neg_indices <- which(y == 0L)
+
+  for (b in seq_len(bootstrap_reps)) {
+    if (resampling == "stratified") {
+      b_pos <- sample(pos_indices, size = length(pos_indices), replace = TRUE)
+      b_neg <- sample(neg_indices, size = length(neg_indices), replace = TRUE)
+      bootstrap_indices[[b]] <- sample(c(b_pos, b_neg)) # shuffle
+    } else {
+      bootstrap_indices[[b]] <- sample.int(n_obs, size = n_obs, replace = TRUE)
+    }
+  }
+
+  # ---- 6. Bootstrap Replicate Evaluation ----
+  replicate_results <- vector("list", bootstrap_reps)
+  # Pre-fill already completed replicates from checkpoint
+  if (length(resumed_replicates) > 0L) {
+    for (i in seq_along(resumed_replicates)) {
+      replicate_results[[i]] <- resumed_replicates[[i]]
+    }
+  }
+
+  start_rep <- length(resumed_replicates) + 1L
+
+  # Progress handler
+  prg <- NULL
+  if (isTRUE(progress) && start_rep <= bootstrap_reps) {
+    prg <- .progress_make(total = bootstrap_reps, enabled = TRUE)
+    if (start_rep > 1L) {
+      prg$tick(start_rep - 1L)
+    }
+  }
+
+  # Worker task function
+  run_one_replicate <- function(b) {
+    boot_rows <- bootstrap_indices[[b]]
+    y_boot <- y[boot_rows]
+    x_boot <- x_mat[boot_rows, , drop = FALSE]
+
+    # Check if both classes present
+    if (length(unique(y_boot)) < 2L) {
+      return(list(
+        replicate_id           = b,
+        selected_items         = NA_character_,
+        selected_n_items       = NA_integer_,
+        selected_cutoff        = NA_real_,
+        selection_status       = "invalid_evaluation",
+        fallback_used          = FALSE,
+        n_feasible_candidates  = 0L,
+        training_auc           = NA_real_,
+        training_sensitivity   = NA_real_,
+        training_specificity   = NA_real_,
+        training_youden        = NA_real_,
+        test_auc               = NA_real_,
+        test_sensitivity       = NA_real_,
+        test_specificity       = NA_real_,
+        test_youden            = NA_real_,
+        optimism_auc           = NA_real_,
+        optimism_sensitivity   = NA_real_,
+        optimism_specificity   = NA_real_,
+        optimism_youden        = NA_real_,
+        training_feasible      = FALSE,
+        test_feasible          = FALSE,
+        exact_match            = FALSE,
+        jaccard_similarity     = NA_real_
+      ))
+    }
+
+    # Model selection on bootstrap sample
+    b_sel <- .select_optimal_model_internal(
+      x_mat              = x_boot,
+      y                  = y_boot,
+      combo_0based       = combo_0based,
+      combo_names        = combo_names,
+      combo_sizes        = combo_sizes,
+      cutoff_method      = cutoff_method,
+      selection_metric   = selection_metric,
+      sensitivity_min    = sensitivity_min,
+      specificity_min    = specificity_min,
+      prefer_fewer_items = prefer_fewer_items,
+      no_feasible        = no_feasible,
+      engine             = engine
+    )
+
+    if (b_sel$status %in% c("no_feasible_candidate", "no_feasible_cutoff_on_full_data")) {
+      return(list(
+        replicate_id           = b,
+        selected_items         = NA_character_,
+        selected_n_items       = NA_integer_,
+        selected_cutoff        = NA_real_,
+        selection_status       = "no_feasible_candidate",
+        fallback_used          = FALSE,
+        n_feasible_candidates  = 0L,
+        training_auc           = NA_real_,
+        training_sensitivity   = NA_real_,
+        training_specificity   = NA_real_,
+        training_youden        = NA_real_,
+        test_auc               = NA_real_,
+        test_sensitivity       = NA_real_,
+        test_specificity       = NA_real_,
+        test_youden            = NA_real_,
+        optimism_auc           = NA_real_,
+        optimism_sensitivity   = NA_real_,
+        optimism_specificity   = NA_real_,
+        optimism_youden        = NA_real_,
+        training_feasible      = FALSE,
+        test_feasible          = FALSE,
+        exact_match            = FALSE,
+        jaccard_similarity     = NA_real_
+      ))
+    }
+
+    # Selected model on bootstrap data
+    b_mod <- b_sel$selected_model
+    b_app <- b_sel$apparent_performance
+    sel_items_str <- b_mod$items
+    sel_items_vec <- .parse_itemset(sel_items_str)
+    sel_cutoff    <- b_mod$cutoff
+
+    # Apply selected model & cutoff to original data
+    orig_scores <- rowSums(x_mat[, sel_items_vec, drop = FALSE])
+    orig_freq   <- compute_score_frequencies(orig_scores, y)
+    orig_auc    <- compute_auc_from_table(orig_freq$pos_counts, orig_freq$neg_counts)
+
+    # Cutoff metrics on original data (strict score >= cutoff)
+    orig_pred <- ifelse(orig_scores >= sel_cutoff, 1L, 0L)
+    tp <- sum(orig_pred == 1L & y == 1L)
+    fp <- sum(orig_pred == 1L & y == 0L)
+    fn <- sum(orig_pred == 0L & y == 1L)
+    tn <- sum(orig_pred == 0L & y == 0L)
+
+    orig_sens <- tp / n_pos
+    orig_spec <- tn / n_neg
+    orig_youd <- orig_sens + orig_spec - 1.0
+
+    # Optimism = Bootstrap - Original
+    opt_auc  <- b_app$auc - orig_auc
+    opt_sens <- b_app$sensitivity - orig_sens
+    opt_spec <- b_app$specificity - orig_spec
+    opt_youd <- b_app$youden - orig_youd
+
+    # Feasibility on original data
+    tr_feas <- if (cutoff_method == "clinical_constraint") {
+      b_app$sensitivity >= sensitivity_min && b_app$specificity >= specificity_min
+    } else TRUE
+
+    test_feas <- if (cutoff_method == "clinical_constraint") {
+      orig_sens >= sensitivity_min && orig_spec >= specificity_min
+    } else TRUE
+
+    # Exact match & Jaccard vs Reference Model
+    ref_items_vec <- if (!is.null(ref_model) && !is.na(ref_model$items)) .parse_itemset(ref_model$items) else character(0)
+    exact_m <- if (length(ref_items_vec) > 0) identical(sort(sel_items_vec), sort(ref_items_vec)) else FALSE
+    jaccard <- if (length(ref_items_vec) > 0) {
+      length(intersect(sel_items_vec, ref_items_vec)) / length(union(sel_items_vec, ref_items_vec))
+    } else NA_real_
+
+    list(
+      replicate_id           = b,
+      selected_items         = sel_items_str,
+      selected_n_items       = b_mod$n_items,
+      selected_cutoff        = sel_cutoff,
+      selection_status       = b_sel$status,
+      fallback_used          = b_sel$fallback_used,
+      n_feasible_candidates  = b_sel$n_feasible,
+      training_auc           = b_app$auc,
+      training_sensitivity   = b_app$sensitivity,
+      training_specificity   = b_app$specificity,
+      training_youden        = b_app$youden,
+      test_auc               = orig_auc,
+      test_sensitivity       = orig_sens,
+      test_specificity       = orig_spec,
+      test_youden            = orig_youd,
+      optimism_auc           = opt_auc,
+      optimism_sensitivity   = opt_sens,
+      optimism_specificity   = opt_spec,
+      optimism_youden        = opt_youd,
+      training_feasible      = tr_feas,
+      test_feasible          = test_feas,
+      exact_match            = exact_m,
+      jaccard_similarity     = jaccard
+    )
+  }
+
+  # Execution loop (Serial or Parallel)
+  if (start_rep <= bootstrap_reps) {
+    if (parallel == "threads") {
+      n_cores <- if (is.null(n_workers)) parallel::detectCores(logical = FALSE) else as.integer(n_workers)
+      if (is.na(n_cores) || n_cores < 1L) n_cores <- 1L
+
+      # Batch across replicates to allow checkpoints
+      cur_start <- start_rep
+      while (cur_start <= bootstrap_reps) {
+        cur_end <- min(cur_start + checkpoint_every - 1L, bootstrap_reps)
+        batch_ids <- cur_start:cur_end
+
+        # Run batch in parallel using parLapply or mclapply (PSOCK for Windows compatibility)
+        cl <- parallel::makePSOCKcluster(min(n_cores, length(batch_ids)))
+        parallel::clusterExport(
+          cl,
+          varlist = c("x_mat", "y", "combo_0based", "combo_names", "combo_sizes",
+                      "cutoff_method", "selection_metric", "sensitivity_min", "specificity_min",
+                      "prefer_fewer_items", "no_feasible", "engine", "bootstrap_indices",
+                      "ref_model", "n_pos", "n_neg", "n_obs", ".select_optimal_model_internal",
+                      ".parse_itemset", "compute_score_frequencies", "compute_auc_from_table",
+                      "compute_roc_metrics_from_table", "find_optimal_cutoff",
+                      "evaluate_combos_cpp", "format_items"),
+          envir = environment()
+        )
+
+        batch_res <- parallel::parLapply(cl, batch_ids, run_one_replicate)
+        parallel::stopCluster(cl)
+
+        for (idx in seq_along(batch_ids)) {
+          b_id <- batch_ids[idx]
+          replicate_results[[b_id]] <- batch_res[[idx]]
+          if (!is.null(prg)) prg$tick()
+        }
+
+        # Checkpoint save
+        if (!is.null(checkpoint_file)) {
+          .save_atomic_rds(
+            list(compat_key = compat_key, settings = settings_list, replicates = replicate_results[1:cur_end]),
+            checkpoint_file
+          )
+        }
+
+        cur_start <- cur_end + 1L
+      }
+    } else {
+      # Serial execution
+      for (b in start_rep:bootstrap_reps) {
+        replicate_results[[b]] <- run_one_replicate(b)
+        if (!is.null(prg)) prg$tick()
+
+        if (!is.null(checkpoint_file) && (b %% checkpoint_every == 0L || b == bootstrap_reps)) {
+          .save_atomic_rds(
+            list(compat_key = compat_key, settings = settings_list, replicates = replicate_results[1:b]),
+            checkpoint_file
+          )
+        }
+      }
+    }
+  }
+
+  if (!is.null(prg)) prg$finish()
+
+  # ---- 7. Aggregate Results & Summaries ----
+  replicates_df <- do.call(rbind, lapply(replicate_results, as.data.frame, stringsAsFactors = FALSE))
+
+  # Categorize replicates
+  is_valid <- replicates_df$selection_status %in% c("selected", "fallback_youden")
+  n_valid  <- sum(is_valid)
+  n_failed <- sum(!is_valid)
+  n_fallback <- sum(replicates_df$fallback_used)
+
+  # Mean optimism over valid replicates
+  mean_optimism <- c(
+    auc         = if (n_valid > 0L) mean(replicates_df$optimism_auc[is_valid]) else NA_real_,
+    sensitivity = if (n_valid > 0L) mean(replicates_df$optimism_sensitivity[is_valid]) else NA_real_,
+    specificity = if (n_valid > 0L) mean(replicates_df$optimism_specificity[is_valid]) else NA_real_,
+    youden      = if (n_valid > 0L) mean(replicates_df$optimism_youden[is_valid]) else NA_real_
+  )
+
+  # Corrected performance
+  # If any replicate failed under record_failure, unconditional corrected estimate is NA
+  has_unconditional_estimate <- (n_failed == 0L) && !is.null(ref_model) && !is.na(ref_model$items)
+
+  corrected_perf <- list(
+    auc         = if (has_unconditional_estimate) apparent_perf$auc - mean_optimism["auc"] else NA_real_,
+    sensitivity = if (has_unconditional_estimate) apparent_perf$sensitivity - mean_optimism["sensitivity"] else NA_real_,
+    specificity = if (has_unconditional_estimate) apparent_perf$specificity - mean_optimism["specificity"] else NA_real_,
+    youden      = if (has_unconditional_estimate) apparent_perf$youden - mean_optimism["youden"] else NA_real_,
+    is_conditional = (n_failed > 0L),
+    unconditional_available = has_unconditional_estimate
+  )
+
+  # Check theoretical boundary warnings
+  if (!is.na(corrected_perf$auc) && (corrected_perf$auc < 0 || corrected_perf$auc > 1)) {
+    warning(sprintf("Corrected AUC (%.4f) falls outside theoretical range [0, 1]. Retaining raw value.", corrected_perf$auc), call. = FALSE)
+  }
+  if (!is.na(corrected_perf$sensitivity) && (corrected_perf$sensitivity < 0 || corrected_perf$sensitivity > 1)) {
+    warning(sprintf("Corrected sensitivity (%.4f) falls outside [0, 1]. Retaining raw value.", corrected_perf$sensitivity), call. = FALSE)
+  }
+  if (!is.na(corrected_perf$specificity) && (corrected_perf$specificity < 0 || corrected_perf$specificity > 1)) {
+    warning(sprintf("Corrected specificity (%.4f) falls outside [0, 1]. Retaining raw value.", corrected_perf$specificity), call. = FALSE)
+  }
+  if (!is.na(corrected_perf$youden) && (corrected_perf$youden < -1 || corrected_perf$youden > 1)) {
+    warning(sprintf("Corrected Youden index (%.4f) falls outside [-1, 1]. Retaining raw value.", corrected_perf$youden), call. = FALSE)
+  }
+
+  # Selection stability calculations
+  # Combination frequencies
+  sel_combos_all <- replicates_df$selected_items
+  combo_counts <- table(sel_combos_all[!is.na(sel_combos_all)])
+  combo_freq_df <- data.frame(
+    items            = names(combo_counts),
+    count            = as.integer(combo_counts),
+    proportion_valid = if (n_valid > 0L) as.numeric(combo_counts) / n_valid else 0.0,
+    proportion_all   = as.numeric(combo_counts) / bootstrap_reps,
+    stringsAsFactors = FALSE
+  )
+  combo_freq_df$n_items <- vapply(combo_freq_df$items, function(s) length(.parse_itemset(s)), integer(1L))
+  combo_freq_df <- combo_freq_df[order(-combo_freq_df$count, combo_freq_df$n_items, combo_freq_df$items), , drop = FALSE]
+  rownames(combo_freq_df) <- NULL
+
+  # Item frequencies
+  item_counts_valid <- integer(length(items))
+  names(item_counts_valid) <- items
+  if (n_valid > 0L) {
+    for (it_str in replicates_df$selected_items[is_valid]) {
+      v <- .parse_itemset(it_str)
+      item_counts_valid[v] <- item_counts_valid[v] + 1L
+    }
+  }
+
+  item_freq_df <- data.frame(
+    item            = items,
+    count_valid     = unname(item_counts_valid),
+    frequency_valid = if (n_valid > 0L) unname(item_counts_valid) / n_valid else 0.0,
+    frequency_all   = unname(item_counts_valid) / bootstrap_reps,
+    stringsAsFactors = FALSE
+  )
+  item_freq_df <- item_freq_df[order(-item_freq_df$count_valid, item_freq_df$item), , drop = FALSE]
+  rownames(item_freq_df) <- NULL
+
+  # Stability statistics
+  jacc_vals <- replicates_df$jaccard_similarity[is_valid]
+  jacc_vals <- jacc_vals[!is.na(jacc_vals)]
+
+  exact_m_count <- sum(replicates_df$exact_match[is_valid])
+  exact_m_rate  <- if (n_valid > 0L) exact_m_count / n_valid else 0.0
+
+  stability_summary <- list(
+    exact_match_rate   = exact_m_rate,
+    n_exact_match      = exact_m_count,
+    n_reps_denominator = n_valid,
+    jaccard_mean       = if (length(jacc_vals) > 0L) mean(jacc_vals) else NA_real_,
+    jaccard_sd         = if (length(jacc_vals) > 1L) stats::sd(jacc_vals) else 0.0,
+    jaccard_median     = if (length(jacc_vals) > 0L) stats::median(jacc_vals) else NA_real_,
+    jaccard_iqr        = if (length(jacc_vals) > 0L) stats::IQR(jacc_vals) else NA_real_,
+    jaccard_min        = if (length(jacc_vals) > 0L) min(jacc_vals) else NA_real_,
+    jaccard_max        = if (length(jacc_vals) > 0L) max(jacc_vals) else NA_real_
+  )
+
+  # Constraint stability
+  constraint_summary <- list(
+    training_feasible_count    = sum(replicates_df$training_feasible),
+    training_feasible_rate_all = mean(replicates_df$training_feasible),
+    test_feasible_count        = sum(replicates_df$test_feasible),
+    test_feasible_rate_all     = mean(replicates_df$test_feasible),
+    fallback_count             = n_fallback,
+    fallback_rate_all          = n_fallback / bootstrap_reps
+  )
+
+  # Cutoff distribution
+  cutoff_dist <- table(replicates_df$selected_cutoff[is_valid])
+  cutoff_dist_df <- data.frame(
+    cutoff    = as.numeric(names(cutoff_dist)),
+    count     = as.integer(cutoff_dist),
+    frequency = as.numeric(cutoff_dist) / n_valid,
+    stringsAsFactors = FALSE
+  )
+  cutoff_dist_df <- cutoff_dist_df[order(cutoff_dist_df$cutoff), , drop = FALSE]
+  rownames(cutoff_dist_df) <- NULL
+
+  # Result construction
+  result <- list(
+    final_selected_model     = ref_model,
+    apparent_performance     = apparent_perf,
+    bootstrap_summary        = list(
+      n_reps_requested = bootstrap_reps,
+      n_reps_valid     = n_valid,
+      n_reps_failed    = n_failed,
+      n_reps_fallback  = n_fallback,
+      mean_optimism    = mean_optimism
+    ),
+    corrected_performance    = corrected_perf,
+    bootstrap_results        = replicates_df,
+    selection_frequency      = combo_freq_df,
+    item_selection_frequency = item_freq_df,
+    selection_stability      = stability_summary,
+    constraint_stability     = constraint_summary,
+    cutoff_distribution      = cutoff_dist_df,
+    settings                 = settings_list
+  )
+  class(result) <- "bootstrap_select_sum_roc_result"
+
+  # Final result persistence
+  if (!is.null(canonical_result_file)) {
+    .save_atomic_rds(list(compat_key = compat_key, settings = settings_list, result = result), canonical_result_file)
+    # Clean up checkpoint file if final result written successfully
+    if (!is.null(checkpoint_file) && file.exists(checkpoint_file)) {
+      unlink(checkpoint_file, force = TRUE)
+    }
+  }
+
+  result
+}
+
+# ------------------------------------------------------------------------------
+# Internal helper functions
+# ------------------------------------------------------------------------------
+
+#' Internal model selection helper for exhaustive combination search
+#' @keywords internal
+#' @noRd
+.select_optimal_model_internal <- function(
+    x_mat,
+    y,
+    combo_0based,
+    combo_names,
+    combo_sizes,
+    cutoff_method,
+    selection_metric,
+    sensitivity_min,
+    specificity_min,
+    prefer_fewer_items,
+    no_feasible,
+    engine
+) {
+  n_combos <- length(combo_0based)
+  n_obs    <- length(y)
+  n_pos    <- sum(y == 1L)
+  n_neg    <- sum(y == 0L)
+
+  eval_df <- NULL
+
+  if (engine == "Rcpp") {
+    # Call exported evaluate_combos_cpp with constraints
+    sens_min_c <- if (!is.null(sensitivity_min)) as.numeric(sensitivity_min) else -1.0
+    spec_min_c <- if (!is.null(specificity_min)) as.numeric(specificity_min) else -1.0
+    eval_df <- evaluate_combos_cpp(x_mat, y, combo_0based, cutoff_method, sens_min_c, spec_min_c)
+  } else {
+    # Pure R fallback
+    res_list <- vector("list", n_combos)
+    for (i in seq_len(n_combos)) {
+      c_cols <- combo_0based[[i]] + 1L
+      scores <- rowSums(x_mat[, c_cols, drop = FALSE])
+      freq <- compute_score_frequencies(scores, y)
+      auc_val <- compute_auc_from_table(freq$pos_counts, freq$neg_counts)
+      metrics <- compute_roc_metrics_from_table(freq$pos_counts, freq$neg_counts)
+      best_cut <- find_optimal_cutoff(metrics, method = cutoff_method,
+                                      sensitivity_min = sensitivity_min,
+                                      specificity_min = specificity_min)
+
+      res_list[[i]] <- data.frame(
+        n_items     = combo_sizes[i],
+        auc         = auc_val,
+        cutoff      = if (!is.null(best_cut)) best_cut$cutoff else NA_real_,
+        sensitivity = if (!is.null(best_cut)) best_cut$sensitivity else NA_real_,
+        specificity = if (!is.null(best_cut)) best_cut$specificity else NA_real_,
+        youden      = if (!is.null(best_cut)) best_cut$youden else NA_real_,
+        accuracy    = if (!is.null(best_cut)) best_cut$accuracy else NA_real_,
+        ppv         = if (!is.null(best_cut)) best_cut$ppv else NA_real_,
+        npv         = if (!is.null(best_cut)) best_cut$npv else NA_real_,
+        n_positive  = n_pos,
+        n_negative  = n_neg,
+        stringsAsFactors = FALSE
+      )
+    }
+    eval_df <- do.call(rbind, res_list)
+  }
+
+  eval_df$items <- combo_names
+  eval_df$.global_combo_index <- seq_len(n_combos)
+
+  # Check clinical constraints
+  feasible_mask <- rep(TRUE, n_combos)
+  if (cutoff_method == "clinical_constraint") {
+    feasible_mask <- !is.na(eval_df$cutoff) &
+      (eval_df$sensitivity >= sensitivity_min) &
+      (eval_df$specificity >= specificity_min)
+  }
+
+  n_feasible <- sum(feasible_mask)
+  fallback_used <- FALSE
+  status <- "selected"
+
+  if (n_feasible == 0L) {
+    if (no_feasible == "fallback_youden") {
+      # Select model by Youden optimal cutoff
+      fallback_used <- TRUE
+      status <- "fallback_youden"
+
+      if (cutoff_method == "clinical_constraint") {
+        # Recalculate cutoffs using Youden method
+        youd_res <- evaluate_combos_cpp(x_mat, y, combo_0based, "youden")
+        youd_res$items <- combo_names
+        youd_res$.global_combo_index <- seq_len(n_combos)
+        ranked <- .order_and_rank_candidates(youd_res, rank_by = selection_metric, prefer_fewer_items = prefer_fewer_items)
+      } else {
+        ranked <- .order_and_rank_candidates(eval_df, rank_by = selection_metric, prefer_fewer_items = prefer_fewer_items)
+      }
+      best_row <- ranked[1, , drop = FALSE]
+    } else {
+      # record_failure
+      return(list(
+        selected_model       = NULL,
+        apparent_performance = NULL,
+        status               = "no_feasible_candidate",
+        fallback_used        = FALSE,
+        n_feasible           = 0L
+      ))
+    }
+  } else {
+    feas_candidates <- eval_df[feasible_mask, , drop = FALSE]
+    ranked <- .order_and_rank_candidates(feas_candidates, rank_by = selection_metric, prefer_fewer_items = prefer_fewer_items)
+    best_row <- ranked[1, , drop = FALSE]
+  }
+
+  best_model <- list(
+    items       = best_row$items,
+    n_items     = as.integer(best_row$n_items),
+    cutoff      = as.numeric(best_row$cutoff),
+    global_rank = as.integer(best_row$.global_combo_index)
+  )
+
+  apparent_perf <- list(
+    auc         = as.numeric(best_row$auc),
+    sensitivity = as.numeric(best_row$sensitivity),
+    specificity = as.numeric(best_row$specificity),
+    youden      = as.numeric(best_row$youden),
+    accuracy    = as.numeric(best_row$accuracy),
+    ppv         = as.numeric(best_row$ppv),
+    npv         = as.numeric(best_row$npv)
+  )
+
+  list(
+    selected_model       = best_model,
+    apparent_performance = apparent_perf,
+    status               = status,
+    fallback_used        = fallback_used,
+    n_feasible           = n_feasible
+  )
+}
+
+#' Check if checkpoint compatibility key matches current invocation
+#' @keywords internal
+#' @noRd
+.is_checkpoint_compatible <- function(chk_key, cur_key) {
+  if (is.null(chk_key) || is.null(cur_key)) return(FALSE)
+
+  # 1. Compare package specification version
+  if (!identical(chk_key$pkg_version, cur_key$pkg_version)) {
+    return(FALSE)
+  }
+
+  # 2. Compare data content digest
+  if (!identical(chk_key$data_digest, cur_key$data_digest)) {
+    return(FALSE)
+  }
+
+  # 3. Compare analysis settings
+  chk_sett <- chk_key$settings
+  cur_sett <- cur_key$settings
+  if (is.null(chk_sett) || is.null(cur_sett)) return(FALSE)
+
+  keys_to_compare <- c("outcome", "items", "model_sizes", "bootstrap_reps",
+                       "resampling", "selection_metric", "cutoff_method",
+                       "sensitivity_min", "specificity_min", "prefer_fewer_items",
+                       "no_feasible", "positive_label", "negative_label",
+                       "engine", "parallel", "n_workers", "seed")
+  for (k in keys_to_compare) {
+    if (!identical(chk_sett[[k]], cur_sett[[k]])) {
+      return(FALSE)
+    }
+  }
+  TRUE
+}
+
+#' Atomically write RDS file via temporary file replacement
+#' @keywords internal
+#' @noRd
+.save_atomic_rds <- function(object, target_path) {
+  parent_dir <- dirname(target_path)
+  if (!dir.exists(parent_dir)) {
+    dir.create(parent_dir, recursive = TRUE, showWarnings = FALSE)
+  }
+  temp_file <- paste0(target_path, ".tmp.", Sys.getpid())
+  saveRDS(object, file = temp_file)
+  if (file.exists(target_path)) {
+    unlink(target_path, force = TRUE)
+  }
+  file.rename(temp_file, target_path)
+  invisible(target_path)
+}

@@ -284,7 +284,9 @@ DataFrame evaluate_combos_cpp(
     NumericMatrix x,           // rows=subjects, cols=items
     IntegerVector y,           // 0/1 outcome, length = nrow(x)
     List combo_indices,        // list of IntegerVector, each 0-based col indices
-    std::string cutoff_method  // "youden" or "closest_topleft"
+    std::string cutoff_method, // "youden", "closest_topleft", or "clinical_constraint"
+    double sensitivity_min = -1.0,
+    double specificity_min = -1.0
 ) {
   int n = x.nrow();
   int n_combos = combo_indices.size();
@@ -483,17 +485,51 @@ DataFrame evaluate_combos_cpp(
           best_idx = si;
         }
       }
+    } else if (cutoff_method == "clinical_constraint") {
+      double best_youden = -2.0, best_sens = -1.0, best_spec = -1.0;
+      double best_cutoff_val = R_PosInf;
+      best_idx = -1;
+      for (int si = 0; si < n_scores; si++) {
+        double se = sensitivity[si];
+        double sp = specificity[si];
+        if (sensitivity_min >= 0.0 && se < sensitivity_min) continue;
+        if (specificity_min >= 0.0 && sp < specificity_min) continue;
+
+        double yd = youden_vals[si];
+        double co = unique_scores[si];
+
+        if (yd > best_youden ||
+            (yd == best_youden && se > best_sens) ||
+            (yd == best_youden && se == best_sens && sp > best_spec) ||
+            (yd == best_youden && se == best_sens && sp == best_spec && co < best_cutoff_val)) {
+          best_youden = yd;
+          best_sens = se;
+          best_spec = sp;
+          best_cutoff_val = co;
+          best_idx = si;
+        }
+      }
     } else {
       stop("Unknown cutoff_method: '%s'", cutoff_method);
     }
 
-    out_cutoff[ci]      = unique_scores[best_idx];
-    out_sensitivity[ci] = sensitivity[best_idx];
-    out_specificity[ci] = specificity[best_idx];
-    out_youden[ci]      = youden_vals[best_idx];
-    out_accuracy[ci]    = accuracy[best_idx];
-    out_ppv[ci]         = ppv_vals[best_idx];
-    out_npv[ci]         = npv_vals[best_idx];
+    if (best_idx >= 0) {
+      out_cutoff[ci]      = unique_scores[best_idx];
+      out_sensitivity[ci] = sensitivity[best_idx];
+      out_specificity[ci] = specificity[best_idx];
+      out_youden[ci]      = youden_vals[best_idx];
+      out_accuracy[ci]    = accuracy[best_idx];
+      out_ppv[ci]         = ppv_vals[best_idx];
+      out_npv[ci]         = npv_vals[best_idx];
+    } else {
+      out_cutoff[ci]      = NA_REAL;
+      out_sensitivity[ci] = NA_REAL;
+      out_specificity[ci] = NA_REAL;
+      out_youden[ci]      = NA_REAL;
+      out_accuracy[ci]    = NA_REAL;
+      out_ppv[ci]         = NA_REAL;
+      out_npv[ci]         = NA_REAL;
+    }
   }
 
   return DataFrame::create(

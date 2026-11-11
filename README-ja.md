@@ -43,6 +43,7 @@ NCVROC は、実行プレビュー、固定モデル評価、単一サイズ選�
 | **複数サイズ通常モデル選抜** | `cross_size_cv()` | `cross_size_loocv()` |
 | **選抜手続きの汎化検証**（ネスト CV） | `cross_size_nested_cv()` | — *(非対応)* |
 | **通常 CV vs. ネスト CV 比較**（選択楽観度） | `compare_cv_selection()` | *(通常 LOOCV vs. ネスト $K$-fold)* |
+| **項目選択手順の Bootstrap 内部検証・安定性** | `bootstrap_select_sum_roc()` *(Harrell型全手順検証)* | — |
 | **候補安定性・楽観度監査** | `candidate_stability_roc()` *(繰り返し $K$-fold & Bootstrap)* | — |
 | **全自動一括解析**（単一呼び出し） | `ncvroc()` *(ネスト CV + 全データ最終全探索)* | — |
 | **全組み合わせ網羅的 ROC 探索** | `exhaustive_sum_roc()` / `roc_bruteforce()` | — |

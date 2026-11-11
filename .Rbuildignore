@@ -15,4 +15,5 @@
 ^README-ja\.md$
 ^AGENTS\.md$
 ^plan$
+^\.plan$
 ^benchmarks$

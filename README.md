@@ -43,6 +43,7 @@ NCVROC provides a structured hierarchy of functions covering execution preview, 
 | **Cross-size ordinary model selection** (multiple sizes) | `cross_size_cv()` | `cross_size_loocv()` |
 | **Selection-procedure validation** (nested CV) | `cross_size_nested_cv()` | — *(Not supported)* |
 | **Ordinary vs. Nested comparison** (selection optimism) | `compare_cv_selection()` | *(Ordinary LOOCV vs. Nested $K$-fold)* |
+| **Bootstrap validation of item selection & stability** | `bootstrap_select_sum_roc()` *(Harrell-style full pipeline validation)* | — |
 | **Candidate stability & optimism audit** | `candidate_stability_roc()` *(Repeated $K$-fold & Bootstrap)* | — |
 | **Full automated analysis (single call)** | `ncvroc()` *(Nested CV + final exhaustive search)* | — |
 | **Flat exhaustive combinatorial search** | `exhaustive_sum_roc()` / `roc_bruteforce()` | — |

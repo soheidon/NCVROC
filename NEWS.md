@@ -1,3 +1,15 @@
+# NCVROC 0.24.0 (2026-11-12)
+
+## Harrell-style Bootstrap Internal Validation & Selection Stability
+
+* Added public `bootstrap_select_sum_roc()` API performing Harrell-style bootstrap internal validation of the complete unweighted sum-score item-selection procedure and selection stability analysis.
+* Each bootstrap replicate repeats the entire combinatorial candidate search and cutoff determination, calculates apparent performance on the resample, and evaluates the frozen selected model and cutoff on the original dataset without refitting.
+* Estimates optimism as bootstrap performance minus original-data performance, correcting full-data apparent estimates across AUC, sensitivity, specificity, and Youden index.
+* Computes selection stability metrics across replicates: exact match rate, all-item selection frequencies, combination selection frequencies, Jaccard similarity to full-data reference model, and cutoff distributions.
+* Evaluates clinical constraint feasibility simultaneously for sensitivity and specificity (`cutoff_method = "clinical_constraint"`), with configurable behavior when no candidate meets constraints (`no_feasible = "record_failure"` or `"fallback_youden"`).
+* Supports stratified (default) and ordinary non-parametric bootstrap resampling, Rcpp and R computation engines, serial and thread-parallel execution with deterministic caller RNG state preservation, and atomic checkpoint persistence (`checkpoint_every`) and resumption via `result_file`.
+* Added S3 methods: `print()`, `summary()`, and `plot()` for objects of class `"bootstrap_select_sum_roc_result"`.
+
 # NCVROC 0.23.2 (2026-10-07)
 
 ## Result RDS reuse
