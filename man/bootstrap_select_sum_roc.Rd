@@ -17,6 +17,7 @@ bootstrap_select_sum_roc(
   specificity_min = NULL,
   prefer_fewer_items = TRUE,
   no_feasible = c("record_failure", "fallback_youden"),
+  correction_methods = "harrell",
   positive_label = 1,
   negative_label = 0,
   engine = c("Rcpp", "R"),
@@ -60,6 +61,10 @@ or \code{"ordinary"} (standard unstratified bootstrap).}
 \code{"record_failure"} (default, records replicate as failed and treats metrics as NA) or
 \code{"fallback_youden"} (selects optimal Youden model as fallback and applies the same fallback rule to full data).}
 
+\item{correction_methods}{Character vector specifying one or more bootstrap correction methods:
+\code{"harrell"} (default, Harrell-style optimism correction), \code{"632"} (Efron's .632 bootstrap correction),
+and/or \code{"632plus"} (Efron & Tibshirani's .632+ bootstrap correction). Default \code{"harrell"}.}
+
 \item{positive_label}{Value in \code{outcome} indicating positive diagnosis. Default \code{1}.}
 
 \item{negative_label}{Value in \code{outcome} indicating negative diagnosis. Default \code{0}.}
@@ -85,7 +90,30 @@ When supplied, the caller's pre-existing \code{.Random.seed} is preserved and re
 An S3 object of class \code{"bootstrap_select_sum_roc_result"}.
 }
 \description{
-Performs Harrell-style bootstrap internal validation of the complete unweighted
-sum-score item selection and cutoff determination procedure, and evaluates
-item selection stability across bootstrap resamples.
+Performs Harrell-style bootstrap internal validation, Efron's .632, and Efron–Tibshirani's
+.632+ bootstrap corrections of the complete unweighted sum-score item selection and
+cutoff determination procedure, and evaluates item selection stability across bootstrap resamples.
+}
+\details{
+\strong{Correction Methods:}
+\itemize{
+  \item \code{"harrell"}: Standard Harrell-style optimism correction. On each resample,
+    the complete candidate selection and cutoff determination procedure is rerun, and the
+    frozen selected model is evaluated on the original dataset. Optimism is calculated as
+    bootstrap performance minus original data performance.
+  \item \code{"632"}: Efron's .632 bootstrap correction: \eqn{M_{.632} = 0.368 M_{app} + 0.632 M_{OOB}}.
+    Out-of-bag (OOB) metric values are aggregated as the arithmetic mean across valid
+    replicates (replicate-level mean). For sensitivity, specificity, and Youden index,
+    a common valid replicate set is used so the identity \eqn{J_{.632} = Se_{.632} + Sp_{.632} - 1}
+    is strictly preserved.
+  \item \code{"632plus"}: Efron & Tibshirani's (1997) .632+ bootstrap correction.
+    Relative overfitting rate \eqn{R = (M_{app} - M_{OOB}) / (M_{app} - \gamma)} is bounded
+    to \eqn{[0, 1]}, yielding weight \eqn{w = 0.632 / (1 - 0.368 R) \in [0.632, 1]}, and
+    corrected metric \eqn{M_{.632+} = (1 - w) M_{app} + w M_{OOB}}.
+    For AUC, \eqn{\gamma = 0.5}.
+    For sensitivity, specificity, and Youden index, an NCVROC experimental extension is applied:
+    a common \eqn{R} and \eqn{w} are derived from the Youden index (\eqn{\gamma_J = 0}), and that
+    weight is applied to sensitivity and specificity, ensuring \eqn{J_{.632+} = Se_{.632+} + Sp_{.632+} - 1}.
+    This is an experimental extension, not an established standard .632+ estimator for sensitivity or specificity.
+}
 }

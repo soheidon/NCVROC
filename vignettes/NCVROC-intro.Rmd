@@ -148,14 +148,39 @@ head(final, 5)
 attr(final, "performance_type")
 ```
 
-## Summary of apparent vs. nested CV performance
+## Bootstrap internal validation and optimism correction
 
-| Function              | Performance estimate        | Use case                        |
-|-----------------------|-----------------------------|---------------------------------|
-| `exhaustive_sum_roc()` | Apparent (in-sample)       | Quick screening, exploration    |
-| `nested_sum_roc()`    | Nested cross-validated      | Validated performance estimation |
-| `fit_final_sum_scale()` | Apparent (in-sample)      | Final scale on full data        |
+In addition to nested cross-validation, NCVROC supports bootstrap-based internal
+validation and selection stability assessment via `bootstrap_select_sum_roc()`.
+It supports Harrell's optimism correction, Efron's .632 correction, and
+Efron–Tibshirani's .632+ correction:
 
-Always use `nested_sum_roc()` when reporting performance. Use
-`fit_final_sum_scale()` only after validation, to create the final
+```{r}
+boot_res <- bootstrap_select_sum_roc(
+  data               = d,
+  outcome            = "y",
+  items              = paste0("q", 1:6),
+  model_sizes        = 1:2,
+  bootstrap_reps     = 50,
+  selection_metric   = "auc",
+  cutoff_method      = "youden",
+  correction_methods = c("harrell", "632", "632plus"),
+  seed               = 42,
+  progress           = FALSE
+)
+
+summary(boot_res)
+```
+
+## Summary of apparent vs. validated performance
+
+| Function                    | Performance estimate               | Use case                        |
+|-----------------------------|------------------------------------|---------------------------------|
+| `exhaustive_sum_roc()`       | Apparent (in-sample)              | Quick screening, exploration    |
+| `nested_sum_roc()`          | Nested cross-validated             | Generalization performance      |
+| `bootstrap_select_sum_roc()`| Harrell, .632, .632+ corrected     | Selection stability & optimism  |
+| `fit_final_sum_scale()`     | Apparent (in-sample)              | Final scale on full data        |
+
+Always report cross-validated or bootstrap-corrected performance when evaluating
+scales. Use `fit_final_sum_scale()` only after validation, to create the final
 recommended item sets.

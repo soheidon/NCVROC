@@ -6,9 +6,32 @@
 
 #' Bootstrap Internal Validation and Selection Stability for Item-Set Scores
 #'
-#' Performs Harrell-style bootstrap internal validation of the complete unweighted
-#' sum-score item selection and cutoff determination procedure, and evaluates
-#' item selection stability across bootstrap resamples.
+#' Performs Harrell-style bootstrap internal validation, Efron's .632, and Efron–Tibshirani's
+#' .632+ bootstrap corrections of the complete unweighted sum-score item selection and
+#' cutoff determination procedure, and evaluates item selection stability across bootstrap resamples.
+#'
+#' @details
+#' \strong{Correction Methods:}
+#' \itemize{
+#'   \item \code{"harrell"}: Standard Harrell-style optimism correction. On each resample,
+#'     the complete candidate selection and cutoff determination procedure is rerun, and the
+#'     frozen selected model is evaluated on the original dataset. Optimism is calculated as
+#'     bootstrap performance minus original data performance.
+#'   \item \code{"632"}: Efron's .632 bootstrap correction: \eqn{M_{.632} = 0.368 M_{app} + 0.632 M_{OOB}}.
+#'     Out-of-bag (OOB) metric values are aggregated as the arithmetic mean across valid
+#'     replicates (replicate-level mean). For sensitivity, specificity, and Youden index,
+#'     a common valid replicate set is used so the identity \eqn{J_{.632} = Se_{.632} + Sp_{.632} - 1}
+#'     is strictly preserved.
+#'   \item \code{"632plus"}: Efron & Tibshirani's (1997) .632+ bootstrap correction.
+#'     Relative overfitting rate \eqn{R = (M_{app} - M_{OOB}) / (M_{app} - \gamma)} is bounded
+#'     to \eqn{[0, 1]}, yielding weight \eqn{w = 0.632 / (1 - 0.368 R) \in [0.632, 1]}, and
+#'     corrected metric \eqn{M_{.632+} = (1 - w) M_{app} + w M_{OOB}}.
+#'     For AUC, \eqn{\gamma = 0.5}.
+#'     For sensitivity, specificity, and Youden index, an NCVROC experimental extension is applied:
+#'     a common \eqn{R} and \eqn{w} are derived from the Youden index (\eqn{\gamma_J = 0}), and that
+#'     weight is applied to sensitivity and specificity, ensuring \eqn{J_{.632+} = Se_{.632+} + Sp_{.632+} - 1}.
+#'     This is an experimental extension, not an established standard .632+ estimator for sensitivity or specificity.
+#' }
 #'
 #' @param data A data.frame containing item responses and the binary outcome column.
 #'   Missing values in item columns or outcome are rejected by default.
@@ -28,6 +51,9 @@
 #' @param no_feasible Character, action when no candidate meets feasibility constraints:
 #'   \code{"record_failure"} (default, records replicate as failed and treats metrics as NA) or
 #'   \code{"fallback_youden"} (selects optimal Youden model as fallback and applies the same fallback rule to full data).
+#' @param correction_methods Character vector specifying one or more bootstrap correction methods:
+#'   \code{"harrell"} (default, Harrell-style optimism correction), \code{"632"} (Efron's .632 bootstrap correction),
+#'   and/or \code{"632plus"} (Efron & Tibshirani's .632+ bootstrap correction). Default \code{"harrell"}.
 #' @param positive_label Value in \code{outcome} indicating positive diagnosis. Default \code{1}.
 #' @param negative_label Value in \code{outcome} indicating negative diagnosis. Default \code{0}.
 #' @param engine Character, computation engine: \code{"Rcpp"} (default) or \code{"R"}.
@@ -55,6 +81,7 @@ bootstrap_select_sum_roc <- function(
     specificity_min    = NULL,
     prefer_fewer_items = TRUE,
     no_feasible        = c("record_failure", "fallback_youden"),
+    correction_methods = "harrell",
     positive_label     = 1,
     negative_label     = 0,
     engine             = c("Rcpp", "R"),
@@ -73,6 +100,14 @@ bootstrap_select_sum_roc <- function(
   no_feasible      <- match.arg(no_feasible)
   engine           <- match.arg(engine)
   parallel         <- match.arg(parallel)
+
+  valid_methods <- c("harrell", "632", "632plus")
+  if (!is.character(correction_methods) || length(correction_methods) < 1L ||
+      !all(correction_methods %in% valid_methods)) {
+    stop("`correction_methods` must be a character vector containing one or more of: 'harrell', '632', '632plus'.", call. = FALSE)
+  }
+  correction_methods <- unique(correction_methods)
+  need_oob <- any(c("632", "632plus") %in% correction_methods)
 
   if (!is.data.frame(data)) {
     stop("`data` must be a data.frame.", call. = FALSE)
@@ -171,6 +206,7 @@ bootstrap_select_sum_roc <- function(
     specificity_min    = specificity_min,
     prefer_fewer_items = prefer_fewer_items,
     no_feasible        = no_feasible,
+    correction_methods = correction_methods,
     positive_label     = positive_label,
     negative_label     = negative_label,
     engine             = engine,
@@ -299,6 +335,12 @@ bootstrap_select_sum_roc <- function(
     y_boot <- y[boot_rows]
     x_boot <- x_mat[boot_rows, , drop = FALSE]
 
+    # OOB rows absent from bootstrap resample
+    oob_rows <- which(!(seq_len(n_obs) %in% boot_rows))
+    n_oob <- length(oob_rows)
+    n_pos_oob <- if (n_oob > 0L) sum(y[oob_rows] == 1L) else 0L
+    n_neg_oob <- if (n_oob > 0L) sum(y[oob_rows] == 0L) else 0L
+
     # Check if both classes present
     if (length(unique(y_boot)) < 2L) {
       return(list(
@@ -324,7 +366,17 @@ bootstrap_select_sum_roc <- function(
         training_feasible      = FALSE,
         test_feasible          = FALSE,
         exact_match            = FALSE,
-        jaccard_similarity     = NA_real_
+        jaccard_similarity     = NA_real_,
+        oob_n_total            = n_oob,
+        oob_n_pos              = n_pos_oob,
+        oob_n_neg              = n_neg_oob,
+        oob_valid_auc          = FALSE,
+        oob_valid_joint        = FALSE,
+        oob_auc                = NA_real_,
+        oob_sensitivity        = NA_real_,
+        oob_specificity        = NA_real_,
+        oob_youden             = NA_real_,
+        oob_invalid_reason     = "selection_failed"
       ))
     }
 
@@ -368,7 +420,17 @@ bootstrap_select_sum_roc <- function(
         training_feasible      = FALSE,
         test_feasible          = FALSE,
         exact_match            = FALSE,
-        jaccard_similarity     = NA_real_
+        jaccard_similarity     = NA_real_,
+        oob_n_total            = n_oob,
+        oob_n_pos              = n_pos_oob,
+        oob_n_neg              = n_neg_oob,
+        oob_valid_auc          = FALSE,
+        oob_valid_joint        = FALSE,
+        oob_auc                = NA_real_,
+        oob_sensitivity        = NA_real_,
+        oob_specificity        = NA_real_,
+        oob_youden             = NA_real_,
+        oob_invalid_reason     = "selection_failed"
       ))
     }
 
@@ -417,6 +479,51 @@ bootstrap_select_sum_roc <- function(
       length(intersect(sel_items_vec, ref_items_vec)) / length(union(sel_items_vec, ref_items_vec))
     } else NA_real_
 
+    # OOB evaluation
+    oob_valid_auc <- FALSE
+    oob_valid_joint <- FALSE
+    oob_auc <- NA_real_
+    oob_sens <- NA_real_
+    oob_spec <- NA_real_
+    oob_youd <- NA_real_
+    oob_reason <- NA_character_
+
+    if (!need_oob) {
+      oob_reason <- "not_requested"
+    } else if (n_oob == 0L) {
+      oob_reason <- "empty_oob"
+    } else if (n_pos_oob == 0L && n_neg_oob == 0L) {
+      oob_reason <- "no_oob_samples"
+    } else if (n_pos_oob == 0L) {
+      oob_reason <- "no_oob_positives"
+      oob_scores <- orig_scores[oob_rows]
+      oob_pred <- ifelse(oob_scores >= sel_cutoff, 1L, 0L)
+      oob_spec <- sum(oob_pred == 0L & y[oob_rows] == 0L) / n_neg_oob
+    } else if (n_neg_oob == 0L) {
+      oob_reason <- "no_oob_negatives"
+      oob_scores <- orig_scores[oob_rows]
+      oob_pred <- ifelse(oob_scores >= sel_cutoff, 1L, 0L)
+      oob_sens <- sum(oob_pred == 1L & y[oob_rows] == 1L) / n_pos_oob
+    } else {
+      # Both classes present in OOB
+      oob_scores <- orig_scores[oob_rows]
+      y_oob <- y[oob_rows]
+
+      # Unthresholded sum score AUC on OOB
+      oob_freq <- compute_score_frequencies(oob_scores, y_oob)
+      oob_auc <- compute_auc_from_table(oob_freq$pos_counts, oob_freq$neg_counts)
+      oob_valid_auc <- !is.na(oob_auc)
+
+      # Fixed selected cutoff for sensitivity and specificity
+      oob_pred <- ifelse(oob_scores >= sel_cutoff, 1L, 0L)
+      tp_oob <- sum(oob_pred == 1L & y_oob == 1L)
+      tn_oob <- sum(oob_pred == 0L & y_oob == 0L)
+      oob_sens <- tp_oob / n_pos_oob
+      oob_spec <- tn_oob / n_neg_oob
+      oob_youd <- oob_sens + oob_spec - 1.0
+      oob_valid_joint <- TRUE
+    }
+
     list(
       replicate_id           = b,
       selected_items         = sel_items_str,
@@ -440,7 +547,17 @@ bootstrap_select_sum_roc <- function(
       training_feasible      = tr_feas,
       test_feasible          = test_feas,
       exact_match            = exact_m,
-      jaccard_similarity     = jaccard
+      jaccard_similarity     = jaccard,
+      oob_n_total            = n_oob,
+      oob_n_pos              = n_pos_oob,
+      oob_n_neg              = n_neg_oob,
+      oob_valid_auc          = oob_valid_auc,
+      oob_valid_joint        = oob_valid_joint,
+      oob_auc                = oob_auc,
+      oob_sensitivity        = oob_sens,
+      oob_specificity        = oob_spec,
+      oob_youden             = oob_youd,
+      oob_invalid_reason     = oob_reason
     )
   }
 
@@ -462,7 +579,7 @@ bootstrap_select_sum_roc <- function(
           cl,
           varlist = c("x_mat", "y", "combo_0based", "combo_names", "combo_sizes",
                       "cutoff_method", "selection_metric", "sensitivity_min", "specificity_min",
-                      "prefer_fewer_items", "no_feasible", "engine", "bootstrap_indices",
+                      "prefer_fewer_items", "no_feasible", "need_oob", "engine", "bootstrap_indices",
                       "ref_model", "n_pos", "n_neg", "n_obs", ".select_optimal_model_internal",
                       ".parse_itemset", "compute_score_frequencies", "compute_auc_from_table",
                       "compute_roc_metrics_from_table", "find_optimal_cutoff",
@@ -524,20 +641,24 @@ bootstrap_select_sum_roc <- function(
     youden      = if (n_valid > 0L) mean(replicates_df$optimism_youden[is_valid]) else NA_real_
   )
 
-  # Corrected performance
+  # Corrected performance (Harrell)
   # If any replicate failed under record_failure, unconditional corrected estimate is NA
   has_unconditional_estimate <- (n_failed == 0L) && !is.null(ref_model) && !is.na(ref_model$items)
 
-  corrected_perf <- list(
+  harrell_perf <- list(
     auc         = if (has_unconditional_estimate) apparent_perf$auc - mean_optimism["auc"] else NA_real_,
     sensitivity = if (has_unconditional_estimate) apparent_perf$sensitivity - mean_optimism["sensitivity"] else NA_real_,
     specificity = if (has_unconditional_estimate) apparent_perf$specificity - mean_optimism["specificity"] else NA_real_,
     youden      = if (has_unconditional_estimate) apparent_perf$youden - mean_optimism["youden"] else NA_real_,
     is_conditional = (n_failed > 0L),
-    unconditional_available = has_unconditional_estimate
+    unconditional_available = has_unconditional_estimate,
+    requested   = "harrell" %in% correction_methods
   )
 
-  # Check theoretical boundary warnings
+  # For backwards compatibility, result$corrected_performance remains Harrell
+  corrected_perf <- harrell_perf
+
+  # Check theoretical boundary warnings for Harrell
   if (!is.na(corrected_perf$auc) && (corrected_perf$auc < 0 || corrected_perf$auc > 1)) {
     warning(sprintf("Corrected AUC (%.4f) falls outside theoretical range [0, 1]. Retaining raw value.", corrected_perf$auc), call. = FALSE)
   }
@@ -550,6 +671,209 @@ bootstrap_select_sum_roc <- function(
   if (!is.na(corrected_perf$youden) && (corrected_perf$youden < -1 || corrected_perf$youden > 1)) {
     warning(sprintf("Corrected Youden index (%.4f) falls outside [-1, 1]. Retaining raw value.", corrected_perf$youden), call. = FALSE)
   }
+
+  # OOB aggregation
+  oob_valid_auc_mask   <- is_valid & replicates_df$oob_valid_auc
+  oob_valid_joint_mask <- is_valid & replicates_df$oob_valid_joint
+
+  n_oob_valid_auc   <- sum(oob_valid_auc_mask)
+  n_oob_valid_joint <- sum(oob_valid_joint_mask)
+
+  mean_oob_auc  <- if (n_oob_valid_auc > 0L) mean(replicates_df$oob_auc[oob_valid_auc_mask]) else NA_real_
+  mean_oob_sens <- if (n_oob_valid_joint > 0L) mean(replicates_df$oob_sensitivity[oob_valid_joint_mask]) else NA_real_
+  mean_oob_spec <- if (n_oob_valid_joint > 0L) mean(replicates_df$oob_specificity[oob_valid_joint_mask]) else NA_real_
+  mean_oob_youd <- if (n_oob_valid_joint > 0L) mean(replicates_df$oob_youden[oob_valid_joint_mask]) else NA_real_
+
+  mean_oob <- c(
+    auc         = mean_oob_auc,
+    sensitivity = mean_oob_sens,
+    specificity = mean_oob_spec,
+    youden      = mean_oob_youd
+  )
+
+  oob_invalid_counts <- table(replicates_df$oob_invalid_reason)
+
+  oob_summary <- list(
+    mean_oob            = mean_oob,
+    n_valid_auc         = n_oob_valid_auc,
+    n_valid_joint       = n_oob_valid_joint,
+    n_pos_distribution  = summary(replicates_df$oob_n_pos),
+    n_neg_distribution  = summary(replicates_df$oob_n_neg),
+    invalid_reasons     = as.list(oob_invalid_counts)
+  )
+
+  # .632 calculation
+  b632_requested <- "632" %in% correction_methods
+  b632_auc  <- if (b632_requested && !is.null(ref_model) && !is.na(ref_model$items) && !is.na(mean_oob_auc)) {
+    if (n_failed == 0L) 0.368 * apparent_perf$auc + 0.632 * mean_oob_auc else NA_real_
+  } else NA_real_
+
+  b632_sens <- if (b632_requested && !is.null(ref_model) && !is.na(ref_model$items) && !is.na(mean_oob_sens)) {
+    if (n_failed == 0L) 0.368 * apparent_perf$sensitivity + 0.632 * mean_oob_sens else NA_real_
+  } else NA_real_
+
+  b632_spec <- if (b632_requested && !is.null(ref_model) && !is.na(ref_model$items) && !is.na(mean_oob_spec)) {
+    if (n_failed == 0L) 0.368 * apparent_perf$specificity + 0.632 * mean_oob_spec else NA_real_
+  } else NA_real_
+
+  b632_youd <- if (b632_requested && !is.null(ref_model) && !is.na(ref_model$items) && !is.na(mean_oob_youd)) {
+    if (n_failed == 0L) 0.368 * apparent_perf$youden + 0.632 * mean_oob_youd else NA_real_
+  } else NA_real_
+
+  b632_perf <- list(
+    auc                     = b632_auc,
+    sensitivity             = b632_sens,
+    specificity             = b632_spec,
+    youden                  = b632_youd,
+    is_conditional          = (n_failed > 0L) || (n_oob_valid_joint < bootstrap_reps),
+    unconditional_available = (n_failed == 0L) && !is.na(b632_youd) && !is.na(b632_auc),
+    requested               = b632_requested
+  )
+
+  if (b632_requested) {
+    if (!is.na(b632_perf$auc) && (b632_perf$auc < 0 || b632_perf$auc > 1)) {
+      warning(sprintf(".632 AUC (%.4f) falls outside theoretical range [0, 1]. Retaining raw value.", b632_perf$auc), call. = FALSE)
+    }
+    if (!is.na(b632_perf$sensitivity) && (b632_perf$sensitivity < 0 || b632_perf$sensitivity > 1)) {
+      warning(sprintf(".632 sensitivity (%.4f) falls outside [0, 1]. Retaining raw value.", b632_perf$sensitivity), call. = FALSE)
+    }
+    if (!is.na(b632_perf$specificity) && (b632_perf$specificity < 0 || b632_perf$specificity > 1)) {
+      warning(sprintf(".632 specificity (%.4f) falls outside [0, 1]. Retaining raw value.", b632_perf$specificity), call. = FALSE)
+    }
+    if (!is.na(b632_perf$youden) && (b632_perf$youden < -1 || b632_perf$youden > 1)) {
+      warning(sprintf(".632 Youden index (%.4f) falls outside [-1, 1]. Retaining raw value.", b632_perf$youden), call. = FALSE)
+    }
+  }
+
+  # .632+ calculation & boundary handling
+  b632plus_requested <- "632plus" %in% correction_methods
+
+  boundary_counts <- list(
+    auc_r_clipped_zero    = 0L,
+    auc_r_clipped_one     = 0L,
+    auc_denom_nonpos      = 0L,
+    youden_r_clipped_zero = 0L,
+    youden_r_clipped_one  = 0L,
+    youden_denom_nonpos   = 0L
+  )
+  boundary_notes <- character(0)
+
+  # AUC: gamma = 0.5
+  R_auc <- NA_real_
+  w_auc <- NA_real_
+  b632plus_auc <- NA_real_
+
+  if (b632plus_requested && !is.null(ref_model) && !is.na(ref_model$items)) {
+    if (is.na(apparent_perf$auc) || is.na(mean_oob_auc)) {
+      boundary_notes <- c(boundary_notes, "AUC .632+: OOB or apparent AUC is NA.")
+    } else {
+      denom_auc <- apparent_perf$auc - 0.5
+      if (denom_auc <= 1e-12) {
+        boundary_counts$auc_denom_nonpos <- 1L
+        boundary_notes <- c(boundary_notes, "AUC .632+: Apparent AUC does not exceed chance gamma=0.5; R is undefined.")
+        warning("Apparent AUC does not exceed chance gamma = 0.5; .632+ relative overfitting rate is undefined.", call. = FALSE)
+      } else {
+        r_raw_auc <- (apparent_perf$auc - mean_oob_auc) / denom_auc
+        if (r_raw_auc <= 0.0) {
+          boundary_counts$auc_r_clipped_zero <- 1L
+          R_auc <- 0.0
+        } else if (r_raw_auc >= 1.0) {
+          boundary_counts$auc_r_clipped_one <- 1L
+          R_auc <- 1.0
+        } else {
+          R_auc <- r_raw_auc
+        }
+        w_auc <- 0.632 / (1.0 - 0.368 * R_auc)
+        w_auc <- min(max(w_auc, 0.632), 1.0)
+        if (n_failed == 0L) {
+          b632plus_auc <- (1.0 - w_auc) * apparent_perf$auc + w_auc * mean_oob_auc
+        }
+      }
+    }
+  }
+
+  # Sensitivity, Specificity, Youden: common R and w derived from Youden (gamma_J = 0)
+  R_youden <- NA_real_
+  w_youden <- NA_real_
+  b632plus_sens <- NA_real_
+  b632plus_spec <- NA_real_
+  b632plus_youd <- NA_real_
+
+  if (b632plus_requested && !is.null(ref_model) && !is.na(ref_model$items)) {
+    if (is.na(apparent_perf$youden) || is.na(mean_oob_youd)) {
+      boundary_notes <- c(boundary_notes, "Joint .632+: OOB or apparent Youden is NA.")
+    } else {
+      denom_youd <- apparent_perf$youden - 0.0
+      if (denom_youd <= 1e-12) {
+        boundary_counts$youden_denom_nonpos <- 1L
+        boundary_notes <- c(boundary_notes, "Joint .632+: Apparent Youden does not exceed chance gamma_J=0; R is undefined.")
+        warning("Apparent Youden index does not exceed chance gamma = 0; .632+ relative overfitting rate is undefined.", call. = FALSE)
+      } else {
+        r_raw_youd <- (apparent_perf$youden - mean_oob_youd) / denom_youd
+        if (r_raw_youd <= 0.0) {
+          boundary_counts$youden_r_clipped_zero <- 1L
+          R_youden <- 0.0
+        } else if (r_raw_youd >= 1.0) {
+          boundary_counts$youden_r_clipped_one <- 1L
+          R_youden <- 1.0
+        } else {
+          R_youden <- r_raw_youd
+        }
+        w_youden <- 0.632 / (1.0 - 0.368 * R_youden)
+        w_youden <- min(max(w_youden, 0.632), 1.0)
+        if (n_failed == 0L && !is.na(mean_oob_sens) && !is.na(mean_oob_spec)) {
+          b632plus_sens <- (1.0 - w_youden) * apparent_perf$sensitivity + w_youden * mean_oob_sens
+          b632plus_spec <- (1.0 - w_youden) * apparent_perf$specificity + w_youden * mean_oob_spec
+          b632plus_youd <- b632plus_sens + b632plus_spec - 1.0
+        }
+      }
+    }
+  }
+
+  b632plus_perf <- list(
+    auc                     = b632plus_auc,
+    sensitivity             = b632plus_sens,
+    specificity             = b632plus_spec,
+    youden                  = b632plus_youd,
+    is_conditional          = (n_failed > 0L) || (n_oob_valid_joint < bootstrap_reps),
+    unconditional_available = (n_failed == 0L) && !is.na(b632plus_youd) && !is.na(b632plus_auc),
+    r_auc                   = R_auc,
+    w_auc                   = w_auc,
+    r_youden                = R_youden,
+    w_youden                = w_youden,
+    boundary_notes          = boundary_notes,
+    requested               = b632plus_requested
+  )
+
+  if (b632plus_requested) {
+    if (!is.na(b632plus_perf$auc) && (b632plus_perf$auc < 0 || b632plus_perf$auc > 1)) {
+      warning(sprintf(".632+ AUC (%.4f) falls outside theoretical range [0, 1]. Retaining raw value.", b632plus_perf$auc), call. = FALSE)
+    }
+    if (!is.na(b632plus_perf$sensitivity) && (b632plus_perf$sensitivity < 0 || b632plus_perf$sensitivity > 1)) {
+      warning(sprintf(".632+ sensitivity (%.4f) falls outside [0, 1]. Retaining raw value.", b632plus_perf$sensitivity), call. = FALSE)
+    }
+    if (!is.na(b632plus_perf$specificity) && (b632plus_perf$specificity < 0 || b632plus_perf$specificity > 1)) {
+      warning(sprintf(".632+ specificity (%.4f) falls outside [0, 1]. Retaining raw value.", b632plus_perf$specificity), call. = FALSE)
+    }
+    if (!is.na(b632plus_perf$youden) && (b632plus_perf$youden < -1 || b632plus_perf$youden > 1)) {
+      warning(sprintf(".632+ Youden index (%.4f) falls outside [-1, 1]. Retaining raw value.", b632plus_perf$youden), call. = FALSE)
+    }
+  }
+
+  overfitting_diag <- list(
+    r_auc            = R_auc,
+    w_auc            = w_auc,
+    r_youden         = R_youden,
+    w_youden         = w_youden,
+    boundary_counts  = boundary_counts,
+    boundary_notes   = boundary_notes
+  )
+
+  corrections_list <- list(
+    harrell  = harrell_perf,
+    b632     = b632_perf,
+    b632plus = b632plus_perf
+  )
 
   # Selection stability calculations
   # Combination frequencies
@@ -631,13 +955,18 @@ bootstrap_select_sum_roc <- function(
     final_selected_model     = ref_model,
     apparent_performance     = apparent_perf,
     bootstrap_summary        = list(
-      n_reps_requested = bootstrap_reps,
-      n_reps_valid     = n_valid,
-      n_reps_failed    = n_failed,
-      n_reps_fallback  = n_fallback,
-      mean_optimism    = mean_optimism
+      n_reps_requested       = bootstrap_reps,
+      n_reps_valid           = n_valid,
+      n_reps_failed          = n_failed,
+      n_reps_fallback        = n_fallback,
+      mean_optimism          = mean_optimism,
+      n_reps_oob_valid_auc   = n_oob_valid_auc,
+      n_reps_oob_valid_joint = n_oob_valid_joint
     ),
     corrected_performance    = corrected_perf,
+    corrections              = corrections_list,
+    oob_summary              = oob_summary,
+    overfitting_diagnostics  = overfitting_diag,
     bootstrap_results        = replicates_df,
     selection_frequency      = combo_freq_df,
     item_selection_frequency = item_freq_df,
@@ -821,7 +1150,7 @@ bootstrap_select_sum_roc <- function(
   keys_to_compare <- c("outcome", "items", "model_sizes", "bootstrap_reps",
                        "resampling", "selection_metric", "cutoff_method",
                        "sensitivity_min", "specificity_min", "prefer_fewer_items",
-                       "no_feasible", "positive_label", "negative_label",
+                       "no_feasible", "correction_methods", "positive_label", "negative_label",
                        "engine", "parallel", "n_workers", "seed")
   for (k in keys_to_compare) {
     if (!identical(chk_sett[[k]], cur_sett[[k]])) {

@@ -1,3 +1,16 @@
+# NCVROC 0.25.0 (2026-11-12)
+
+## Efron's .632 and .632+ Bootstrap Internal Validation
+
+* Extended `bootstrap_select_sum_roc()` with Efron's .632 and Efron–Tibshirani's .632+ bootstrap corrections for AUC, sensitivity, specificity, and Youden index.
+* Added `correction_methods` argument accepting `"harrell"` (default), `"632"`, and `"632plus"`. Multiple methods share the same bootstrap replicates without re-sampling.
+* Out-of-bag (OOB) evaluation freezes the item set and cutoff selected on each bootstrap sample and applies them unchanged to observations not included in that resample. Replicate-level arithmetic means are computed over valid replicates.
+* For the .632 correction, sensitivity, specificity, and Youden index share a common valid replicate set, strictly preserving the mathematical identity $J_{.632} = Se_{.632} + Sp_{.632} - 1$.
+* For the .632+ correction, relative overfitting rate $R$ is bounded to $[0, 1]$ and weight $w$ to $[0.632, 1]$. AUC uses chance performance $\gamma = 0.5$. Sensitivity, specificity, and Youden index use an NCVROC experimental extension deriving a common weight from Youden index ($\gamma_J = 0$), preserving $J_{.632+} = Se_{.632+} + Sp_{.632+} - 1$.
+* Added detailed diagnostics to the result object: `corrections`, `oob_summary`, and `overfitting_diagnostics` (recording boundary counts, relative overfitting rates, weights, and invalid reasons).
+* Extended `summary()` and `print()` methods with multi-method comparison tables, clear distinction of conditional vs. unconditional estimates, and transparent notes for undefined boundary conditions.
+* Fully backward compatible with v0.24.0: omission of `correction_methods` preserves existing calculation, Harrell results, and result structures.
+
 # NCVROC 0.24.0 (2026-11-12)
 
 ## Harrell-style Bootstrap Internal Validation & Selection Stability

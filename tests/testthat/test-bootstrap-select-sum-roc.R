@@ -428,10 +428,10 @@ test_that("Reviewer finding: checkpoint compatibility rejects differing pkg_vers
       outcome = "y", items = "I1", model_sizes = 1, bootstrap_reps = 10L,
       resampling = "stratified", selection_metric = "auc", cutoff_method = "youden",
       sensitivity_min = NULL, specificity_min = NULL, prefer_fewer_items = TRUE,
-      no_feasible = "record_failure", positive_label = 1, negative_label = 0,
+      no_feasible = "record_failure", correction_methods = "harrell", positive_label = 1, negative_label = 0,
       engine = "Rcpp", parallel = "none", n_workers = 1L, seed = 123L
     ),
-    pkg_version = "0.24.0"
+    pkg_version = "0.25.0"
   )
 
   key_diff_version <- key_base

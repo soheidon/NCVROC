@@ -43,7 +43,7 @@ NCVROC provides a structured hierarchy of functions covering execution preview, 
 | **Cross-size ordinary model selection** (multiple sizes) | `cross_size_cv()` | `cross_size_loocv()` |
 | **Selection-procedure validation** (nested CV) | `cross_size_nested_cv()` | — *(Not supported)* |
 | **Ordinary vs. Nested comparison** (selection optimism) | `compare_cv_selection()` | *(Ordinary LOOCV vs. Nested $K$-fold)* |
-| **Bootstrap validation of item selection & stability** | `bootstrap_select_sum_roc()` *(Harrell-style full pipeline validation)* | — |
+| **Bootstrap validation of item selection & stability** | `bootstrap_select_sum_roc()` *(Harrell, .632, and .632+ full pipeline validation)* | — |
 | **Candidate stability & optimism audit** | `candidate_stability_roc()` *(Repeated $K$-fold & Bootstrap)* | — |
 | **Full automated analysis (single call)** | `ncvroc()` *(Nested CV + final exhaustive search)* | — |
 | **Flat exhaustive combinatorial search** | `exhaustive_sum_roc()` / `roc_bruteforce()` | — |
@@ -400,6 +400,8 @@ print(filtered)
 
 ## References
 
+- Efron, B. (1983). Estimating the error rate of a prediction rule: improvement on cross-validation. *Journal of the American Statistical Association*, 78(382), 316–331.
+- Efron, B., & Tibshirani, R. (1997). Improvements on cross-validation: the .632+ bootstrap method. *Journal of the American Statistical Association*, 92(438), 548–560.
 - Fawcett, T. (2006). An introduction to ROC analysis. *Pattern Recognition Letters*, 27(8), 861–874. [doi:10.1016/j.patrec.2005.10.010](https://doi.org/10.1016/j.patrec.2005.10.010)
 - Varma, S., & Simon, R. (2006). Bias in error estimation when using cross-validation for model selection. *BMC Bioinformatics*, 7, 91. [doi:10.1186/1471-2105-7-91](https://doi.org/10.1186/1471-2105-7-91)
 - Youden, W. J. (1950). Index for rating diagnostic tests. *Cancer*, 3(1), 32–35.
