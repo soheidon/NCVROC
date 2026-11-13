@@ -1,3 +1,13 @@
+# NCVROC 0.31.0 (2026-11-14)
+
+## Statistical Audit and Aggregation Enhancements
+
+* Added `ncvroc_audit()` and `print.ncvroc_audit()` to provide a unified, machine-readable statistical audit across nested CV, cross-size nested CV, ordinary/repeated CV, and candidate-stability results, reporting `"verified"`, `"not_verifiable"`, `"not_applicable"`, or `"violation"` per component without overclaiming when underlying metadata is absent.
+* Added `cv_performance_audit()` to separate fold-macro, count-pooled, repeat-level, and pooled out-of-fold (OOF) performance estimands, compute per-fold `TP`/`FP`/`TN`/`FN` and `n_pos`/`n_neg` with explicit `na_reason`, and prevent subject double-counting across repeated CV.
+* Added `clinical_constraint_audit()` to classify every planned fold into six canonical states (`"feasible"`, `"infeasible"`, `"undefined_metric"`, `"computational_failure"`, `"cancelled"`, `"not_evaluated"`), compute `feasibility_rate` over all planned folds, track `fallback_used` and descriptive `outer_test_target_met`, and return `"not_applicable"` when no clinical constraint is active.
+* Added `selection_strategy_audit()` to check multi-strategy comparability across outcome, candidate items, model sizes, CV split configuration and repeat-aware `split_identity`, preprocessing/preselection settings, `seed`, and strategy rules (`"comparable"`, `"incompatible"`, `"partially_verifiable"`).
+* Added candidate-stability estimand verification (`estimands_included`, candidate universe, `denominator_all` cross-checked against `replicate_metadata`, `prefer_fewer_items`, `seed`, and post-selection conditioning notes) and expanded test coverage in `tests/testthat/test-stat-audit.R` (including unconditional metamorphic leakage tests across R serial, `native_outer_fold`, `native_streaming`, and `cross_size_nested_cv`).
+
 # NCVROC 0.30.0 (2026-11-14)
 
 ## Bounded Streaming Native Engine and >2,000,000 Candidate Search
