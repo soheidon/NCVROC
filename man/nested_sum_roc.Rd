@@ -93,14 +93,17 @@ C++/TBB multi-threading (Scope A).
 If `"native_outer_fold"`, complete outer folds (candidate search, inner CV,
 model selection, outer-training cutoff fitting, and outer-test scoring) are
 executed end-to-end in native C++/TBB (Scope B), with final aggregation in R.
+If `"native_streaming"`, bounded streaming candidate-batch execution in native
+C++/TBB is used, supporting candidate spaces above 2,000,000 combinations
+with optional checkpointing and cooperative cancellation.
 Default `FALSE`.}
 
 \item{n_workers}{Integer, number of worker processes (for `"outer"` or `"chunks"`),
-threads (for `"threads"`, `"native_tbb"`, or `"native_outer_fold"`), or outer PSOCK workers (for `"hybrid"`), or
+threads (for `"threads"`, `"native_tbb"`, `"native_outer_fold"`, or `"native_streaming"`), or outer PSOCK workers (for `"hybrid"`), or
 `NULL` (default) for automatic detection. In hybrid mode, the outer worker
 count is resolved first; `threads_per_worker` is then capped to the remaining
-CPU budget. For `"native_tbb"` and `"native_outer_fold"`, `n_workers` specifies the requested native TBB thread count,
-automatically capped by outer folds, available CPU cores, and `_R_CHECK_LIMIT_CORES_`.
+CPU budget. For `"native_tbb"`, `"native_outer_fold"`, and `"native_streaming"`, `n_workers` specifies the requested native TBB thread count,
+automatically capped by available CPU cores and `_R_CHECK_LIMIT_CORES_` (and by outer folds for `"native_tbb"` and `"native_outer_fold"`).
 Ignored when `parallel = FALSE` or `"none"`.
 When `parallel = TRUE` and `n_workers = NULL`, worker count defaults to
 \code{max(1L, parallel::detectCores(logical = FALSE) - 1L)}. The effective

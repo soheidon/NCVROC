@@ -179,6 +179,51 @@ BEGIN_RCPP
     return rcpp_result_gen;
 END_RCPP
 }
+// evaluate_bootstrap_replicates_native_cpp
+DataFrame evaluate_bootstrap_replicates_native_cpp(NumericMatrix x, IntegerVector y, List boot_indices_list, List combo_0based, std::string cutoff_method, std::string selection_metric, double sensitivity_min, double specificity_min, bool prefer_fewer_items, bool fallback_youden, bool need_oob, IntegerVector ref_items_0based, int num_threads);
+RcppExport SEXP _NCVROC_evaluate_bootstrap_replicates_native_cpp(SEXP xSEXP, SEXP ySEXP, SEXP boot_indices_listSEXP, SEXP combo_0basedSEXP, SEXP cutoff_methodSEXP, SEXP selection_metricSEXP, SEXP sensitivity_minSEXP, SEXP specificity_minSEXP, SEXP prefer_fewer_itemsSEXP, SEXP fallback_youdenSEXP, SEXP need_oobSEXP, SEXP ref_items_0basedSEXP, SEXP num_threadsSEXP) {
+BEGIN_RCPP
+    Rcpp::RObject rcpp_result_gen;
+    Rcpp::RNGScope rcpp_rngScope_gen;
+    Rcpp::traits::input_parameter< NumericMatrix >::type x(xSEXP);
+    Rcpp::traits::input_parameter< IntegerVector >::type y(ySEXP);
+    Rcpp::traits::input_parameter< List >::type boot_indices_list(boot_indices_listSEXP);
+    Rcpp::traits::input_parameter< List >::type combo_0based(combo_0basedSEXP);
+    Rcpp::traits::input_parameter< std::string >::type cutoff_method(cutoff_methodSEXP);
+    Rcpp::traits::input_parameter< std::string >::type selection_metric(selection_metricSEXP);
+    Rcpp::traits::input_parameter< double >::type sensitivity_min(sensitivity_minSEXP);
+    Rcpp::traits::input_parameter< double >::type specificity_min(specificity_minSEXP);
+    Rcpp::traits::input_parameter< bool >::type prefer_fewer_items(prefer_fewer_itemsSEXP);
+    Rcpp::traits::input_parameter< bool >::type fallback_youden(fallback_youdenSEXP);
+    Rcpp::traits::input_parameter< bool >::type need_oob(need_oobSEXP);
+    Rcpp::traits::input_parameter< IntegerVector >::type ref_items_0based(ref_items_0basedSEXP);
+    Rcpp::traits::input_parameter< int >::type num_threads(num_threadsSEXP);
+    rcpp_result_gen = Rcpp::wrap(evaluate_bootstrap_replicates_native_cpp(x, y, boot_indices_list, combo_0based, cutoff_method, selection_metric, sensitivity_min, specificity_min, prefer_fewer_items, fallback_youden, need_oob, ref_items_0based, num_threads));
+    return rcpp_result_gen;
+END_RCPP
+}
+// reduce_candidate_stability_replicates_cpp
+List reduce_candidate_stability_replicates_cpp(IntegerVector candidate_id, IntegerVector replicate_id, IntegerVector cand_n_items, NumericVector rank_metric_vals, LogicalVector training_valid, NumericVector test_sensitivity, NumericVector test_specificity, bool check_training_valid, double sensitivity_min, double specificity_min, bool prefer_fewer_items, int total_resamples);
+RcppExport SEXP _NCVROC_reduce_candidate_stability_replicates_cpp(SEXP candidate_idSEXP, SEXP replicate_idSEXP, SEXP cand_n_itemsSEXP, SEXP rank_metric_valsSEXP, SEXP training_validSEXP, SEXP test_sensitivitySEXP, SEXP test_specificitySEXP, SEXP check_training_validSEXP, SEXP sensitivity_minSEXP, SEXP specificity_minSEXP, SEXP prefer_fewer_itemsSEXP, SEXP total_resamplesSEXP) {
+BEGIN_RCPP
+    Rcpp::RObject rcpp_result_gen;
+    Rcpp::RNGScope rcpp_rngScope_gen;
+    Rcpp::traits::input_parameter< IntegerVector >::type candidate_id(candidate_idSEXP);
+    Rcpp::traits::input_parameter< IntegerVector >::type replicate_id(replicate_idSEXP);
+    Rcpp::traits::input_parameter< IntegerVector >::type cand_n_items(cand_n_itemsSEXP);
+    Rcpp::traits::input_parameter< NumericVector >::type rank_metric_vals(rank_metric_valsSEXP);
+    Rcpp::traits::input_parameter< LogicalVector >::type training_valid(training_validSEXP);
+    Rcpp::traits::input_parameter< NumericVector >::type test_sensitivity(test_sensitivitySEXP);
+    Rcpp::traits::input_parameter< NumericVector >::type test_specificity(test_specificitySEXP);
+    Rcpp::traits::input_parameter< bool >::type check_training_valid(check_training_validSEXP);
+    Rcpp::traits::input_parameter< double >::type sensitivity_min(sensitivity_minSEXP);
+    Rcpp::traits::input_parameter< double >::type specificity_min(specificity_minSEXP);
+    Rcpp::traits::input_parameter< bool >::type prefer_fewer_items(prefer_fewer_itemsSEXP);
+    Rcpp::traits::input_parameter< int >::type total_resamples(total_resamplesSEXP);
+    rcpp_result_gen = Rcpp::wrap(reduce_candidate_stability_replicates_cpp(candidate_id, replicate_id, cand_n_items, rank_metric_vals, training_valid, test_sensitivity, test_specificity, check_training_valid, sensitivity_min, specificity_min, prefer_fewer_items, total_resamples));
+    return rcpp_result_gen;
+END_RCPP
+}
 // evaluate_outer_folds_native_cpp
 List evaluate_outer_folds_native_cpp(NumericMatrix x, IntegerVector y, List fold_specs, int min_items, int max_items, std::string cutoff_method, std::string preselect_by, std::string selection_criterion, int preselect_top_n, bool prefer_fewer_items, int num_threads, int schema_version, bool throw_on_error);
 RcppExport SEXP _NCVROC_evaluate_outer_folds_native_cpp(SEXP xSEXP, SEXP ySEXP, SEXP fold_specsSEXP, SEXP min_itemsSEXP, SEXP max_itemsSEXP, SEXP cutoff_methodSEXP, SEXP preselect_bySEXP, SEXP selection_criterionSEXP, SEXP preselect_top_nSEXP, SEXP prefer_fewer_itemsSEXP, SEXP num_threadsSEXP, SEXP schema_versionSEXP, SEXP throw_on_errorSEXP) {
@@ -258,6 +303,8 @@ static const R_CallMethodDef CallEntries[] = {
     {"_NCVROC_evaluate_combos_cv_cpp", (DL_FUNC) &_NCVROC_evaluate_combos_cv_cpp, 11},
     {"_NCVROC_evaluate_candidate_stability_cv_cpp", (DL_FUNC) &_NCVROC_evaluate_candidate_stability_cv_cpp, 8},
     {"_NCVROC_evaluate_candidate_stability_bootstrap_cpp", (DL_FUNC) &_NCVROC_evaluate_candidate_stability_bootstrap_cpp, 9},
+    {"_NCVROC_evaluate_bootstrap_replicates_native_cpp", (DL_FUNC) &_NCVROC_evaluate_bootstrap_replicates_native_cpp, 13},
+    {"_NCVROC_reduce_candidate_stability_replicates_cpp", (DL_FUNC) &_NCVROC_reduce_candidate_stability_replicates_cpp, 12},
     {"_NCVROC_evaluate_outer_folds_native_cpp", (DL_FUNC) &_NCVROC_evaluate_outer_folds_native_cpp, 13},
     {"_NCVROC_native_outer_fold_result_roundtrip_cpp", (DL_FUNC) &_NCVROC_native_outer_fold_result_roundtrip_cpp, 1},
     {"_NCVROC_native_eval_candidate_batches_cpp", (DL_FUNC) &_NCVROC_native_eval_candidate_batches_cpp, 15},

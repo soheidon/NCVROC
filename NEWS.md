@@ -1,3 +1,15 @@
+# NCVROC 0.30.0 (2026-11-14)
+
+## Bounded Streaming Native Engine and >2,000,000 Candidate Search
+
+* Added `parallel = "native_streaming"` for `nested_sum_roc()`, `run_ncvroc()`, `ncvroc()`, and `ncvroc_config()` when `engine = "Rcpp"`, enabling bounded-memory native C++/TBB streaming evaluation above the 2,000,000-combination single-pass guard (`parallel = "native_tbb"` and `parallel = "native_outer_fold"` retain the 2,000,000 guard).
+* Preserves exact candidate evaluation (no pruning or approximation), shortlist-only `inner_folds` generation, deterministic tie-breaking, cooperative main-thread interruption (`check_user_interrupt_cpp()` and `ncvroc_request_cancel()`), and checkpoint/resume across `"outer_fold"`, `"model_size"`, and `"candidate_batch"` granularities.
+
+## Native Multi-Replicate Bootstrap and Candidate Stability Aggregation
+
+* Added `evaluate_bootstrap_replicates_native_cpp()` (`src/native_bootstrap.cpp`) and wired it into `bootstrap_select_sum_roc()` when `engine = "Rcpp"`, dispatching `checkpoint_every`-sized waves in C++/RcppParallel while preserving R `sample()` RNG, `.Random.seed`, `"harrell"` / `".632"` / `".632+"` summaries, `clinical_constraint` / `fallback_youden` / `record_failure` rules, and OOB evaluation.
+* Added `reduce_candidate_stability_replicates_cpp()` (`src/native_bootstrap.cpp`) and wired it into `candidate_stability_roc()` when `engine = "Rcpp"` for O(N) replicate ranking, feasibility checking, and winner aggregation.
+
 # NCVROC 0.29.0 (2026-11-14)
 
 ## User-Initiated Safe Interruption and Resume

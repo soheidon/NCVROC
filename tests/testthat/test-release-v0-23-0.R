@@ -7,7 +7,7 @@ test_that("Package version in DESCRIPTION and NEWS is synchronized", {
   } else {
     as.character(utils::packageVersion("NCVROC"))
   }
-  expect_match(unname(desc_ver), "^0\\.2[3-9]\\.[0-9]+$")
+  expect_true(package_version(unname(desc_ver)) >= package_version("0.23.0"))
 
   news_file <- testthat::test_path("../../NEWS.md")
   if (file.exists(news_file)) {

@@ -37,6 +37,14 @@ evaluate_candidate_stability_bootstrap_cpp <- function(x, y, combo_indices, trai
     .Call(`_NCVROC_evaluate_candidate_stability_bootstrap_cpp`, x, y, combo_indices, train_indices, oob_indices, bootstrap_test, cutoff_method, apparent_auc, num_threads)
 }
 
+evaluate_bootstrap_replicates_native_cpp <- function(x, y, boot_indices_list, combo_0based, cutoff_method, selection_metric, sensitivity_min = -1.0, specificity_min = -1.0, prefer_fewer_items = TRUE, fallback_youden = TRUE, need_oob = TRUE, ref_items_0based = integer(), num_threads = 1L) {
+    .Call(`_NCVROC_evaluate_bootstrap_replicates_native_cpp`, x, y, boot_indices_list, combo_0based, cutoff_method, selection_metric, sensitivity_min, specificity_min, prefer_fewer_items, fallback_youden, need_oob, ref_items_0based, num_threads)
+}
+
+reduce_candidate_stability_replicates_cpp <- function(candidate_id, replicate_id, cand_n_items, rank_metric_vals, training_valid, test_sensitivity, test_specificity, check_training_valid, sensitivity_min, specificity_min, prefer_fewer_items, total_resamples) {
+    .Call(`_NCVROC_reduce_candidate_stability_replicates_cpp`, candidate_id, replicate_id, cand_n_items, rank_metric_vals, training_valid, test_sensitivity, test_specificity, check_training_valid, sensitivity_min, specificity_min, prefer_fewer_items, total_resamples)
+}
+
 evaluate_outer_folds_native_cpp <- function(x, y, fold_specs, min_items, max_items, cutoff_method, preselect_by, selection_criterion, preselect_top_n, prefer_fewer_items = TRUE, num_threads = 1L, schema_version = 1L, throw_on_error = TRUE) {
     .Call(`_NCVROC_evaluate_outer_folds_native_cpp`, x, y, fold_specs, min_items, max_items, cutoff_method, preselect_by, selection_criterion, preselect_top_n, prefer_fewer_items, num_threads, schema_version, throw_on_error)
 }

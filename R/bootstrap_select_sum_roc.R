@@ -561,9 +561,101 @@ bootstrap_select_sum_roc <- function(
     )
   }
 
-  # Execution loop (Serial or Parallel)
+  # Execution loop (Native C++/TBB when engine == "Rcpp", else R Serial/PSOCK)
   if (start_rep <= bootstrap_reps) {
-    if (parallel == "threads") {
+    if (identical(engine, "Rcpp")) {
+      eff_threads <- if (identical(parallel, "threads")) {
+        nc <- if (is.null(n_workers)) parallel::detectCores(logical = FALSE) else as.integer(n_workers)
+        if (is.na(nc) || nc < 1L) 1L else nc
+      } else {
+        1L
+      }
+      sens_min_c <- if (!is.null(sensitivity_min)) as.numeric(sensitivity_min) else -1.0
+      spec_min_c <- if (!is.null(specificity_min)) as.numeric(specificity_min) else -1.0
+      ref_items_vec <- if (!is.null(ref_model) && !is.na(ref_model$items)) .parse_itemset(ref_model$items) else character(0)
+      ref_items_0based <- if (length(ref_items_vec) > 0L) as.integer(match(ref_items_vec, items) - 1L) else integer(0)
+      status_labels <- c("selected", "fallback_youden", "no_feasible_candidate", "invalid_evaluation")
+      oob_reason_labels <- c(
+        NA_character_, "not_requested", "empty_oob", "no_oob_samples",
+        "no_oob_positives", "no_oob_negatives", "selection_failed"
+      )
+
+      cur_start <- start_rep
+      while (cur_start <= bootstrap_reps) {
+        if (isTRUE(check_user_interrupt_cpp())) {
+          stop("Bootstrap evaluation interrupted by user.", call. = FALSE)
+        }
+        cur_end <- min(cur_start + checkpoint_every - 1L, bootstrap_reps)
+        batch_ids <- cur_start:cur_end
+        boot_wave_0 <- lapply(bootstrap_indices[batch_ids], function(v) as.integer(v) - 1L)
+
+        wave_df <- evaluate_bootstrap_replicates_native_cpp(
+          x                 = x_mat,
+          y                 = as.integer(y),
+          boot_indices_list = boot_wave_0,
+          combo_0based      = combo_0based,
+          cutoff_method     = cutoff_method,
+          selection_metric  = selection_metric,
+          sensitivity_min   = sens_min_c,
+          specificity_min   = spec_min_c,
+          prefer_fewer_items = isTRUE(prefer_fewer_items),
+          fallback_youden   = identical(no_feasible, "fallback_youden"),
+          need_oob          = isTRUE(need_oob),
+          ref_items_0based  = ref_items_0based,
+          num_threads       = as.integer(eff_threads)
+        )
+
+        for (idx in seq_along(batch_ids)) {
+          b_id <- batch_ids[idx]
+          c_idx <- wave_df$selected_combo_idx[idx]
+          has_sel <- !is.na(c_idx)
+          replicate_results[[b_id]] <- list(
+            replicate_id           = b_id,
+            selected_items         = if (has_sel) combo_names[c_idx] else NA_character_,
+            selected_n_items       = if (has_sel) as.integer(combo_sizes[c_idx]) else NA_integer_,
+            selected_cutoff        = wave_df$selected_cutoff[idx],
+            selection_status       = status_labels[wave_df$status_code[idx] + 1L],
+            fallback_used          = wave_df$fallback_used[idx],
+            n_feasible_candidates  = wave_df$n_feasible_candidates[idx],
+            training_auc           = wave_df$training_auc[idx],
+            training_sensitivity   = wave_df$training_sensitivity[idx],
+            training_specificity   = wave_df$training_specificity[idx],
+            training_youden        = wave_df$training_youden[idx],
+            test_auc               = wave_df$test_auc[idx],
+            test_sensitivity       = wave_df$test_sensitivity[idx],
+            test_specificity       = wave_df$test_specificity[idx],
+            test_youden            = wave_df$test_youden[idx],
+            optimism_auc           = wave_df$optimism_auc[idx],
+            optimism_sensitivity   = wave_df$optimism_sensitivity[idx],
+            optimism_specificity   = wave_df$optimism_specificity[idx],
+            optimism_youden        = wave_df$optimism_youden[idx],
+            training_feasible      = wave_df$training_feasible[idx],
+            test_feasible          = wave_df$test_feasible[idx],
+            exact_match            = wave_df$exact_match[idx],
+            jaccard_similarity     = wave_df$jaccard_similarity[idx],
+            oob_n_total            = wave_df$oob_n_total[idx],
+            oob_n_pos              = wave_df$oob_n_pos[idx],
+            oob_n_neg              = wave_df$oob_n_neg[idx],
+            oob_valid_auc          = wave_df$oob_valid_auc[idx],
+            oob_valid_joint        = wave_df$oob_valid_joint[idx],
+            oob_auc                = wave_df$oob_auc[idx],
+            oob_sensitivity        = wave_df$oob_sensitivity[idx],
+            oob_specificity        = wave_df$oob_specificity[idx],
+            oob_youden             = wave_df$oob_youden[idx],
+            oob_invalid_reason     = oob_reason_labels[wave_df$oob_reason_code[idx] + 1L]
+          )
+          if (!is.null(prg)) prg$tick()
+        }
+
+        if (!is.null(checkpoint_file)) {
+          .save_atomic_rds(
+            list(compat_key = compat_key, settings = settings_list, replicates = replicate_results[1:cur_end]),
+            checkpoint_file
+          )
+        }
+        cur_start <- cur_end + 1L
+      }
+    } else if (parallel == "threads") {
       n_cores <- if (is.null(n_workers)) parallel::detectCores(logical = FALSE) else as.integer(n_workers)
       if (is.na(n_cores) || n_cores < 1L) n_cores <- 1L
 

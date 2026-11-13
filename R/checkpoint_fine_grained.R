@@ -1435,3 +1435,255 @@
   prov$fine_grained <- fg_stats
   list(per_fold = per_fold, provenance = prov)
 }
+
+# ---- Bounded streaming Native outer-fold execution (R3/R4: >2M capable) ----
+
+.run_native_streaming_outer_folds <- function(full_data,
+                                              x_mat,
+                                              y_vec,
+                                              outer_folds,
+                                              items,
+                                              outcome_col,
+                                              positive_label,
+                                              negative_label,
+                                              min_items,
+                                              max_items,
+                                              cutoff_method,
+                                              preselect_by,
+                                              selection_criterion,
+                                              preselect_top_n,
+                                              outer_k,
+                                              inner_k,
+                                              outer_repeats,
+                                              inner_repeats,
+                                              stratified,
+                                              seed,
+                                              num_threads = 1L,
+                                              checkpoint_dir = NULL,
+                                              resume = TRUE,
+                                              force_recompute = FALSE,
+                                              progress = TRUE,
+                                              verbose = TRUE) {
+  enum_desc <- .cp_build_enumeration_descriptor(items, min_items, max_items)
+  batch_size <- .cp_resolve_candidate_batch_size()
+  n_folds <- length(outer_folds)
+  has_cp <- !is.null(checkpoint_dir)
+
+  if (has_cp) {
+    prep <- .cp_prepare_run(
+      x_mat               = x_mat,
+      y_vec               = y_vec,
+      outer_folds         = outer_folds,
+      items               = items,
+      outcome_col         = outcome_col,
+      positive_label      = positive_label,
+      negative_label      = negative_label,
+      min_items           = min_items,
+      max_items           = max_items,
+      cutoff_method       = cutoff_method,
+      preselect_by        = preselect_by,
+      selection_criterion = selection_criterion,
+      preselect_top_n     = preselect_top_n,
+      outer_k             = outer_k,
+      inner_k             = inner_k,
+      outer_repeats       = outer_repeats,
+      inner_repeats       = inner_repeats,
+      stratified          = stratified,
+      seed                = seed,
+      checkpoint_dir      = checkpoint_dir,
+      resume              = resume,
+      force_recompute     = force_recompute,
+      consumer_backend    = "scope_b_native_outer_fold",
+      progress            = progress,
+      verbose             = verbose
+    )
+    on.exit(.cp_release_lock(prep$lock_token), add = TRUE)
+    fold_specs <- prep$fold_specs
+    compute_idx <- prep$compute_idx
+    per_fold <- vector("list", n_folds)
+    for (i in prep$reused_idx) {
+      per_fold[[i]] <- .canonical_to_r_aggregation_record(prep$final_canon[[i]])
+    }
+    split_hashes <- vapply(prep$states, `[[`, character(1L), "split_hash")
+    paths <- prep$paths
+  } else {
+    n_cands_shortlist <- as.integer(min(as.double(preselect_top_n), enum_desc$total_combos))
+    fold_specs <- .build_native_outer_fold_specs(
+      outer_folds  = outer_folds,
+      y            = y_vec,
+      n_total      = length(y_vec),
+      inner_k      = inner_k,
+      inner_repeats = inner_repeats,
+      n_candidates = n_cands_shortlist,
+      seed         = seed
+    )
+    compute_idx <- seq_len(n_folds)
+    per_fold <- vector("list", n_folds)
+    paths <- NULL
+  }
+
+  outer_folds_proxy <- vector("list", n_folds)
+  names(outer_folds_proxy) <- vapply(fold_specs, function(s) s$fold_name, character(1L))
+  for (j in seq_len(n_folds)) {
+    outer_folds_proxy[[j]] <- as.integer(fold_specs[[j]]$test_indices + 1L)
+  }
+
+  wave_size <- max(1L, as.integer(num_threads))
+  wave_counter <- 0L
+
+  for (idx in compute_idx) {
+    spec <- fold_specs[[idx]]
+    top_k_acc <- NULL
+
+    # Stream each model_size in bounded batches; never materialize full candidate list
+    for (k in enum_desc$model_sizes) {
+      k_key <- as.character(k)
+      total_k <- enum_desc$level_sizes[[k_key]]
+      level_start_0 <- as.numeric(enum_desc$level_starts_0based[[k_key]])
+      n_batches_k <- as.integer(ceiling(total_k / batch_size))
+      batch_starts <- seq.int(1L, n_batches_k, by = wave_size)
+
+      for (b_wave_start in batch_starts) {
+        wave_counter <- wave_counter + 1L
+        if (has_cp) {
+          intr_reason <- .cp_poll_interrupt(
+            paths,
+            stage_label = sprintf("stream_wave_%d", wave_counter),
+            unit_index  = wave_counter
+          )
+          if (!is.null(intr_reason)) {
+            n_saved <- sum(!vapply(per_fold, is.null, logical(1L)))
+            .cp_signal_interrupted(
+              paths           = paths,
+              reason          = intr_reason,
+              completed_units = n_saved,
+              total_units     = n_folds,
+              unit_label      = "outer fold(s)",
+              granularity     = "outer_fold"
+            )
+          }
+        } else {
+          if (isTRUE(check_user_interrupt_cpp())) {
+            stop("Execution interrupted by user.", call. = FALSE)
+          }
+        }
+
+        b_wave_end <- min(n_batches_k, b_wave_start + wave_size - 1L)
+        b_indices <- seq.int(b_wave_start, b_wave_end)
+        n_w <- length(b_indices)
+        r_starts_0 <- numeric(n_w)
+        r_ends_0 <- numeric(n_w)
+        for (wi in seq_len(n_w)) {
+          bi <- b_indices[[wi]]
+          s_1 <- (as.double(bi) - 1.0) * as.double(batch_size) + 1.0
+          e_1 <- min(total_k, as.double(bi) * as.double(batch_size))
+          r_starts_0[[wi]] <- s_1 - 1.0
+          r_ends_0[[wi]] <- e_1
+        }
+
+        .ncvroc_checkpoint_test_seams$native_call_count <-
+          as.integer(.ncvroc_checkpoint_test_seams$native_call_count) + 1L
+
+        nat_res <- native_eval_candidate_batches_cpp(
+          x                       = x_mat,
+          y                       = as.integer(y_vec),
+          train_indices_list      = list(as.integer(spec$train_indices)),
+          task_fold_idx           = rep(0L, n_w),
+          task_repeat_id          = rep(as.integer(spec$repeat_id), n_w),
+          task_outer_fold_id      = rep(as.integer(spec$outer_fold_id), n_w),
+          task_model_size         = rep(as.integer(k), n_w),
+          task_local_rank_start_0 = r_starts_0,
+          task_local_rank_end_0   = r_ends_0,
+          task_level_start_0      = rep(level_start_0, n_w),
+          cutoff_method           = cutoff_method,
+          rank_by                 = preselect_by,
+          preselect_top_n         = as.integer(preselect_top_n),
+          prefer_fewer_items      = TRUE,
+          num_threads             = as.integer(num_threads)
+        )
+
+        wave_dfs <- vector("list", n_w)
+        for (wi in seq_len(n_w)) {
+          r <- nat_res[[wi]]
+          if (!isTRUE(r$completed) || r$status_code != 0L) {
+            stop(
+              sprintf(
+                "Native streaming batch failed for %s k=%d [%.0f, %.0f]: %s",
+                spec$fold_name, k, r_starts_0[[wi]] + 1, r_ends_0[[wi]],
+                as.character(r$status_message)
+              ),
+              call. = FALSE
+            )
+          }
+          df <- r$candidates
+          df$items <- vapply(df$local_rank, function(lr) {
+            .cp_materialize_items_from_local_rank(items, k, lr)
+          }, character(1L))
+          cols <- c("global_rank", "local_rank", "n_items", "items",
+                    "auc", "cutoff", "sensitivity", "specificity", "youden",
+                    "accuracy", "ppv", "npv")
+          wave_dfs[[wi]] <- df[, cols, drop = FALSE]
+          .ncvroc_checkpoint_test_seams$native_batches_executed <-
+            as.integer(.ncvroc_checkpoint_test_seams$native_batches_executed) + 1L
+        }
+
+        # Exact bounded global Top-N reduction (keeps <= preselect_top_n rows)
+        merge_inputs <- if (is.null(top_k_acc)) wave_dfs else c(list(top_k_acc), wave_dfs)
+        top_k_acc <- .cp_merge_top_candidates(merge_inputs, preselect_top_n, preselect_by)
+        .ncvroc_checkpoint_test_seams$interrupt_waves_completed <-
+          as.integer(.ncvroc_checkpoint_test_seams$interrupt_waves_completed) + 1L
+      }
+    }
+
+    # Shortlist-only inner CV (row indices independent of total candidate count)
+    precomputed_1based <- lapply(spec$inner_folds, function(cand_f) {
+      lapply(cand_f, function(f_idx) as.integer(f_idx + 1L))
+    })
+
+    r_fold <- .evaluate_outer_fold_from_candidates(
+      top_candidates          = top_k_acc,
+      i                       = idx,
+      outer_folds             = outer_folds_proxy,
+      full_data               = full_data,
+      y                       = y_vec,
+      n_total                 = nrow(full_data),
+      selection_criterion     = selection_criterion,
+      inner_k                 = inner_k,
+      inner_repeats           = inner_repeats,
+      cutoff_method           = cutoff_method,
+      seed                    = seed,
+      progress                = FALSE,
+      verbose                 = verbose,
+      precomputed_inner_folds = precomputed_1based,
+      return_canonical_diag   = TRUE
+    )
+
+    if (has_cp) {
+      canon_res <- .r_fold_to_canonical(r_fold, spec, items, y_vec = y_vec)
+      .cp_publish_fold(
+        paths              = paths,
+        identity_record    = prep$identity_record,
+        fold_spec          = spec,
+        split_hash         = split_hashes[[idx]],
+        canon_payload      = canon_res,
+        items              = items,
+        producer_backend   = "scope_b_native_outer_fold",
+        backend_provenance = "scope_b_native_streaming",
+        allow_replace      = isTRUE(force_recompute),
+        y_vec              = y_vec
+      )
+      prep$final_canon[[idx]] <- canon_res
+      prep$fold_producers[[idx]] <- "scope_b_native_outer_fold"
+      per_fold[[idx]] <- .canonical_to_r_aggregation_record(canon_res)
+    } else {
+      per_fold[[idx]] <- r_fold
+    }
+  }
+
+  prov <- if (has_cp) {
+    .cp_build_provenance(prep, "scope_b_native_outer_fold", resume, force_recompute)
+  } else {
+    NULL
+  }
+  list(per_fold = per_fold, provenance = prov)
+}

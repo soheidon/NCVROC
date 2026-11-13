@@ -1152,13 +1152,16 @@
 #'   If `"native_outer_fold"`, complete outer folds (candidate search, inner CV,
 #'   model selection, outer-training cutoff fitting, and outer-test scoring) are
 #'   executed end-to-end in native C++/TBB (Scope B), with final aggregation in R.
+#'   If `"native_streaming"`, bounded streaming candidate-batch execution in native
+#'   C++/TBB is used, supporting candidate spaces above 2,000,000 combinations
+#'   with optional checkpointing and cooperative cancellation.
 #'   Default `FALSE`.
 #' @param n_workers Integer, number of worker processes (for `"outer"` or `"chunks"`),
-#'   threads (for `"threads"`, `"native_tbb"`, or `"native_outer_fold"`), or outer PSOCK workers (for `"hybrid"`), or
+#'   threads (for `"threads"`, `"native_tbb"`, `"native_outer_fold"`, or `"native_streaming"`), or outer PSOCK workers (for `"hybrid"`), or
 #'   `NULL` (default) for automatic detection. In hybrid mode, the outer worker
 #'   count is resolved first; `threads_per_worker` is then capped to the remaining
-#'   CPU budget. For `"native_tbb"` and `"native_outer_fold"`, `n_workers` specifies the requested native TBB thread count,
-#'   automatically capped by outer folds, available CPU cores, and `_R_CHECK_LIMIT_CORES_`.
+#'   CPU budget. For `"native_tbb"`, `"native_outer_fold"`, and `"native_streaming"`, `n_workers` specifies the requested native TBB thread count,
+#'   automatically capped by available CPU cores and `_R_CHECK_LIMIT_CORES_` (and by outer folds for `"native_tbb"` and `"native_outer_fold"`).
 #'   Ignored when `parallel = FALSE` or `"none"`.
 #'   When `parallel = TRUE` and `n_workers = NULL`, worker count defaults to
 #'   \code{max(1L, parallel::detectCores(logical = FALSE) - 1L)}. The effective
@@ -1344,7 +1347,7 @@ nested_sum_roc <- function(data,
   parallel_mode <- .resolve_parallel_mode(
     parallel,
     context = "nested",
-    allowed = c("none", "outer", "chunks", "threads", "hybrid", "native_tbb", "native_outer_fold")
+    allowed = c("none", "outer", "chunks", "threads", "hybrid", "native_tbb", "native_outer_fold", "native_streaming")
   )
 
   if (!is.null(n_workers)) {
@@ -1363,17 +1366,17 @@ nested_sum_roc <- function(data,
   if (parallel_mode == "hybrid" && engine != "Rcpp") {
     stop("`parallel = 'hybrid'` requires `engine = 'Rcpp'`.", call. = FALSE)
   }
-  if (parallel_mode %in% c("native_tbb", "native_outer_fold") && engine != "Rcpp") {
+  if (parallel_mode %in% c("native_tbb", "native_outer_fold", "native_streaming") && engine != "Rcpp") {
     stop(sprintf("`parallel = '%s'` requires `engine = 'Rcpp'`.", parallel_mode), call. = FALSE)
   }
-  if (parallel_mode %in% c("native_tbb", "native_outer_fold") && tuning != "off") {
+  if (parallel_mode %in% c("native_tbb", "native_outer_fold", "native_streaming") && tuning != "off") {
     stop(sprintf("`tuning` must be 'off' when `parallel = '%s'`.", parallel_mode), call. = FALSE)
   }
   if (!is.null(checkpoint_dir) && !identical(tuning, "off")) {
     stop("`tuning` must be 'off' when `checkpoint_dir` is provided.", call. = FALSE)
   }
-  if (!is.null(checkpoint_dir) && !(parallel_mode %in% c("none", "native_outer_fold"))) {
-    stop("`checkpoint_dir` is only supported when `parallel = 'none'` (or FALSE) or `parallel = 'native_outer_fold'`.", call. = FALSE)
+  if (!is.null(checkpoint_dir) && !(parallel_mode %in% c("none", "native_outer_fold", "native_streaming"))) {
+    stop("`checkpoint_dir` is only supported when `parallel = 'none'` (or FALSE), `parallel = 'native_outer_fold'`, or `parallel = 'native_streaming'`.", call. = FALSE)
   }
 
   # ---- Validate inputs ----
@@ -1446,7 +1449,7 @@ nested_sum_roc <- function(data,
       .resolve_n_workers(parallel = TRUE, n_workers = n_workers, n_folds = n_folds)
     } else if (parallel_mode == "hybrid") {
       hybrid_budget$n_workers
-    } else if (parallel_mode %in% c("chunks", "threads")) {
+    } else if (parallel_mode %in% c("chunks", "threads", "native_streaming")) {
       .resolve_n_workers(parallel = TRUE, n_workers = n_workers)
     } else {
       1L
@@ -1463,7 +1466,7 @@ nested_sum_roc <- function(data,
       settings$effective_threads_per_worker <- actual_threads_per_worker
       settings$effective_total_parallelism <- hybrid_budget$total_parallelism
       settings$effective_max_cores <- hybrid_budget$max_cores
-    } else if (parallel_mode %in% c("native_tbb", "native_outer_fold")) {
+    } else if (parallel_mode %in% c("native_tbb", "native_outer_fold", "native_streaming")) {
       settings$requested_threads <- if (is.null(n_workers)) NA_integer_ else n_workers
       settings$effective_threads <- actual_workers
       settings$effective_total_parallelism <- actual_workers
@@ -1498,7 +1501,7 @@ nested_sum_roc <- function(data,
                     " outer worker", if (actual_workers == 1L) "" else "s",
                     " x ", actual_threads_per_worker, " threads = ",
                     hybrid_budget$total_parallelism, " total)")
-    } else if (parallel_mode %in% c("native_tbb", "native_outer_fold")) {
+    } else if (parallel_mode %in% c("native_tbb", "native_outer_fold", "native_streaming")) {
       msg <- paste0(msg, " (parallel: ", parallel_mode, ", ", actual_workers,
                     " thread", if (actual_workers == 1L) "" else "s", ")")
     } else if (parallel_mode != "none" && actual_workers > 1L) {
@@ -1595,6 +1598,81 @@ nested_sum_roc <- function(data,
       settings$checkpoint_provenance <- native_out$provenance
     }
     per_fold <- native_out$per_fold
+    if (verbose) {
+      message("All outer folds complete.")
+    }
+  } else if (parallel_mode == "native_streaming") {
+    x_mat <- as.matrix(full_data[, items, drop = FALSE])
+    if (verbose) {
+      message("Running ", n_folds, " outer folds via bounded native streaming (", actual_workers,
+              " thread", if (actual_workers == 1L) "" else "s", ")...")
+    }
+    if (is.null(checkpoint_dir) || identical(checkpoint_granularity, "outer_fold")) {
+      stream_out <- .run_native_streaming_outer_folds(
+        full_data           = full_data,
+        x_mat               = x_mat,
+        y_vec               = y,
+        outer_folds         = outer_folds,
+        items               = items,
+        outcome_col         = outcome_col,
+        positive_label      = positive_label,
+        negative_label      = negative_label,
+        min_items           = min_items,
+        max_items           = max_items,
+        cutoff_method       = cutoff_method,
+        preselect_by        = preselect_by,
+        selection_criterion = selection_criterion,
+        preselect_top_n     = preselect_top_n,
+        outer_k             = outer_k,
+        inner_k             = inner_k,
+        outer_repeats       = outer_repeats,
+        inner_repeats       = inner_repeats,
+        stratified          = stratified,
+        seed                = seed,
+        num_threads         = actual_workers,
+        checkpoint_dir      = checkpoint_dir,
+        resume              = resume,
+        force_recompute     = force_recompute,
+        progress            = progress,
+        verbose             = verbose
+      )
+    } else {
+      stream_out <- .run_fine_grained_checkpointed(
+        full_data              = full_data,
+        x_mat                  = x_mat,
+        y_vec                  = y,
+        outer_folds            = outer_folds,
+        items                  = items,
+        outcome_col            = outcome_col,
+        positive_label         = positive_label,
+        negative_label         = negative_label,
+        min_items              = min_items,
+        max_items              = max_items,
+        cutoff_method          = cutoff_method,
+        preselect_by           = preselect_by,
+        selection_criterion    = selection_criterion,
+        preselect_top_n        = preselect_top_n,
+        outer_k                = outer_k,
+        inner_k                = inner_k,
+        outer_repeats          = outer_repeats,
+        inner_repeats          = inner_repeats,
+        stratified             = stratified,
+        engine                 = engine,
+        seed                   = seed,
+        num_threads            = actual_workers,
+        consumer_backend       = "scope_b_native_outer_fold",
+        checkpoint_dir         = checkpoint_dir,
+        checkpoint_granularity = checkpoint_granularity,
+        resume                 = resume,
+        force_recompute        = force_recompute,
+        progress               = progress,
+        verbose                = verbose
+      )
+    }
+    if (!is.null(stream_out$provenance)) {
+      settings$checkpoint_provenance <- stream_out$provenance
+    }
+    per_fold <- stream_out$per_fold
     if (verbose) {
       message("All outer folds complete.")
     }

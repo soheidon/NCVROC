@@ -780,7 +780,7 @@ ncvroc <- function(data,
   parallel_mode <- .resolve_parallel_mode(
     parallel,
     context = "nested",
-    allowed = c("none", "outer", "chunks", "threads", "hybrid", "native_outer_fold")
+    allowed = c("none", "outer", "chunks", "threads", "hybrid", "native_outer_fold", "native_streaming")
   )
 
   if (!is.null(n_workers)) {

@@ -851,69 +851,98 @@ candidate_stability_roc <- function(data,
   winner_labels <- rep(NA_character_, total_resamples)
   n_feasible_vec <- integer(total_resamples)
 
-  for (r in seq_len(total_resamples)) {
-    sub_indices <- which(resample_df$replicate_id == r)
-    sub_df <- resample_df[sub_indices, , drop = FALSE]
-
-    # Check training validity if bootstrap
-    is_tr_valid <- if (resampling == "bootstrap") all(sub_df$training_valid) else TRUE
-
-    if (!is_tr_valid) {
-      replicate_status[r] <- "invalid_evaluation"
-      next
-    }
-
-    # Feasibility check on test-side repeat metrics
-    sens_pass <- if (is.null(sensitivity_min)) rep(TRUE, m_candidates) else (!is.na(sub_df$test_sensitivity) & sub_df$test_sensitivity >= sensitivity_min)
-    spec_pass <- if (is.null(specificity_min)) rep(TRUE, m_candidates) else (!is.na(sub_df$test_specificity) & sub_df$test_specificity >= specificity_min)
-    is_feasible <- sens_pass & spec_pass
-    resample_df$feasible[sub_indices] <- is_feasible
-    n_feasible_vec[r] <- sum(is_feasible)
-
-    # Candidate ranking using canonical tie-breaking on test-side rank_by metric
+  if (identical(engine, "Rcpp")) {
     rank_metric_col <- paste0("test_", rank_by)
-    rank_metric_vals <- sub_df[[rank_metric_col]]
-    valid_rank_mask <- !is.na(rank_metric_vals)
+    sens_min_c <- if (is.null(sensitivity_min)) -1.0 else as.numeric(sensitivity_min)
+    spec_min_c <- if (is.null(specificity_min)) -1.0 else as.numeric(specificity_min)
+    row_tr_valid <- if (resampling == "bootstrap") as.logical(resample_df$training_valid) else rep(TRUE, nrow(resample_df))
+    red <- reduce_candidate_stability_replicates_cpp(
+      candidate_id         = as.integer(resample_df$candidate_id),
+      replicate_id         = as.integer(resample_df$replicate_id),
+      cand_n_items         = as.integer(apparent_df$n_items),
+      rank_metric_vals     = as.numeric(resample_df[[rank_metric_col]]),
+      training_valid       = row_tr_valid,
+      test_sensitivity     = as.numeric(resample_df$test_sensitivity),
+      test_specificity     = as.numeric(resample_df$test_specificity),
+      check_training_valid = identical(resampling, "bootstrap"),
+      sensitivity_min      = sens_min_c,
+      specificity_min      = spec_min_c,
+      prefer_fewer_items   = isTRUE(prefer_fewer_items),
+      total_resamples      = as.integer(total_resamples)
+    )
+    resample_df$rank <- red$rank
+    resample_df$feasible <- red$feasible
+    status_labels <- c("selected", "no_feasible_candidate", "invalid_evaluation")
+    replicate_status <- status_labels[red$status_code + 1L]
+    winner_ids <- red$winner_ids
+    n_feasible_vec <- red$n_feasible_vec
+    valid_w <- !is.na(winner_ids)
+    winner_labels[valid_w] <- labels[winner_ids[valid_w]]
+  } else {
+    for (r in seq_len(total_resamples)) {
+      sub_indices <- which(resample_df$replicate_id == r)
+      sub_df <- resample_df[sub_indices, , drop = FALSE]
 
-    if (any(valid_rank_mask)) {
-      valid_sub <- sub_df[valid_rank_mask, , drop = FALSE]
-      cand_sizes <- apparent_df$n_items[valid_sub$candidate_id]
-      cand_ids   <- valid_sub$candidate_id
+      # Check training validity if bootstrap
+      is_tr_valid <- if (resampling == "bootstrap") all(sub_df$training_valid) else TRUE
 
-      # Canonical sorting: 1. primary metric desc, 2. fewer items asc (if prefer_fewer_items), 3. candidate_id asc
-      ord <- if (prefer_fewer_items) {
-        order(-valid_sub[[rank_metric_col]], cand_sizes, cand_ids)
-      } else {
-        order(-valid_sub[[rank_metric_col]], cand_ids)
+      if (!is_tr_valid) {
+        replicate_status[r] <- "invalid_evaluation"
+        next
       }
 
-      ranks_assigned <- integer(nrow(valid_sub))
-      ranks_assigned[ord] <- seq_along(ord)
+      # Feasibility check on test-side repeat metrics
+      sens_pass <- if (is.null(sensitivity_min)) rep(TRUE, m_candidates) else (!is.na(sub_df$test_sensitivity) & sub_df$test_sensitivity >= sensitivity_min)
+      spec_pass <- if (is.null(specificity_min)) rep(TRUE, m_candidates) else (!is.na(sub_df$test_specificity) & sub_df$test_specificity >= specificity_min)
+      is_feasible <- sens_pass & spec_pass
+      resample_df$feasible[sub_indices] <- is_feasible
+      n_feasible_vec[r] <- sum(is_feasible)
 
-      valid_idx_in_resample <- sub_indices[valid_rank_mask]
-      resample_df$rank[valid_idx_in_resample] <- ranks_assigned
-    }
+      # Candidate ranking using canonical tie-breaking on test-side rank_by metric
+      rank_metric_col <- paste0("test_", rank_by)
+      rank_metric_vals <- sub_df[[rank_metric_col]]
+      valid_rank_mask <- !is.na(rank_metric_vals)
 
-    # Selection status for replicate r
-    if (!any(valid_rank_mask)) {
-      replicate_status[r] <- "invalid_evaluation"
-    } else if (sum(is_feasible) == 0L) {
-      replicate_status[r] <- "no_feasible_candidate"
-    } else {
-      replicate_status[r] <- "selected"
-      feasible_sub <- sub_df[is_feasible, , drop = FALSE]
-      feas_sizes <- apparent_df$n_items[feasible_sub$candidate_id]
-      feas_ids   <- feasible_sub$candidate_id
+      if (any(valid_rank_mask)) {
+        valid_sub <- sub_df[valid_rank_mask, , drop = FALSE]
+        cand_sizes <- apparent_df$n_items[valid_sub$candidate_id]
+        cand_ids   <- valid_sub$candidate_id
 
-      ord_feas <- if (prefer_fewer_items) {
-        order(-feasible_sub[[rank_metric_col]], feas_sizes, feas_ids)
-      } else {
-        order(-feasible_sub[[rank_metric_col]], feas_ids)
+        # Canonical sorting: 1. primary metric desc, 2. fewer items asc (if prefer_fewer_items), 3. candidate_id asc
+        ord <- if (prefer_fewer_items) {
+          order(-valid_sub[[rank_metric_col]], cand_sizes, cand_ids)
+        } else {
+          order(-valid_sub[[rank_metric_col]], cand_ids)
+        }
+
+        ranks_assigned <- integer(nrow(valid_sub))
+        ranks_assigned[ord] <- seq_along(ord)
+
+        valid_idx_in_resample <- sub_indices[valid_rank_mask]
+        resample_df$rank[valid_idx_in_resample] <- ranks_assigned
       }
 
-      winner_row <- feasible_sub[ord_feas[1], , drop = FALSE]
-      winner_ids[r] <- winner_row$candidate_id
-      winner_labels[r] <- winner_row$label
+      # Selection status for replicate r
+      if (!any(valid_rank_mask)) {
+        replicate_status[r] <- "invalid_evaluation"
+      } else if (sum(is_feasible) == 0L) {
+        replicate_status[r] <- "no_feasible_candidate"
+      } else {
+        replicate_status[r] <- "selected"
+        feasible_sub <- sub_df[is_feasible, , drop = FALSE]
+        feas_sizes <- apparent_df$n_items[feasible_sub$candidate_id]
+        feas_ids   <- feasible_sub$candidate_id
+
+        ord_feas <- if (prefer_fewer_items) {
+          order(-feasible_sub[[rank_metric_col]], feas_sizes, feas_ids)
+        } else {
+          order(-feasible_sub[[rank_metric_col]], feas_ids)
+        }
+
+        winner_row <- feasible_sub[ord_feas[1], , drop = FALSE]
+        winner_ids[r] <- winner_row$candidate_id
+        winner_labels[r] <- winner_row$label
+      }
     }
   }
 
