@@ -37,3 +37,11 @@ evaluate_candidate_stability_bootstrap_cpp <- function(x, y, combo_indices, trai
     .Call(`_NCVROC_evaluate_candidate_stability_bootstrap_cpp`, x, y, combo_indices, train_indices, oob_indices, bootstrap_test, cutoff_method, apparent_auc, num_threads)
 }
 
+evaluate_outer_folds_native_cpp <- function(x, y, fold_specs, min_items, max_items, cutoff_method, preselect_by, selection_criterion, preselect_top_n, prefer_fewer_items = TRUE, num_threads = 1L, schema_version = 1L) {
+    .Call(`_NCVROC_evaluate_outer_folds_native_cpp`, x, y, fold_specs, min_items, max_items, cutoff_method, preselect_by, selection_criterion, preselect_top_n, prefer_fewer_items, num_threads, schema_version)
+}
+
+native_outer_fold_result_roundtrip_cpp <- function(r_result) {
+    .Call(`_NCVROC_native_outer_fold_result_roundtrip_cpp`, r_result)
+}
+

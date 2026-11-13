@@ -179,6 +179,39 @@ BEGIN_RCPP
     return rcpp_result_gen;
 END_RCPP
 }
+// evaluate_outer_folds_native_cpp
+List evaluate_outer_folds_native_cpp(NumericMatrix x, IntegerVector y, List fold_specs, int min_items, int max_items, std::string cutoff_method, std::string preselect_by, std::string selection_criterion, int preselect_top_n, bool prefer_fewer_items, int num_threads, int schema_version);
+RcppExport SEXP _NCVROC_evaluate_outer_folds_native_cpp(SEXP xSEXP, SEXP ySEXP, SEXP fold_specsSEXP, SEXP min_itemsSEXP, SEXP max_itemsSEXP, SEXP cutoff_methodSEXP, SEXP preselect_bySEXP, SEXP selection_criterionSEXP, SEXP preselect_top_nSEXP, SEXP prefer_fewer_itemsSEXP, SEXP num_threadsSEXP, SEXP schema_versionSEXP) {
+BEGIN_RCPP
+    Rcpp::RObject rcpp_result_gen;
+    Rcpp::RNGScope rcpp_rngScope_gen;
+    Rcpp::traits::input_parameter< NumericMatrix >::type x(xSEXP);
+    Rcpp::traits::input_parameter< IntegerVector >::type y(ySEXP);
+    Rcpp::traits::input_parameter< List >::type fold_specs(fold_specsSEXP);
+    Rcpp::traits::input_parameter< int >::type min_items(min_itemsSEXP);
+    Rcpp::traits::input_parameter< int >::type max_items(max_itemsSEXP);
+    Rcpp::traits::input_parameter< std::string >::type cutoff_method(cutoff_methodSEXP);
+    Rcpp::traits::input_parameter< std::string >::type preselect_by(preselect_bySEXP);
+    Rcpp::traits::input_parameter< std::string >::type selection_criterion(selection_criterionSEXP);
+    Rcpp::traits::input_parameter< int >::type preselect_top_n(preselect_top_nSEXP);
+    Rcpp::traits::input_parameter< bool >::type prefer_fewer_items(prefer_fewer_itemsSEXP);
+    Rcpp::traits::input_parameter< int >::type num_threads(num_threadsSEXP);
+    Rcpp::traits::input_parameter< int >::type schema_version(schema_versionSEXP);
+    rcpp_result_gen = Rcpp::wrap(evaluate_outer_folds_native_cpp(x, y, fold_specs, min_items, max_items, cutoff_method, preselect_by, selection_criterion, preselect_top_n, prefer_fewer_items, num_threads, schema_version));
+    return rcpp_result_gen;
+END_RCPP
+}
+// native_outer_fold_result_roundtrip_cpp
+List native_outer_fold_result_roundtrip_cpp(List r_result);
+RcppExport SEXP _NCVROC_native_outer_fold_result_roundtrip_cpp(SEXP r_resultSEXP) {
+BEGIN_RCPP
+    Rcpp::RObject rcpp_result_gen;
+    Rcpp::RNGScope rcpp_rngScope_gen;
+    Rcpp::traits::input_parameter< List >::type r_result(r_resultSEXP);
+    rcpp_result_gen = Rcpp::wrap(native_outer_fold_result_roundtrip_cpp(r_result));
+    return rcpp_result_gen;
+END_RCPP
+}
 
 static const R_CallMethodDef CallEntries[] = {
     {"_NCVROC_evaluate_combos_cpp", (DL_FUNC) &_NCVROC_evaluate_combos_cpp, 6},
@@ -190,6 +223,8 @@ static const R_CallMethodDef CallEntries[] = {
     {"_NCVROC_evaluate_combos_cv_cpp", (DL_FUNC) &_NCVROC_evaluate_combos_cv_cpp, 11},
     {"_NCVROC_evaluate_candidate_stability_cv_cpp", (DL_FUNC) &_NCVROC_evaluate_candidate_stability_cv_cpp, 8},
     {"_NCVROC_evaluate_candidate_stability_bootstrap_cpp", (DL_FUNC) &_NCVROC_evaluate_candidate_stability_bootstrap_cpp, 9},
+    {"_NCVROC_evaluate_outer_folds_native_cpp", (DL_FUNC) &_NCVROC_evaluate_outer_folds_native_cpp, 12},
+    {"_NCVROC_native_outer_fold_result_roundtrip_cpp", (DL_FUNC) &_NCVROC_native_outer_fold_result_roundtrip_cpp, 1},
     {NULL, NULL, 0}
 };
 

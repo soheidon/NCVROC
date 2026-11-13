@@ -1,3 +1,12 @@
+# NCVROC 0.26.0 (2026-11-13)
+
+## Native End-to-End Outer-Fold Execution (Scope B)
+
+* Added `parallel = "native_outer_fold"` to `nested_sum_roc()` (requiring `engine = "Rcpp"`, `tuning = "off"`, `threads_per_worker = 1`, and at most 2,000,000 combinations), backed by an explicit C++/RcppParallel execution contract (`NativeOuterFoldInput` / `NativeOuterFoldResult`, `schema_version = 1`) and internal helper `.nested_sum_roc_scope_b()`.
+* Executes outer candidate search, inner cross-validation, model selection, outer-training cutoff fitting, and outer-test scoring/metrics in pure C++ with zero R API or R RNG calls on worker threads, deterministic `(repeat_id, outer_fold_id)` ordering and error transport, and statistical parity with the R reference and Scope A.
+* **Backend routing & public API:** Default `nested_sum_roc()` routing (`parallel = FALSE`) is unchanged; `parallel = "native_tbb"` continues to run Scope A (native outer candidate search).
+* **Aggregation & persistence boundary:** Final `ncvroc_result` aggregation remains in R. Fold-level checkpoint persistence, partial-fold saves, and interrupted-run resume are not provided.
+
 # NCVROC 0.25.0 (2026-11-12)
 
 ## Efron's .632 and .632+ Bootstrap Internal Validation

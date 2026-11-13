@@ -641,6 +641,318 @@
   )
 }
 
+#' Parse repeat and outer-fold identity from generated fold name
+#'
+#' @param fold_name Character scalar matching "Rep<r>_Fold<f>".
+#' @return A list with integer `repeat_id` and `outer_fold_id`.
+#' @keywords internal
+.parse_outer_fold_identity <- function(fold_name) {
+  if (!is.character(fold_name) || length(fold_name) != 1L || is.na(fold_name)) {
+    stop("Outer fold name must be a non-NA character scalar.", call. = FALSE)
+  }
+  m <- regexec("^Rep([0-9]+)_Fold([0-9]+)$", fold_name)
+  parts <- regmatches(fold_name, m)[[1L]]
+  if (length(parts) != 3L) {
+    stop(sprintf("Outer fold name '%s' does not match expected 'Rep<r>_Fold<f>' contract.", fold_name),
+         call. = FALSE)
+  }
+  list(
+    repeat_id     = as.integer(parts[[2L]]),
+    outer_fold_id = as.integer(parts[[3L]])
+  )
+}
+
+#' Build explicit 0-based fold specifications for Scope B native outer-fold execution
+#'
+#' @keywords internal
+.build_native_outer_fold_specs <- function(outer_folds,
+                                           y,
+                                           n_total,
+                                           inner_k,
+                                           inner_repeats,
+                                           n_candidates,
+                                           seed = NULL) {
+  n_folds <- length(outer_folds)
+  fold_names <- names(outer_folds)
+  if (is.null(fold_names) || length(fold_names) != n_folds) {
+    stop("`outer_folds` must be a named list.", call. = FALSE)
+  }
+
+  specs <- vector("list", n_folds)
+  for (i in seq_len(n_folds)) {
+    id <- .parse_outer_fold_identity(fold_names[[i]])
+    test_idx <- outer_folds[[i]]
+    train_idx <- setdiff(seq_len(n_total), test_idx)
+    y_train <- y[train_idx]
+
+    inner_seed <- if (!is.null(seed)) seed + i else NULL
+    cand_inner <- vector("list", n_candidates)
+    for (c_i in seq_len(n_candidates)) {
+      cand_seed <- if (!is.null(inner_seed)) inner_seed + c_i else NULL
+      inner_folds <- make_stratified_folds(
+        y_train,
+        k = inner_k,
+        repeats = inner_repeats,
+        seed = cand_seed
+      )
+      cand_inner[[c_i]] <- lapply(inner_folds, function(f_idx) as.integer(f_idx - 1L))
+    }
+
+    specs[[i]] <- list(
+      repeat_id       = id$repeat_id,
+      outer_fold_id   = id$outer_fold_id,
+      fold_name       = fold_names[[i]],
+      train_indices   = as.integer(train_idx - 1L),
+      test_indices    = as.integer(test_idx - 1L),
+      inner_folds     = cand_inner,
+      has_seed        = !is.null(seed),
+      inner_seed_base = if (!is.null(inner_seed)) as.integer(inner_seed) else 0L
+    )
+  }
+  specs
+}
+
+#' Convert a NativeOuterFoldResult R list to the standard R per-fold representation
+#'
+#' @keywords internal
+.convert_native_outer_fold_result_to_r <- function(nat_res, items) {
+  if (!isTRUE(nat_res$completed) || !identical(as.integer(nat_res$status_code), 0L)) {
+    stop("Cannot convert incomplete NativeOuterFoldResult.", call. = FALSE)
+  }
+  selected_items_str <- format_items(items[nat_res$selected_col_indices])
+  list(
+    outer_fold        = nat_res$outer_fold,
+    selected_items    = selected_items_str,
+    n_items           = as.integer(nat_res$n_items),
+    inner_mean_auc    = nat_res$inner_mean_auc,
+    inner_mean_youden = nat_res$inner_mean_youden,
+    auc               = nat_res$auc,
+    sensitivity       = nat_res$sensitivity,
+    specificity       = nat_res$specificity,
+    youden            = nat_res$youden,
+    accuracy          = nat_res$accuracy,
+    ppv               = nat_res$ppv,
+    npv               = nat_res$npv,
+    cutoff            = nat_res$cutoff,
+    predictions       = nat_res$predictions
+  )
+}
+
+#' Internal dispatch wrapper for Scope B complete native outer-fold execution
+#'
+#' @keywords internal
+.run_native_outer_folds_complete <- function(x_mat,
+                                             y_vec,
+                                             outer_folds,
+                                             items,
+                                             min_items,
+                                             max_items,
+                                             cutoff_method,
+                                             preselect_by,
+                                             selection_criterion,
+                                             preselect_top_n,
+                                             inner_k,
+                                             inner_repeats = 1L,
+                                             seed = NULL,
+                                             num_threads = 1L,
+                                             schema_version = 1L) {
+  total_combos <- .count_total_combos(length(items), min_items, max_items)
+  n_candidates <- as.integer(min(preselect_top_n, total_combos))
+  fold_specs <- .build_native_outer_fold_specs(
+    outer_folds   = outer_folds,
+    y             = y_vec,
+    n_total       = length(y_vec),
+    inner_k       = inner_k,
+    inner_repeats = as.integer(inner_repeats),
+    n_candidates  = n_candidates,
+    seed          = seed
+  )
+
+  raw_results <- evaluate_outer_folds_native_cpp(
+    x                   = x_mat,
+    y                   = y_vec,
+    fold_specs          = fold_specs,
+    min_items           = as.integer(min_items),
+    max_items           = as.integer(max_items),
+    cutoff_method       = cutoff_method,
+    preselect_by        = preselect_by,
+    selection_criterion = selection_criterion,
+    preselect_top_n     = as.integer(preselect_top_n),
+    prefer_fewer_items  = TRUE,
+    num_threads         = as.integer(num_threads),
+    schema_version      = as.integer(schema_version)
+  )
+
+  list(
+    raw_results = raw_results,
+    per_fold    = lapply(raw_results, .convert_native_outer_fold_result_to_r, items = items)
+  )
+}
+
+#' Aggregate per-fold results into an ncvroc_result object
+#'
+#' @keywords internal
+.aggregate_nested_outer_folds <- function(per_fold, n_folds, settings) {
+  summary_df <- do.call(rbind, lapply(per_fold, function(x) {
+    data.frame(
+      outer_fold     = x$outer_fold,
+      selected_items = x$selected_items,
+      n_items        = x$n_items,
+      auc            = x$auc,
+      cutoff         = x$cutoff,
+      sensitivity    = x$sensitivity,
+      specificity    = x$specificity,
+      youden         = x$youden,
+      accuracy       = x$accuracy,
+      ppv            = x$ppv,
+      npv            = x$npv,
+      stringsAsFactors = FALSE
+    )
+  }))
+  rownames(summary_df) <- NULL
+
+  selected_models <- vapply(per_fold, `[[`, character(1), "selected_items",
+                            USE.NAMES = FALSE)
+
+  freq_table <- table(selected_models)
+  freq_df <- data.frame(
+    items        = names(freq_table),
+    n_selections = as.integer(freq_table),
+    frequency    = as.numeric(freq_table / n_folds),
+    stringsAsFactors = FALSE
+  )
+  freq_df <- freq_df[order(-freq_df$frequency), ]
+  rownames(freq_df) <- NULL
+
+  all_predictions <- do.call(rbind, lapply(per_fold, function(x) {
+    df <- x$predictions
+    df$outer_fold <- x$outer_fold
+    df
+  }))
+  all_predictions <- all_predictions[order(all_predictions$row_index), ]
+  rownames(all_predictions) <- NULL
+
+  result <- list(
+    summary                  = summary_df,
+    outer_results            = per_fold,
+    selected_models          = selected_models,
+    selected_model_frequency = freq_df,
+    outer_predictions        = all_predictions,
+    settings                 = settings
+  )
+  class(result) <- "ncvroc_result"
+  result
+}
+
+#' Internal Scope B complete-fold native outer CV entry point
+#'
+#' Preserves public nested_sum_roc() routing while allowing direct parity,
+#' determinism, thread-invariance, and benchmark validation of Scope B.
+#' @keywords internal
+.nested_sum_roc_scope_b <- function(data,
+                                    outcome,
+                                    items,
+                                    min_items = 1,
+                                    max_items = 4,
+                                    positive_label = 1,
+                                    negative_label = 0,
+                                    cutoff_method = c("youden", "closest_topleft"),
+                                    preselect_top_n = 20,
+                                    preselect_by = "auc",
+                                    selection_criterion = "auc",
+                                    outer_k = 5,
+                                    inner_k = 4,
+                                    outer_repeats = 1,
+                                    inner_repeats = 1,
+                                    stratified = TRUE,
+                                    seed = NULL,
+                                    n_workers = 1L,
+                                    progress = FALSE,
+                                    verbose = FALSE) {
+  settings <- as.list(environment())
+  .ncvroc_reject_deployment_only_methods(cutoff_method)
+  cutoff_method <- match.arg(cutoff_method)
+
+  valid_metrics <- c("auc", "youden", "sensitivity", "specificity")
+  if (!preselect_by %in% valid_metrics) {
+    stop("`preselect_by` must be one of: ", paste(valid_metrics, collapse = ", "), ".", call. = FALSE)
+  }
+  if (!selection_criterion %in% valid_metrics) {
+    stop("`selection_criterion` must be one of: ", paste(valid_metrics, collapse = ", "), ".", call. = FALSE)
+  }
+  if (!is.numeric(preselect_top_n) || length(preselect_top_n) != 1 ||
+      preselect_top_n <= 0 || preselect_top_n != as.integer(preselect_top_n)) {
+    stop("`preselect_top_n` must be a positive integer.", call. = FALSE)
+  }
+  preselect_top_n <- as.integer(preselect_top_n)
+  if (!is.numeric(outer_k) || length(outer_k) != 1 || outer_k < 2 || outer_k != as.integer(outer_k)) {
+    stop("`outer_k` must be an integer >= 2.", call. = FALSE)
+  }
+  outer_k <- as.integer(outer_k)
+  if (!is.numeric(inner_k) || length(inner_k) != 1 || inner_k < 2 || inner_k != as.integer(inner_k)) {
+    stop("`inner_k` must be an integer >= 2.", call. = FALSE)
+  }
+  inner_k <- as.integer(inner_k)
+  if (!isTRUE(stratified)) {
+    stop("Only `stratified = TRUE` is supported in v0.1.", call. = FALSE)
+  }
+  if (inner_repeats != 1) {
+    warning("`inner_repeats > 1` is not implemented in v0.1; using `inner_repeats = 1`.",
+            call. = FALSE)
+    inner_repeats <- 1L
+  }
+  if (!is.null(n_workers)) {
+    if (!is.numeric(n_workers) || length(n_workers) != 1 ||
+        is.na(n_workers) || n_workers <= 0 || n_workers != as.integer(n_workers)) {
+      stop("`n_workers` must be a positive integer or NULL.", call. = FALSE)
+    }
+    n_workers <- as.integer(n_workers)
+  }
+
+  validated   <- validate_inputs(data, outcome, items, positive_label, negative_label)
+  full_data   <- validated$data
+  y           <- validated$y
+  items       <- validated$items
+  n_total     <- length(y)
+
+  outer_folds <- make_stratified_folds(
+    y, k = outer_k, repeats = outer_repeats, seed = seed
+  )
+  n_folds <- length(outer_folds)
+
+  actual_workers <- .resolve_n_workers(parallel = TRUE, n_workers = n_workers, n_folds = n_folds)
+  total_ncv_combos <- .count_total_combos(length(items), min_items, max_items)
+  if (!.is_native_outer_candidate_search_eligible(length(items), min_items, max_items, total_ncv_combos)) {
+    stop("Candidate space exceeds safe bounds for Scope B native outer-fold execution (maximum 2,000,000 combinations).",
+         call. = FALSE)
+  }
+
+  x_mat <- as.matrix(full_data[, items, drop = FALSE])
+  native_out <- .run_native_outer_folds_complete(
+    x_mat               = x_mat,
+    y_vec               = y,
+    outer_folds         = outer_folds,
+    items               = items,
+    min_items           = min_items,
+    max_items           = max_items,
+    cutoff_method       = cutoff_method,
+    preselect_by        = preselect_by,
+    selection_criterion = selection_criterion,
+    preselect_top_n     = preselect_top_n,
+    inner_k             = inner_k,
+    inner_repeats       = inner_repeats,
+    seed                = seed,
+    num_threads         = actual_workers
+  )
+
+  settings$engine <- "Rcpp"
+  settings$parallel <- "scope_b_native_outer_fold"
+  settings$effective_threads <- actual_workers
+  settings$effective_max_cores <- .get_max_workers()
+
+  .aggregate_nested_outer_folds(native_out$per_fold, n_folds, settings)
+}
+
 #' Symbols required by worker processes during outer-fold parallel execution
 #' @noRd
 .OUTER_WORKER_EXPORT_SYMBOLS <- c(
@@ -809,19 +1121,22 @@
 #'   If `"hybrid"`, outer folds use socket workers and each worker uses C++
 #'   multi-threading for its exhaustive candidate evaluation.
 #'   If `"native_tbb"`, outer candidate search is evaluated across folds using native
-#'   C++/TBB multi-threading.
+#'   C++/TBB multi-threading (Scope A).
+#'   If `"native_outer_fold"`, complete outer folds (candidate search, inner CV,
+#'   model selection, outer-training cutoff fitting, and outer-test scoring) are
+#'   executed end-to-end in native C++/TBB (Scope B), with final aggregation in R.
 #'   Default `FALSE`.
 #' @param n_workers Integer, number of worker processes (for `"outer"` or `"chunks"`),
-#'   threads (for `"threads"` or `"native_tbb"`), or outer PSOCK workers (for `"hybrid"`), or
+#'   threads (for `"threads"`, `"native_tbb"`, or `"native_outer_fold"`), or outer PSOCK workers (for `"hybrid"`), or
 #'   `NULL` (default) for automatic detection. In hybrid mode, the outer worker
 #'   count is resolved first; `threads_per_worker` is then capped to the remaining
-#'   CPU budget. For `"native_tbb"`, `n_workers` specifies the requested native TBB thread count,
+#'   CPU budget. For `"native_tbb"` and `"native_outer_fold"`, `n_workers` specifies the requested native TBB thread count,
 #'   automatically capped by outer folds, available CPU cores, and `_R_CHECK_LIMIT_CORES_`.
 #'   Ignored when `parallel = FALSE` or `"none"`.
 #'   When `parallel = TRUE` and `n_workers = NULL`, worker count defaults to
 #'   \code{max(1L, parallel::detectCores(logical = FALSE) - 1L)}. The effective
 #'   worker count is automatically capped by available CPU cores and CRAN core limits
-#'   (\code{_R_CHECK_LIMIT_CORES_}). For `"outer"` and `"native_tbb"`, it is additionally capped by the
+#'   (\code{_R_CHECK_LIMIT_CORES_}). For `"outer"`, `"native_tbb"`, and `"native_outer_fold"`, it is additionally capped by the
 #'   number of outer folds.
 #' @param threads_per_worker Positive integer, requested number of C++ threads
 #'   used inside each outer socket worker when `parallel = "hybrid"` (default 1).
@@ -830,7 +1145,7 @@
 #'   remain 1.
 #' @param tuning Automatic execution-planning mode: `"off"` (default; manual
 #'   execution configuration is authoritative), `"auto"`, or `"always"`.
-#'   Must be `"off"` when `parallel = "native_tbb"`.
+#'   Must be `"off"` when `parallel = "native_tbb"` or `"native_outer_fold"`.
 #'   Nested runtime probing is candidate-bounded and preserves the complete fold
 #'   structure. v0.19.0 does not perform a nested resource sweep when the nested
 #'   evaluator cannot accept rank-bounded candidates; in that case it retains the
@@ -963,7 +1278,7 @@ nested_sum_roc <- function(data,
   parallel_mode <- .resolve_parallel_mode(
     parallel,
     context = "nested",
-    allowed = c("none", "outer", "chunks", "threads", "hybrid", "native_tbb")
+    allowed = c("none", "outer", "chunks", "threads", "hybrid", "native_tbb", "native_outer_fold")
   )
 
   if (!is.null(n_workers)) {
@@ -982,11 +1297,11 @@ nested_sum_roc <- function(data,
   if (parallel_mode == "hybrid" && engine != "Rcpp") {
     stop("`parallel = 'hybrid'` requires `engine = 'Rcpp'`.", call. = FALSE)
   }
-  if (parallel_mode == "native_tbb" && engine != "Rcpp") {
-    stop("`parallel = 'native_tbb'` requires `engine = 'Rcpp'`.", call. = FALSE)
+  if (parallel_mode %in% c("native_tbb", "native_outer_fold") && engine != "Rcpp") {
+    stop(sprintf("`parallel = '%s'` requires `engine = 'Rcpp'`.", parallel_mode), call. = FALSE)
   }
-  if (parallel_mode == "native_tbb" && tuning != "off") {
-    stop("`tuning` must be 'off' when `parallel = 'native_tbb'`.", call. = FALSE)
+  if (parallel_mode %in% c("native_tbb", "native_outer_fold") && tuning != "off") {
+    stop(sprintf("`tuning` must be 'off' when `parallel = '%s'`.", parallel_mode), call. = FALSE)
   }
 
   # ---- Validate inputs ----
@@ -1055,7 +1370,7 @@ nested_sum_roc <- function(data,
     } else {
       NULL
     }
-    actual_workers <- if (parallel_mode %in% c("outer", "native_tbb")) {
+    actual_workers <- if (parallel_mode %in% c("outer", "native_tbb", "native_outer_fold")) {
       .resolve_n_workers(parallel = TRUE, n_workers = n_workers, n_folds = n_folds)
     } else if (parallel_mode == "hybrid") {
       hybrid_budget$n_workers
@@ -1076,7 +1391,7 @@ nested_sum_roc <- function(data,
       settings$effective_threads_per_worker <- actual_threads_per_worker
       settings$effective_total_parallelism <- hybrid_budget$total_parallelism
       settings$effective_max_cores <- hybrid_budget$max_cores
-    } else if (parallel_mode == "native_tbb") {
+    } else if (parallel_mode %in% c("native_tbb", "native_outer_fold")) {
       settings$requested_threads <- if (is.null(n_workers)) NA_integer_ else n_workers
       settings$effective_threads <- actual_workers
       settings$effective_total_parallelism <- actual_workers
@@ -1086,9 +1401,10 @@ nested_sum_roc <- function(data,
 
   # ---- Determine if nested CV needs streaming ----
   total_ncv_combos <- .count_total_combos(length(items), min_items, max_items)
-  if (parallel_mode == "native_tbb") {
+  if (parallel_mode %in% c("native_tbb", "native_outer_fold")) {
     if (!.is_native_outer_candidate_search_eligible(length(items), min_items, max_items, total_ncv_combos)) {
-      stop("Candidate space exceeds safe bounds for `parallel = 'native_tbb'` (maximum 2,000,000 combinations).", call. = FALSE)
+      stop(sprintf("Candidate space exceeds safe bounds for `parallel = '%s'` (maximum 2,000,000 combinations).", parallel_mode),
+           call. = FALSE)
     }
   }
   use_streaming_ncv <- total_ncv_combos > AUTO_MEMORY_LIMIT
@@ -1110,8 +1426,8 @@ nested_sum_roc <- function(data,
                     " outer worker", if (actual_workers == 1L) "" else "s",
                     " x ", actual_threads_per_worker, " threads = ",
                     hybrid_budget$total_parallelism, " total)")
-    } else if (parallel_mode == "native_tbb") {
-      msg <- paste0(msg, " (parallel: native_tbb, ", actual_workers,
+    } else if (parallel_mode %in% c("native_tbb", "native_outer_fold")) {
+      msg <- paste0(msg, " (parallel: ", parallel_mode, ", ", actual_workers,
                     " thread", if (actual_workers == 1L) "" else "s", ")")
     } else if (parallel_mode != "none" && actual_workers > 1L) {
       msg <- paste0(msg, " (parallel: ", parallel_mode, ", ", actual_workers, " workers)")
@@ -1119,8 +1435,34 @@ nested_sum_roc <- function(data,
     message(msg)
   }
 
-  # ---- Main loop over outer folds (Native TBB, PSOCK Outer, PSOCK Chunks, Intra-Process Threads, or Serial) ----
-  if (parallel_mode == "native_tbb") {
+  # ---- Main loop over outer folds (Native Outer Fold, Native TBB, PSOCK Outer, PSOCK Chunks, Intra-Process Threads, or Serial) ----
+  if (parallel_mode == "native_outer_fold") {
+    x_mat <- as.matrix(full_data[, items, drop = FALSE])
+    if (verbose) {
+      message("Running ", n_folds, " complete outer folds via native C++/TBB (", actual_workers,
+              " thread", if (actual_workers == 1L) "" else "s", ")...")
+    }
+    native_out <- .run_native_outer_folds_complete(
+      x_mat               = x_mat,
+      y_vec               = y,
+      outer_folds         = outer_folds,
+      items               = items,
+      min_items           = min_items,
+      max_items           = max_items,
+      cutoff_method       = cutoff_method,
+      preselect_by        = preselect_by,
+      selection_criterion = selection_criterion,
+      preselect_top_n     = preselect_top_n,
+      inner_k             = inner_k,
+      inner_repeats       = inner_repeats,
+      seed                = seed,
+      num_threads         = actual_workers
+    )
+    per_fold <- native_out$per_fold
+    if (verbose) {
+      message("All outer folds complete.")
+    }
+  } else if (parallel_mode == "native_tbb") {
     x_mat <- as.matrix(full_data[, items, drop = FALSE])
 
     # Prepare and validate 1-based training indices on main R thread
@@ -1407,51 +1749,6 @@ nested_sum_roc <- function(data,
   }
 
   # ---- Aggregate results ----
-
-  # Summary table
-  summary_df <- do.call(rbind, lapply(per_fold, function(x) {
-    data.frame(
-      outer_fold     = x$outer_fold,
-      selected_items = x$selected_items,
-      n_items        = x$n_items,
-      auc            = x$auc,
-      cutoff         = x$cutoff,
-      sensitivity    = x$sensitivity,
-      specificity    = x$specificity,
-      youden         = x$youden,
-      accuracy       = x$accuracy,
-      ppv            = x$ppv,
-      npv            = x$npv,
-      stringsAsFactors = FALSE
-    )
-  }))
-  rownames(summary_df) <- NULL
-
-  # Selected models
-  selected_models <- vapply(per_fold, `[[`, character(1), "selected_items",
-                            USE.NAMES = FALSE)
-
-  # Model frequency
-  freq_table <- table(selected_models)
-  freq_df <- data.frame(
-    items        = names(freq_table),
-    n_selections = as.integer(freq_table),
-    frequency    = as.numeric(freq_table / n_folds),
-    stringsAsFactors = FALSE
-  )
-  freq_df <- freq_df[order(-freq_df$frequency), ]
-  rownames(freq_df) <- NULL
-
-  # Outer predictions
-  all_predictions <- do.call(rbind, lapply(per_fold, function(x) {
-    df <- x$predictions
-    df$outer_fold <- x$outer_fold
-    df
-  }))
-  all_predictions <- all_predictions[order(all_predictions$row_index), ]
-  rownames(all_predictions) <- NULL
-
-  # Build result
   if (!identical(tuning, "off")) {
     capability <- .progress_capability("nested_sum_roc", parallel_mode, progress,
                                        observed_unit = "outer_fold")
@@ -1459,17 +1756,8 @@ nested_sum_roc <- function(data,
     execution_metadata$progress_unit <- capability$progress_unit
     settings$execution_plan <- execution_metadata
   }
-  result <- list(
-    summary                  = summary_df,
-    outer_results            = per_fold,
-    selected_models          = selected_models,
-    selected_model_frequency = freq_df,
-    outer_predictions        = all_predictions,
-    settings                 = settings
-  )
-  class(result) <- "ncvroc_result"
 
-  result
+  .aggregate_nested_outer_folds(per_fold, n_folds, settings)
 }
 
 # ---- S3 methods ----

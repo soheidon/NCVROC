@@ -85,20 +85,23 @@ searches use C++ multi-threading within the main R process via RcppParallel.
 If `"hybrid"`, outer folds use socket workers and each worker uses C++
 multi-threading for its exhaustive candidate evaluation.
 If `"native_tbb"`, outer candidate search is evaluated across folds using native
-C++/TBB multi-threading.
+C++/TBB multi-threading (Scope A).
+If `"native_outer_fold"`, complete outer folds (candidate search, inner CV,
+model selection, outer-training cutoff fitting, and outer-test scoring) are
+executed end-to-end in native C++/TBB (Scope B), with final aggregation in R.
 Default `FALSE`.}
 
 \item{n_workers}{Integer, number of worker processes (for `"outer"` or `"chunks"`),
-threads (for `"threads"` or `"native_tbb"`), or outer PSOCK workers (for `"hybrid"`), or
+threads (for `"threads"`, `"native_tbb"`, or `"native_outer_fold"`), or outer PSOCK workers (for `"hybrid"`), or
 `NULL` (default) for automatic detection. In hybrid mode, the outer worker
 count is resolved first; `threads_per_worker` is then capped to the remaining
-CPU budget. For `"native_tbb"`, `n_workers` specifies the requested native TBB thread count,
+CPU budget. For `"native_tbb"` and `"native_outer_fold"`, `n_workers` specifies the requested native TBB thread count,
 automatically capped by outer folds, available CPU cores, and `_R_CHECK_LIMIT_CORES_`.
 Ignored when `parallel = FALSE` or `"none"`.
 When `parallel = TRUE` and `n_workers = NULL`, worker count defaults to
 \code{max(1L, parallel::detectCores(logical = FALSE) - 1L)}. The effective
 worker count is automatically capped by available CPU cores and CRAN core limits
-(\code{_R_CHECK_LIMIT_CORES_}). For `"outer"` and `"native_tbb"`, it is additionally capped by the
+(\code{_R_CHECK_LIMIT_CORES_}). For `"outer"`, `"native_tbb"`, and `"native_outer_fold"`, it is additionally capped by the
 number of outer folds.}
 
 \item{threads_per_worker}{Positive integer, requested number of C++ threads
@@ -109,7 +112,7 @@ remain 1.}
 
 \item{tuning}{Automatic execution-planning mode: `"off"` (default; manual
 execution configuration is authoritative), `"auto"`, or `"always"`.
-Must be `"off"` when `parallel = "native_tbb"`.
+Must be `"off"` when `parallel = "native_tbb"` or `"native_outer_fold"`.
 Nested runtime probing is candidate-bounded and preserves the complete fold
 structure. v0.19.0 does not perform a nested resource sweep when the nested
 evaluator cannot accept rank-bounded candidates; in that case it retains the

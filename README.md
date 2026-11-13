@@ -118,7 +118,8 @@ NCVROC supports four general parallel execution modes and a nested-only native T
 | **Outer Fold Parallel** | `"outer"` (or `TRUE` in nested CV) | Parallel outer cross-validation folds using PSOCK worker processes. | Standard nested CV workflows across multiple folds (`nested_sum_roc()`, `cross_size_nested_cv()`, `ncvroc()`). |
 | **Hybrid Nested CV** | `"hybrid"` | Evaluates outer folds with PSOCK workers and each fold's inner search with C++ threads. | High-core systems with large nested CV candidate spaces. |
 | **Chunk Process Parallel** | `"chunks"` (or `TRUE` in exhaustive search) | Evaluates combination chunks across persistent PSOCK socket worker processes. | Massive searches using disk-backed chunked storage and process isolation. |
-| **Native TBB Outer Search** | `"native_tbb"` | Runs `nested_sum_roc()` outer candidate search using native C++/TBB threads. Requires `engine = "Rcpp"`, `tuning = "off"`, and at most 2,000,000 candidates; `n_workers` requests the thread count and is safely capped. | Manual opt-in for supported nested searches. |
+| **Native TBB Outer Search** | `"native_tbb"` | Runs `nested_sum_roc()` outer candidate search using native C++/TBB threads (Scope A). Requires `engine = "Rcpp"`, `tuning = "off"`, and at most 2,000,000 candidates; `n_workers` requests the thread count and is safely capped. | Manual opt-in for Scope A candidate search. |
+| **Native End-to-End Outer Fold** | `"native_outer_fold"` | Runs complete `nested_sum_roc()` outer folds (candidate search, inner CV, selection, cutoff, test scoring) in native C++/TBB (Scope B), with final aggregation in R. Requires `engine = "Rcpp"`, `tuning = "off"`, and at most 2,000,000 candidates. | Manual opt-in for end-to-end native outer-fold execution. |
 
 ```r
 # Manual C++ multi-threading with 4 threads:
@@ -135,7 +136,15 @@ res <- nested_sum_roc(data = d, outcome = y, items = Q1:Q10,
                       min_items = 1, max_items = 3, outer_k = 5, inner_k = 4,
                       engine = "Rcpp", parallel = "native_tbb", n_workers = 4,
                       tuning = "off")
+
+# Explicit end-to-end native outer-fold opt-in (Scope B):
+res <- nested_sum_roc(data = d, outcome = y, items = Q1:Q10,
+                      min_items = 1, max_items = 3, outer_k = 5, inner_k = 4,
+                      engine = "Rcpp", parallel = "native_outer_fold", n_workers = 4,
+                      tuning = "off")
 ```
+
+> **Note on native outer-fold execution:** `nested_sum_roc(..., parallel = "native_tbb")` runs Scope A (native outer candidate search), while `parallel = "native_outer_fold"` runs Scope B (end-to-end native outer-fold execution). In both modes, final result aggregation remains in R, and fold-level checkpointing or interrupted-run resume are not provided.
 
 ---
 

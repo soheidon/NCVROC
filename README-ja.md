@@ -114,7 +114,8 @@ NCVROC は 4 種類の一般的な並列実行モードと、ネスト探索専�
 | **外側フォールド並列** | `"outer"`（または `TRUE`） | PSOCK ワーカプロセスを用いて外側交差検証フォールドを並列化。 | 標準的なネスト交差検証（`nested_sum_roc()`, `cross_size_nested_cv()`, `ncvroc()`）。 |
 | **ハイブリッド並列** | `"hybrid"` | PSOCK ワーカで外側フォールドを、C++ スレッドでフォールド内探索を多重並列化。 | 多数コア環境での大規模ネスト交差検証。 |
 | **チャンク並列** | `"chunks"`（または `TRUE`） | PSOCK ワーカプロセスにチャンク単位で処理を分散。 | ディスク保存を併用する超大規模探索。 |
-| **Native TBB 外側探索** | `"native_tbb"` | `nested_sum_roc()` の外側候補探索を native C++/TBB スレッドで実行。`engine = "Rcpp"`、`tuning = "off"`、候補数 2,000,000 以下が必要です。`n_workers` で要求スレッド数を指定し、安全な上限が適用されます。 | 対応するネスト探索での手動 opt-in。 |
+| **Native TBB 外側探索** | `"native_tbb"` | `nested_sum_roc()` の外側候補探索を native C++/TBB スレッドで実行（Scope A）。`engine = "Rcpp"`、`tuning = "off"`、候補数 2,000,000 以下が必要です。`n_workers` で要求スレッド数を指定し、安全な上限が適用されます。 | Scope A 候補探索の手動 opt-in。 |
+| **Native 外側フォールド全体実行** | `"native_outer_fold"` | `nested_sum_roc()` の外側フォールド全体（候補探索・内部 CV・選択・カットオフ・テスト評価）を native C++/TBB で実行（Scope B）。最終集計は R 側で行います。`engine = "Rcpp"`、`tuning = "off"`、候補数 2,000,000 以下が必要です。 | 外側フォールド全体のネイティブ実行の手動 opt-in。 |
 
 ```r
 # nested_sum_roc() で Native TBB を明示的に opt-in（自動プランナーでは使用されません）
@@ -122,7 +123,15 @@ res <- nested_sum_roc(data = d, outcome = y, items = Q1:Q10,
                       min_items = 1, max_items = 3, outer_k = 5, inner_k = 4,
                       engine = "Rcpp", parallel = "native_tbb", n_workers = 4,
                       tuning = "off")
+
+# 外側フォールド全体のネイティブ実行を明示的に opt-in（Scope B）
+res <- nested_sum_roc(data = d, outcome = y, items = Q1:Q10,
+                      min_items = 1, max_items = 3, outer_k = 5, inner_k = 4,
+                      engine = "Rcpp", parallel = "native_outer_fold", n_workers = 4,
+                      tuning = "off")
 ```
+
+> **ネイティブ外側フォールド実行に関する注記:** `nested_sum_roc(..., parallel = "native_tbb")` は引き続き Scope A（外側候補探索のネイティブ化）、`parallel = "native_outer_fold"` は Scope B（外側フォールド全体のネイティブ実行）を実行します。いずれも最終的な結果集計は R 側で行われ、フォールド単位のチェックポイント保存や中断再開機能は提供されません。
 
 ---
 
