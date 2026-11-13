@@ -1,3 +1,17 @@
+# NCVROC 0.32.0 (2026-11-14)
+
+## Cutoff Stability & Individual Classification Instability
+
+* Added `classification_stability_roc()` and `cutoff_stability_roc()` to quantify bootstrap cutoff stability and subject-level Classification Instability Index (CII) alongside positive-classification frequency, separating item-selection stability, cutoff stability, and individual classification instability.
+* Supports both `"fixed_candidate"` (fixed item set, bootstrap cutoff and OOB/full-sample stability) and `"full_procedure"` (re-running selection and cutoff estimation on each bootstrap replicate), with explicit valid-replicate denominators, failure-state accounting, checkpoint save/resume, and cooperative interruption.
+* Added `compare_classification_stability()` along with `print()`, `summary()`, and anonymized subject-index `plot()` S3 methods for `"classification_stability_result"`.
+
+## Candidate-Count Backend Routing (`parallel = "auto"`) & Provenance
+
+* Added `parallel = "auto"` across `ncvroc()`, `ncvroc_config()`, `run_ncvroc()`, and `nested_sum_roc()` (`engine = "Rcpp"`, `tuning = "off"`), counting combinations over the actual eligible predictor universe and routing `<= 2,000,000` candidates to `"native_outer_fold"` and `> 2,000,000` candidates to `"native_streaming"` while keeping `cross_size_nested_cv()` routing separate and preserving existing defaults and explicit `parallel` modes.
+* Recorded backward-compatible `backend_provenance` (`requested_parallel`, `resolved_parallel`, `selection_mode`, `selection_reason`, `eligible_candidate_count`, `streaming_threshold`) in `settings` and top-level result objects without breaking legacy result objects.
+* Added `tests/testthat/test-backend-routing.R` covering `2,000,000` boundary routing, `n = 103, k = 1..5` combinatorial counts, `native_outer_fold` vs `native_streaming` small-fixture parity, and `native_streaming` checkpoint save/resume/incompatibility handling.
+
 # NCVROC 0.31.0 (2026-11-14)
 
 ## Statistical Audit and Aggregation Enhancements

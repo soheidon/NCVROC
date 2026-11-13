@@ -780,8 +780,11 @@ ncvroc <- function(data,
   parallel_mode <- .resolve_parallel_mode(
     parallel,
     context = "nested",
-    allowed = c("none", "outer", "chunks", "threads", "hybrid", "native_outer_fold", "native_streaming")
+    allowed = c("auto", "none", "outer", "chunks", "threads", "hybrid", "native_outer_fold", "native_streaming")
   )
+  if (parallel_mode %in% c("auto", "native_outer_fold", "native_streaming") && !identical(engine, "Rcpp")) {
+    stop(sprintf("parallel = '%s' requires `engine = 'Rcpp'`.", parallel_mode), call. = FALSE)
+  }
 
   if (!is.null(n_workers)) {
     if (!is.numeric(n_workers) || length(n_workers) != 1L ||
@@ -1161,6 +1164,7 @@ ncvroc <- function(data,
     n_original                = n_original,
     n_analyzed                = n_analyzed,
     nested_result             = nested_result,
+    backend_provenance        = nested_result$settings$backend_provenance,
     nested_cv_summary         = nested_result$summary,
     selected_model_frequency  = nested_result$selected_model_frequency,
     outer_predictions         = nested_result$outer_predictions,

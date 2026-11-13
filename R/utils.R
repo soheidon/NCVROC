@@ -423,6 +423,9 @@ CACHE_FORMAT_VERSION <- 1L     # bump when cache storage format changes
       stop("`parallel` must be TRUE or FALSE, or a string ('none', 'outer', 'chunks', 'threads', 'hybrid', 'native_tbb').", call. = FALSE)
     }
     if (identical(parallel, "auto")) {
+      if ("auto" %in% allowed) {
+        return("auto")
+      }
       stop("`parallel = 'auto'` is reserved for a future release. Use 'none', 'outer', 'chunks', 'threads', 'hybrid', or 'native_tbb'.", call. = FALSE)
     }
     if (!parallel %in% c("none", "outer", "chunks", "threads", "hybrid", "native_tbb", "native_outer_fold", "native_streaming")) {

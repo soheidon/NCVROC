@@ -595,6 +595,114 @@
 #' @keywords internal
 .NATIVE_OUTER_PROTOTYPE_MAX_CANDIDATES <- 2000000L
 
+#' Resolve candidate-count threshold for automatic streaming backend routing
+#'
+#' Defaults to \code{.NATIVE_OUTER_PROTOTYPE_MAX_CANDIDATES} (2,000,000).
+#' An internal option \code{NCVROC.auto_streaming_threshold} can override this
+#' threshold for bounded parity and routing tests without modifying public defaults.
+#'
+#' @return Numeric scalar positive integer threshold.
+#' @keywords internal
+.resolve_auto_streaming_threshold <- function() {
+  opt <- getOption("NCVROC.auto_streaming_threshold", NULL)
+  if (is.null(opt)) {
+    return(as.numeric(.NATIVE_OUTER_PROTOTYPE_MAX_CANDIDATES))
+  }
+  if (!is.numeric(opt) || length(opt) != 1L || is.na(opt) || !is.finite(opt) ||
+      opt <= 0 || opt != floor(opt)) {
+    stop("Option `NCVROC.auto_streaming_threshold` must be a single positive integer.", call. = FALSE)
+  }
+  as.numeric(opt)
+}
+
+#' Select native nested CV backend automatically from eligible candidate count
+#'
+#' Computes the exact eligible candidate count using combinatorial math over the
+#' actual eligible predictor universe and routes to \code{"native_outer_fold"}
+#' when \code{count <= threshold} (default 2,000,000) or \code{"native_streaming"}
+#' when \code{count > threshold}.
+#'
+#' @param n_items Integer, number of eligible predictors.
+#' @param min_items Integer, minimum items per combination.
+#' @param max_items Integer, maximum items per combination.
+#' @param engine Character, computation engine (must be \code{"Rcpp"}).
+#' @param tuning Character, tuning mode (must be \code{"off"}).
+#' @param threads_per_worker Integer, threads per worker (must be \code{1L}).
+#' @param streaming_threshold Numeric scalar threshold.
+#' @return List with \code{resolved_parallel}, \code{selection_reason},
+#'   \code{eligible_candidate_count}, and provenance fields.
+#' @keywords internal
+.select_auto_parallel_backend <- function(n_items,
+                                         min_items,
+                                         max_items,
+                                         engine = "Rcpp",
+                                         tuning = "off",
+                                         threads_per_worker = 1L,
+                                         streaming_threshold = .resolve_auto_streaming_threshold()) {
+  if (!identical(engine, "Rcpp")) {
+    stop("`parallel = 'auto'` requires `engine = 'Rcpp'`.", call. = FALSE)
+  }
+  if (!identical(tuning, "off")) {
+    stop("`tuning` must be 'off' when `parallel = 'auto'`.", call. = FALSE)
+  }
+  if (!identical(as.integer(threads_per_worker), 1L)) {
+    stop("`threads_per_worker` can only exceed 1 when `parallel = 'hybrid'`.", call. = FALSE)
+  }
+  if (!is.numeric(n_items) || length(n_items) != 1L || is.na(n_items) ||
+      n_items < 1L || n_items != floor(n_items)) {
+    stop("`n_items` must be a positive integer for `parallel = 'auto'`.", call. = FALSE)
+  }
+  if (!is.numeric(min_items) || length(min_items) != 1L || is.na(min_items) ||
+      min_items < 1L || min_items != floor(min_items)) {
+    stop("`min_items` must be a positive integer.", call. = FALSE)
+  }
+  if (!is.numeric(max_items) || length(max_items) != 1L || is.na(max_items) ||
+      max_items < min_items || max_items != floor(max_items)) {
+    stop("`max_items` must be an integer >= `min_items`.", call. = FALSE)
+  }
+  if (min_items > n_items) {
+    stop(sprintf("`min_items` (%d) exceeds the number of eligible items (%d).",
+                 as.integer(min_items), as.integer(n_items)), call. = FALSE)
+  }
+
+  n_items_int <- as.integer(n_items)
+  min_items_int <- as.integer(min_items)
+  effective_max_items <- min(as.integer(max_items), n_items_int)
+  eligible_count <- .count_total_combos(n_items_int, min_items_int, effective_max_items)
+
+  if (!is.finite(eligible_count) || eligible_count <= 0) {
+    stop("Eligible candidate count is invalid or non-finite.", call. = FALSE)
+  }
+
+  if (eligible_count <= streaming_threshold) {
+    resolved <- "native_outer_fold"
+    reason <- sprintf(
+      "eligible_candidates (%s) <= streaming_threshold (%s)",
+      format(eligible_count, scientific = FALSE, trim = TRUE),
+      format(streaming_threshold, scientific = FALSE, trim = TRUE)
+    )
+  } else {
+    resolved <- "native_streaming"
+    reason <- sprintf(
+      "eligible_candidates (%s) > streaming_threshold (%s)",
+      format(eligible_count, scientific = FALSE, trim = TRUE),
+      format(streaming_threshold, scientific = FALSE, trim = TRUE)
+    )
+  }
+
+  list(
+    requested_parallel       = "auto",
+    resolved_parallel        = resolved,
+    selection_mode           = "auto_candidate_count",
+    selection_reason         = reason,
+    eligible_candidate_count = as.numeric(eligible_count),
+    eligible_n_items         = n_items_int,
+    eligible_min_items       = min_items_int,
+    eligible_max_items       = effective_max_items,
+    streaming_threshold      = as.numeric(streaming_threshold)
+  )
+}
+
 #' Check eligibility for native outer candidate search prototype
 #'
 #' Evaluates whether the candidate space is within the bounded single-pass capacity
@@ -867,6 +975,9 @@
     outer_predictions        = all_predictions,
     settings                 = settings
   )
+  if (!is.null(settings$backend_provenance)) {
+    result$backend_provenance <- settings$backend_provenance
+  }
   class(result) <- "ncvroc_result"
   result
 }
@@ -1347,8 +1458,9 @@ nested_sum_roc <- function(data,
   parallel_mode <- .resolve_parallel_mode(
     parallel,
     context = "nested",
-    allowed = c("none", "outer", "chunks", "threads", "hybrid", "native_tbb", "native_outer_fold", "native_streaming")
+    allowed = c("auto", "none", "outer", "chunks", "threads", "hybrid", "native_tbb", "native_outer_fold", "native_streaming")
   )
+  requested_parallel_mode <- parallel_mode
 
   if (!is.null(n_workers)) {
     if (!is.numeric(n_workers) || length(n_workers) != 1 ||
@@ -1366,17 +1478,17 @@ nested_sum_roc <- function(data,
   if (parallel_mode == "hybrid" && engine != "Rcpp") {
     stop("`parallel = 'hybrid'` requires `engine = 'Rcpp'`.", call. = FALSE)
   }
-  if (parallel_mode %in% c("native_tbb", "native_outer_fold", "native_streaming") && engine != "Rcpp") {
+  if (parallel_mode %in% c("auto", "native_tbb", "native_outer_fold", "native_streaming") && engine != "Rcpp") {
     stop(sprintf("`parallel = '%s'` requires `engine = 'Rcpp'`.", parallel_mode), call. = FALSE)
   }
-  if (parallel_mode %in% c("native_tbb", "native_outer_fold", "native_streaming") && tuning != "off") {
+  if (parallel_mode %in% c("auto", "native_tbb", "native_outer_fold", "native_streaming") && tuning != "off") {
     stop(sprintf("`tuning` must be 'off' when `parallel = '%s'`.", parallel_mode), call. = FALSE)
   }
   if (!is.null(checkpoint_dir) && !identical(tuning, "off")) {
     stop("`tuning` must be 'off' when `checkpoint_dir` is provided.", call. = FALSE)
   }
-  if (!is.null(checkpoint_dir) && !(parallel_mode %in% c("none", "native_outer_fold", "native_streaming"))) {
-    stop("`checkpoint_dir` is only supported when `parallel = 'none'` (or FALSE), `parallel = 'native_outer_fold'`, or `parallel = 'native_streaming'`.", call. = FALSE)
+  if (!is.null(checkpoint_dir) && !(parallel_mode %in% c("auto", "none", "native_outer_fold", "native_streaming"))) {
+    stop("`checkpoint_dir` is only supported when `parallel = 'none'` (or FALSE), `parallel = 'auto'`, `parallel = 'native_outer_fold'`, or `parallel = 'native_streaming'`.", call. = FALSE)
   }
 
   # ---- Validate inputs ----
@@ -1387,6 +1499,39 @@ nested_sum_roc <- function(data,
   outcome_col  <- validated$outcome_col
 
   n_total <- length(y)
+  effective_max_items <- min(as.integer(max_items), length(items))
+  if (min_items > length(items) || effective_max_items < min_items) {
+    stop(sprintf("`min_items` (%d) exceeds the number of eligible items (%d).",
+                 as.integer(min_items), length(items)), call. = FALSE)
+  }
+  total_ncv_combos <- .count_total_combos(length(items), min_items, effective_max_items)
+
+  if (identical(parallel_mode, "auto")) {
+    backend_provenance <- .select_auto_parallel_backend(
+      n_items            = length(items),
+      min_items          = min_items,
+      max_items          = max_items,
+      engine             = engine,
+      tuning             = tuning,
+      threads_per_worker = threads_per_worker
+    )
+    parallel_mode <- backend_provenance$resolved_parallel
+  } else {
+    backend_provenance <- list(
+      requested_parallel       = requested_parallel_mode,
+      resolved_parallel        = parallel_mode,
+      selection_mode           = "explicit",
+      selection_reason         = sprintf("explicit parallel = '%s'", requested_parallel_mode),
+      eligible_candidate_count = as.numeric(total_ncv_combos),
+      eligible_n_items         = as.integer(length(items)),
+      eligible_min_items       = as.integer(min_items),
+      eligible_max_items       = as.integer(effective_max_items),
+      streaming_threshold      = as.numeric(.resolve_auto_streaming_threshold())
+    )
+  }
+  settings$requested_parallel <- requested_parallel_mode
+  settings$resolved_parallel  <- parallel_mode
+  settings$backend_provenance <- backend_provenance
 
   # ---- Create outer folds ----
   outer_folds <- make_stratified_folds(
@@ -1426,6 +1571,10 @@ nested_sum_roc <- function(data,
     )
     execution_metadata <- planned$metadata
     parallel_mode <- planned$plan$parallel[[1L]]
+    settings$resolved_parallel <- parallel_mode
+    settings$backend_provenance$resolved_parallel <- parallel_mode
+    settings$backend_provenance$selection_mode <- paste0("tuning_", tuning)
+    settings$backend_provenance$selection_reason <- sprintf("tuning = '%s' selected '%s'", tuning, parallel_mode)
     actual_workers <- if (!is.null(planned$plan$outer_workers)) planned$plan$outer_workers[[1L]] else planned$plan$n_workers[[1L]]
     actual_threads_per_worker <- if (!is.null(planned$plan$threads_per_worker)) planned$plan$threads_per_worker[[1L]] else 1L
     if (parallel_mode == "threads") {
@@ -1475,9 +1624,8 @@ nested_sum_roc <- function(data,
   }
 
   # ---- Determine if nested CV needs streaming ----
-  total_ncv_combos <- .count_total_combos(length(items), min_items, max_items)
   if (parallel_mode %in% c("native_tbb", "native_outer_fold")) {
-    if (!.is_native_outer_candidate_search_eligible(length(items), min_items, max_items, total_ncv_combos)) {
+    if (!.is_native_outer_candidate_search_eligible(length(items), min_items, effective_max_items, total_ncv_combos)) {
       stop(sprintf("Candidate space exceeds safe bounds for `parallel = '%s'` (maximum 2,000,000 combinations).", parallel_mode),
            call. = FALSE)
     }
@@ -1524,7 +1672,7 @@ nested_sum_roc <- function(data,
         outer_folds         = outer_folds,
         items               = items,
         min_items           = min_items,
-        max_items           = max_items,
+        max_items           = effective_max_items,
         cutoff_method       = cutoff_method,
         preselect_by        = preselect_by,
         selection_criterion = selection_criterion,
@@ -1544,7 +1692,7 @@ nested_sum_roc <- function(data,
         positive_label      = positive_label,
         negative_label      = negative_label,
         min_items           = min_items,
-        max_items           = max_items,
+        max_items           = effective_max_items,
         cutoff_method       = cutoff_method,
         preselect_by        = preselect_by,
         selection_criterion = selection_criterion,
@@ -1574,7 +1722,7 @@ nested_sum_roc <- function(data,
         positive_label         = positive_label,
         negative_label         = negative_label,
         min_items              = min_items,
-        max_items              = max_items,
+        max_items              = effective_max_items,
         cutoff_method          = cutoff_method,
         preselect_by           = preselect_by,
         selection_criterion    = selection_criterion,
@@ -1618,7 +1766,7 @@ nested_sum_roc <- function(data,
         positive_label      = positive_label,
         negative_label      = negative_label,
         min_items           = min_items,
-        max_items           = max_items,
+        max_items           = effective_max_items,
         cutoff_method       = cutoff_method,
         preselect_by        = preselect_by,
         selection_criterion = selection_criterion,
@@ -1647,7 +1795,7 @@ nested_sum_roc <- function(data,
         positive_label         = positive_label,
         negative_label         = negative_label,
         min_items              = min_items,
-        max_items              = max_items,
+        max_items              = effective_max_items,
         cutoff_method          = cutoff_method,
         preselect_by           = preselect_by,
         selection_criterion    = selection_criterion,
@@ -1931,7 +2079,7 @@ nested_sum_roc <- function(data,
         positive_label      = positive_label,
         negative_label      = negative_label,
         min_items           = min_items,
-        max_items           = max_items,
+        max_items           = effective_max_items,
         cutoff_method       = cutoff_method,
         preselect_by        = preselect_by,
         selection_criterion = selection_criterion,
@@ -1961,7 +2109,7 @@ nested_sum_roc <- function(data,
         positive_label         = positive_label,
         negative_label         = negative_label,
         min_items              = min_items,
-        max_items              = max_items,
+        max_items              = effective_max_items,
         cutoff_method          = cutoff_method,
         preselect_by           = preselect_by,
         selection_criterion    = selection_criterion,
