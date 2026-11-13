@@ -142,6 +142,15 @@ If `"chunks"`, inner exhaustive searches are evaluated across persistent chunk s
 workers. If `"threads"`, outer folds are evaluated serially while inner and final exhaustive
 searches use C++ multi-threading within the main R process via RcppParallel.
 If `"hybrid"`, outer folds use socket workers and each worker uses C++ threads.
+If `"native_outer_fold"`, complete outer folds are executed in native C++/TBB
+(requires `engine = "Rcpp"` and `<= 2,000,000` eligible combinations).
+If `"native_streaming"`, bounded streaming candidate-batch execution in native
+C++/TBB is used (requires `engine = "Rcpp"`), supporting `> 2,000,000` combinations.
+If `"auto"`, automatically selects `"native_outer_fold"` when the eligible
+candidate count is `<= 2,000,000` or `"native_streaming"` when `> 2,000,000`
+(requires `engine = "Rcpp"`). Note: `cross_size_nested_cv()` and
+`candidate_stability_roc()` use separate `parallel` arguments and do not
+support `"auto"`.
 Default `FALSE`.}
 
 \item{n_workers}{Integer, number of worker processes (for `"outer"` or `"chunks"`),
@@ -165,12 +174,14 @@ Cannot be combined with `min_items` or `max_items`. Default NULL.}
 
 \item{checkpoint_dir}{Optional character(1) path to a checkpoint directory
 for outer-CV checkpoint/resume (default `NULL`, disabled). Forwarded to
-`run_ncvroc()` / `nested_sum_roc()`. Note: `final_search` is NOT
-checkpointed or resumable.}
+`run_ncvroc()` / `nested_sum_roc()`, where it is supported for
+`parallel = "none"` (`FALSE`), `"native_outer_fold"`, `"native_streaming"`,
+and `"auto"`. Note: `final_search` is NOT checkpointed or resumable.}
 
 \item{checkpoint_granularity}{Checkpoint unit granularity when
 `checkpoint_dir` is set: `"outer_fold"` (default), `"model_size"`, or
-`"candidate_batch"`.}
+`"candidate_batch"`. Supported across `"none"` (`FALSE`),
+`"native_outer_fold"`, `"native_streaming"`, and `"auto"`.}
 
 \item{resume}{Logical(1). Reuse verified `COMPLETE` units in
 `checkpoint_dir` when `TRUE` (default).}
@@ -179,7 +190,12 @@ checkpointed or resumable.}
 `TRUE` (default `FALSE`).}
 }
 \value{
-An object of class `"ncvroc_analysis"`.
+An object of class `"ncvroc_analysis"` containing `nested_result`,
+  `backend_provenance` (recording `requested_parallel`, `resolved_parallel`,
+  `selection_mode`, `selection_reason`, `eligible_candidate_count`, and
+  `streaming_threshold`), and (when checkpointing is enabled)
+  `nested_result$settings$checkpoint_provenance` (recording `checkpoint_enabled`,
+  `n_reused`, `n_computed`, `reused_folds`, `computed_folds`, and `resume`).
 }
 \description{
 Primary user-facing function for nested cross-validation of combinatorial

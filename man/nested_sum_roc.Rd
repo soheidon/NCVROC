@@ -96,6 +96,9 @@ executed end-to-end in native C++/TBB (Scope B), with final aggregation in R.
 If `"native_streaming"`, bounded streaming candidate-batch execution in native
 C++/TBB is used, supporting candidate spaces above 2,000,000 combinations
 with optional checkpointing and cooperative cancellation.
+If `"auto"`, automatically selects `"native_outer_fold"` when the eligible
+candidate count is `<= 2,000,000` or `"native_streaming"` when `> 2,000,000`
+(requires `engine = "Rcpp"` and `tuning = "off"`).
 Default `FALSE`.}
 
 \item{n_workers}{Integer, number of worker processes (for `"outer"` or `"chunks"`),
@@ -119,7 +122,8 @@ remain 1.}
 
 \item{tuning}{Automatic execution-planning mode: `"off"` (default; manual
 execution configuration is authoritative), `"auto"`, or `"always"`.
-Must be `"off"` when `parallel = "native_tbb"` or `"native_outer_fold"`.
+Must be `"off"` when `parallel` is `"native_tbb"`, `"native_outer_fold"`,
+`"native_streaming"`, or `"auto"`.
 Nested runtime probing is candidate-bounded and preserves the complete fold
 structure. v0.19.0 does not perform a nested resource sweep when the nested
 evaluator cannot accept rank-bounded candidates; in that case it retains the
@@ -148,8 +152,12 @@ warns if non-NULL.}
 
 \item{checkpoint_dir}{Optional character scalar path to a directory for
 completed outer-fold checkpoint persistence and resume. Supported when
-`parallel = "none"` (or \code{FALSE}, R serial) or
-`parallel = "native_outer_fold"` (Scope B Native), with `tuning = "off"`.
+`parallel = "none"` (or \code{FALSE}, R serial),
+`parallel = "native_outer_fold"` (Scope B Native, `<= 2,000,000` combinations),
+`parallel = "native_streaming"`, or `parallel = "auto"` (resolved to
+`"native_outer_fold"` or `"native_streaming"`), with `tuning = "off"`.
+Other parallel modes (`"outer"`, `"chunks"`, `"threads"`, `"hybrid"`,
+`"native_tbb"`) raise an error when `checkpoint_dir` is non-NULL.
 Uses a backend-neutral canonical schema (schema version 2) so completed
 outer-fold checkpoints can be reused interchangeably between R serial and
 Scope B Native when analysis identity and schema match (in-flight state is
@@ -174,8 +182,8 @@ must still match the current call.}
 \item{checkpoint_granularity}{Character scalar specifying checkpointing unit
 granularity when `checkpoint_dir` is provided: `"outer_fold"` (default),
 `"model_size"`, or `"candidate_batch"`. All three granularities are
-supported and portable across `parallel = "none"` and
-`parallel = "native_outer_fold"`.}
+supported across `parallel = "none"`, `"native_outer_fold"`,
+`"native_streaming"`, and `"auto"`.}
 }
 \value{
 An object of class `"ncvroc_result"`, a list with elements:
@@ -184,7 +192,14 @@ An object of class `"ncvroc_result"`, a list with elements:
   \item{selected_models}{character vector of selected item sets per fold.}
   \item{selected_model_frequency}{data.frame of item-set selection counts.}
   \item{outer_predictions}{data.frame of all out-of-fold predictions.}
-  \item{settings}{list of all argument values. When \code{tuning = "auto"} or
+  \item{backend_provenance}{list recording `requested_parallel`,
+    `resolved_parallel`, `selection_mode`, `selection_reason`,
+    `eligible_candidate_count`, `eligible_n_items`, `eligible_min_items`,
+    `eligible_max_items`, and `streaming_threshold`.}
+  \item{settings}{list of all argument values, including `requested_parallel`,
+    `resolved_parallel`, `backend_provenance`, and (when `checkpoint_dir` is
+    provided) `checkpoint_provenance` (`checkpoint_enabled`, `n_reused`,
+    `n_computed`, `reused_folds`, `computed_folds`, `resume`). When \code{tuning = "auto"} or
     \code{"always"}, includes \code{execution_plan} metadata detailing the selected execution backend
     and approximate runtime estimates. \code{tuning = "off"} attaches no execution plan metadata.}
 }

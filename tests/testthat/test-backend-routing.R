@@ -290,3 +290,125 @@ test_that("legacy result objects without backend_provenance remain compatible", 
   )
   expect_s3_class(stab, "classification_stability_result")
 })
+
+test_that("ncvroc item_count = '==4' with parallel = 'auto' proves streaming checkpoint save, full reuse, and partial resume", {
+  df <- .make_routing_fixture(n = 48L, p = 6L, seed = 808L)
+  items <- paste0("q", 1:6)
+  cp_dir <- tempfile("ncvroc_auto_stream_cp_")
+  cp_partial_dir <- tempfile("ncvroc_auto_stream_partial_")
+  on.exit({
+    unlink(cp_dir, recursive = TRUE, force = TRUE)
+    unlink(cp_partial_dir, recursive = TRUE, force = TRUE)
+  }, add = TRUE)
+
+  seams <- NCVROC:::.ncvroc_checkpoint_test_seams
+  old_call_count <- seams$native_call_count
+  old_sim_intr <- seams$simulate_interrupt_at
+  on.exit({
+    seams$native_call_count <- old_call_count
+    seams$simulate_interrupt_at <- old_sim_intr
+  }, add = TRUE)
+
+  # Isolate threshold option inside a local helper and verify restoration
+  run_with_threshold <- function(fn) {
+    old_opt <- getOption("NCVROC.auto_streaming_threshold", NULL)
+    on.exit(options(NCVROC.auto_streaming_threshold = old_opt), add = TRUE)
+    options(NCVROC.auto_streaming_threshold = 10L)
+    fn()
+  }
+
+  # 1. Un-checkpointed reference run (choose(6, 4) = 15 > 10 -> native_streaming)
+  prior_opt <- getOption("NCVROC.auto_streaming_threshold", NULL)
+  ref <- run_with_threshold(function() {
+    ncvroc(
+      df, "y", items = items, item_count = "==4",
+      outer_k = 3L, inner_k = 2L, outer_repeats = 1L, seed = 42L,
+      preselect_top_n = 8L, final_search = FALSE,
+      engine = "Rcpp", parallel = "auto",
+      progress = FALSE, verbose = FALSE
+    )
+  })
+  expect_identical(getOption("NCVROC.auto_streaming_threshold", NULL), prior_opt)
+  expect_equal(ref$backend_provenance$resolved_parallel, "native_streaming")
+  expect_equal(ref$backend_provenance$eligible_candidate_count, 15)
+
+  # 2. Initial checkpointed run creates files and computes all 3 folds
+  seams$native_call_count <- 0L
+  seams$simulate_interrupt_at <- NULL
+  res1 <- run_with_threshold(function() {
+    ncvroc(
+      df, "y", items = items, item_count = "==4",
+      outer_k = 3L, inner_k = 2L, outer_repeats = 1L, seed = 42L,
+      preselect_top_n = 8L, final_search = FALSE,
+      engine = "Rcpp", parallel = "auto",
+      checkpoint_dir = cp_dir, checkpoint_granularity = "outer_fold",
+      resume = TRUE, progress = FALSE, verbose = FALSE
+    )
+  })
+  expect_true(dir.exists(cp_dir))
+  expect_gt(length(list.files(cp_dir, recursive = TRUE)), 0L)
+  expect_equal(res1$backend_provenance$resolved_parallel, "native_streaming")
+  cp_prov1 <- res1$nested_result$settings$checkpoint_provenance
+  expect_true(isTRUE(cp_prov1$checkpoint_enabled))
+  expect_equal(cp_prov1$n_reused, 0L)
+  expect_equal(cp_prov1$n_computed, 3L)
+  expect_equal(seams$native_call_count, 3L)
+  expect_equal(res1$nested_cv_summary, ref$nested_cv_summary, tolerance = 1e-12)
+
+  # 3. Completed resume reuses all 3 folds with zero native recomputation
+  seams$native_call_count <- 0L
+  res2 <- run_with_threshold(function() {
+    ncvroc(
+      df, "y", items = items, item_count = "==4",
+      outer_k = 3L, inner_k = 2L, outer_repeats = 1L, seed = 42L,
+      preselect_top_n = 8L, final_search = FALSE,
+      engine = "Rcpp", parallel = "auto",
+      checkpoint_dir = cp_dir, checkpoint_granularity = "outer_fold",
+      resume = TRUE, progress = FALSE, verbose = FALSE
+    )
+  })
+  cp_prov2 <- res2$nested_result$settings$checkpoint_provenance
+  expect_equal(cp_prov2$n_reused, 3L)
+  expect_equal(cp_prov2$n_computed, 0L)
+  expect_equal(seams$native_call_count, 0L)
+  expect_equal(res2$nested_cv_summary, ref$nested_cv_summary, tolerance = 1e-12)
+  expect_equal(res2$outer_predictions, ref$outer_predictions, tolerance = 1e-12)
+
+  # 4. Legitimate partial-completion checkpoint via interruption hook after fold 1
+  seams$native_call_count <- 0L
+  seams$simulate_interrupt_at <- 2L
+  err_partial <- tryCatch(
+    run_with_threshold(function() {
+      ncvroc(
+        df, "y", items = items, item_count = "==4",
+        outer_k = 3L, inner_k = 2L, outer_repeats = 1L, seed = 42L,
+        preselect_top_n = 8L, final_search = FALSE,
+        engine = "Rcpp", parallel = "auto",
+        checkpoint_dir = cp_partial_dir, checkpoint_granularity = "outer_fold",
+        resume = TRUE, progress = FALSE, verbose = FALSE
+      )
+    }),
+    error = function(e) e
+  )
+  expect_s3_class(err_partial, "ncvroc_interrupted")
+  expect_equal(seams$native_call_count, 1L)
+
+  seams$simulate_interrupt_at <- NULL
+  seams$native_call_count <- 0L
+  res_partial <- run_with_threshold(function() {
+    ncvroc(
+      df, "y", items = items, item_count = "==4",
+      outer_k = 3L, inner_k = 2L, outer_repeats = 1L, seed = 42L,
+      preselect_top_n = 8L, final_search = FALSE,
+      engine = "Rcpp", parallel = "auto",
+      checkpoint_dir = cp_partial_dir, checkpoint_granularity = "outer_fold",
+      resume = TRUE, progress = FALSE, verbose = FALSE
+    )
+  })
+  cp_prov_partial <- res_partial$nested_result$settings$checkpoint_provenance
+  expect_equal(cp_prov_partial$n_reused, 1L)
+  expect_equal(cp_prov_partial$n_computed, 2L)
+  expect_equal(seams$native_call_count, 2L)
+  expect_equal(res_partial$nested_cv_summary, ref$nested_cv_summary, tolerance = 1e-12)
+  expect_equal(res_partial$outer_predictions, ref$outer_predictions, tolerance = 1e-12)
+})

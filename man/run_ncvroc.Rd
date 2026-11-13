@@ -47,12 +47,20 @@ for outer-CV checkpoint/resume (default `NULL`, disabled).}
 `TRUE` (default `FALSE`).}
 }
 \value{
-An `ncvroc_result` object from `nested_sum_roc()`.
+An `ncvroc_result` object from `nested_sum_roc()`, including
+  `backend_provenance` (and `settings$requested_parallel`,
+  `settings$resolved_parallel`, `settings$backend_provenance`) and, when
+  `checkpoint_dir` is provided, `settings$checkpoint_provenance`.
 }
 \description{
 Thin wrapper around `nested_sum_roc()` that reads all parameters from
 a configuration object created by `ncvroc_config()`, including parallel
 execution options (`parallel`, `n_workers`, `threads_per_worker`).
+}
+\details{
+`run_ncvroc()` does not take a `parallel` argument directly; it forwards
+`config$parallel` (including `"auto"`, `"native_outer_fold"`, and
+`"native_streaming"`) and `config$engine` to `nested_sum_roc()`.
 }
 \examples{
 cfg <- ncvroc_config("y", items = paste0("q", 1:5), max_items = 2, mode = "quick")

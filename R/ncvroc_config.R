@@ -34,6 +34,11 @@
 #'   workers. If `"threads"`, outer folds are evaluated serially while inner and final exhaustive
 #'   searches use C++ multi-threading within the main R process via RcppParallel.
 #'   If `"hybrid"`, outer folds use socket workers and each worker uses C++ threads.
+#'   If `"native_outer_fold"` or `"native_streaming"`, uses native C++/TBB execution
+#'   (requires `engine = "Rcpp"`). If `"auto"`, automatically routes to
+#'   `"native_outer_fold"` (`<= 2,000,000` eligible combinations) or
+#'   `"native_streaming"` (`> 2,000,000` eligible combinations; requires
+#'   `engine = "Rcpp"`).
 #'   Default `FALSE`.
 #' @param n_workers Integer, number of worker processes (for `"outer"` or `"chunks"`),
 #'   threads (for `"threads"`), or outer PSOCK workers (for `"hybrid"`), or

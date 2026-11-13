@@ -26,7 +26,15 @@
 #' @param force_recompute Logical(1). Recompute existing checkpoint units when
 #'   `TRUE` (default `FALSE`).
 #'
-#' @return An `ncvroc_result` object from `nested_sum_roc()`.
+#' @details
+#' `run_ncvroc()` does not take a `parallel` argument directly; it forwards
+#' `config$parallel` (including `"auto"`, `"native_outer_fold"`, and
+#' `"native_streaming"`) and `config$engine` to `nested_sum_roc()`.
+#'
+#' @return An `ncvroc_result` object from `nested_sum_roc()`, including
+#'   `backend_provenance` (and `settings$requested_parallel`,
+#'   `settings$resolved_parallel`, `settings$backend_provenance`) and, when
+#'   `checkpoint_dir` is provided, `settings$checkpoint_provenance`.
 #' @export
 #'
 #' @examples
