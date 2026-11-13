@@ -31,7 +31,10 @@ nested_sum_roc(
   verbose = TRUE,
   return = c("full", "summary"),
   output_dir = NULL,
-  file_prefix = "NCVROC"
+  file_prefix = "NCVROC",
+  checkpoint_dir = NULL,
+  resume = TRUE,
+  force_recompute = FALSE
 )
 }
 \arguments{
@@ -138,6 +141,25 @@ only). Only `"full"` is implemented in v0.1.}
 warns if non-NULL.}
 
 \item{file_prefix}{Character, prefix for CSV filenames (default `"NCVROC"`).}
+
+\item{checkpoint_dir}{Optional character scalar path to a directory for
+completed outer-fold checkpoint persistence and resume. Supported only when
+`parallel = "native_outer_fold"`. Requires SHA-256 support via
+\code{tools::sha256sum} (R >= 4.5.0) for identity and payload integrity
+hashing. Default `NULL` disables checkpointing and performs no checkpoint I/O.}
+
+\item{resume}{Logical scalar (default `TRUE`). When `checkpoint_dir` is
+non-NULL and `force_recompute = FALSE`, reuse valid completed outer-fold
+checkpoints matching the current analysis and split identity and compute
+only missing folds. Inactive when `checkpoint_dir = NULL`. Note that for
+deterministic resume across sessions, callers must provide a fixed `seed`
+or otherwise reproduce identical fold assignments.}
+
+\item{force_recompute}{Logical scalar (default `FALSE`). When `TRUE` (requires
+a non-NULL `checkpoint_dir`), recompute all outer folds even when
+`resume = TRUE`, replacing prior fold checkpoints only after the new
+result is complete and read-back validated. Directory analysis identity
+must still match the current call.}
 }
 \value{
 An object of class `"ncvroc_result"`, a list with elements:

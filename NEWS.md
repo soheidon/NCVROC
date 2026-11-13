@@ -1,3 +1,13 @@
+# NCVROC 0.27.0 (2026-11-13)
+
+## Completed Outer-Fold Checkpoint / Resume (Scope B)
+
+* Added opt-in outer-fold-level checkpoint persistence and resume to `nested_sum_roc()` via `checkpoint_dir = NULL`, `resume = TRUE`, and `force_recompute = FALSE` (supported exclusively with `parallel = "native_outer_fold"`, `engine = "Rcpp"`, and `tuning = "off"`).
+* Persists only independently validated, fully completed `NativeOuterFoldResult` envelopes (`folds/repeat_XXX_fold_YYY.rds`) alongside an immutable `identity.rds` capturing data, parameter, and exact outer/inner fold-split digests. In-flight or failed folds are never partially persisted and are recomputed from the beginning on a subsequent run.
+* Protects checkpoint directories with canonicalized path containment, symlink/reparse rejection, exclusive directory locks (`.lock/owner.rds`, never auto-deleted by age), unique staging in `pending/`, read-back hash/schema validation, and backup-preserved replacement when `force_recompute = TRUE`.
+* Updated `evaluate_outer_folds_native_cpp()` with `throw_on_error` so parallel TBB runs return per-fold completion/error records to the main R control thread, persisting all valid completed sibling folds before raising the first deterministic failure.
+* **Compatibility & exclusions:** `checkpoint_dir = NULL` preserves legacy behavior with zero checkpoint I/O. Does not add inner-fold, candidate-level, mid-fold, or cross-language/backend-neutral checkpointing, and preserves `cross_size_nested_cv(result_file = ...)` whole-analysis caching unchanged.
+
 # NCVROC 0.26.0 (2026-11-13)
 
 ## Native End-to-End Outer-Fold Execution (Scope B)

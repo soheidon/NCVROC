@@ -808,7 +808,8 @@ List evaluate_outer_folds_native_cpp(
     int preselect_top_n,
     bool prefer_fewer_items = true,
     int num_threads = 1,
-    int schema_version = 1
+    int schema_version = 1,
+    bool throw_on_error = true
 ) {
   if (IntegerVector::is_na(schema_version) || schema_version != NATIVE_OUTER_FOLD_SCHEMA_VERSION) {
     stop("Unsupported schema_version (%d); expected %d.", schema_version, NATIVE_OUTER_FOLD_SCHEMA_VERSION);
@@ -973,12 +974,16 @@ List evaluate_outer_folds_native_cpp(
     }
   );
 
-  // Deterministic failure selection by (repeat_id, outer_fold_id)
-  for (const auto& res : results) {
-    if (res.status_code != 0 || !res.completed) {
-      stop("Native outer fold failed at %s (repeat_id=%d, outer_fold_id=%d, status=%d): %s",
-           res.outer_fold.c_str(), res.repeat_id, res.outer_fold_id,
-           res.status_code, res.status_message.c_str());
+  // Deterministic failure selection by (repeat_id, outer_fold_id) when throw_on_error is TRUE.
+  // When throw_on_error is FALSE, all per-fold results (successes and failures) are returned
+  // so the main R control thread can persist completed folds before raising the first failure.
+  if (throw_on_error) {
+    for (const auto& res : results) {
+      if (res.status_code != 0 || !res.completed) {
+        stop("Native outer fold failed at %s (repeat_id=%d, outer_fold_id=%d, status=%d): %s",
+             res.outer_fold.c_str(), res.repeat_id, res.outer_fold_id,
+             res.status_code, res.status_message.c_str());
+      }
     }
   }
 

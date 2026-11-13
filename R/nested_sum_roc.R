@@ -1166,6 +1166,22 @@
 #' @param output_dir Character, directory for CSV output. Deferred to v0.2;
 #'   warns if non-NULL.
 #' @param file_prefix Character, prefix for CSV filenames (default `"NCVROC"`).
+#' @param checkpoint_dir Optional character scalar path to a directory for
+#'   completed outer-fold checkpoint persistence and resume. Supported only when
+#'   `parallel = "native_outer_fold"`. Requires SHA-256 support via
+#'   \code{tools::sha256sum} (R >= 4.5.0) for identity and payload integrity
+#'   hashing. Default `NULL` disables checkpointing and performs no checkpoint I/O.
+#' @param resume Logical scalar (default `TRUE`). When `checkpoint_dir` is
+#'   non-NULL and `force_recompute = FALSE`, reuse valid completed outer-fold
+#'   checkpoints matching the current analysis and split identity and compute
+#'   only missing folds. Inactive when `checkpoint_dir = NULL`. Note that for
+#'   deterministic resume across sessions, callers must provide a fixed `seed`
+#'   or otherwise reproduce identical fold assignments.
+#' @param force_recompute Logical scalar (default `FALSE`). When `TRUE` (requires
+#'   a non-NULL `checkpoint_dir`), recompute all outer folds even when
+#'   `resume = TRUE`, replacing prior fold checkpoints only after the new
+#'   result is complete and read-back validated. Directory analysis identity
+#'   must still match the current call.
 #'
 #' @return An object of class `"ncvroc_result"`, a list with elements:
 #'   \item{summary}{data.frame of per-fold test performance.}
@@ -1217,7 +1233,10 @@ nested_sum_roc <- function(data,
                            verbose = TRUE,
                            return = c("full", "summary"),
                            output_dir = NULL,
-                           file_prefix = "NCVROC") {
+                           file_prefix = "NCVROC",
+                           checkpoint_dir = NULL,
+                           resume = TRUE,
+                           force_recompute = FALSE) {
 
   # ---- Capture settings ----
   settings <- as.list(environment())
@@ -1274,6 +1293,13 @@ nested_sum_roc <- function(data,
             call. = FALSE)
   }
 
+  checkpoint_dir  <- .cp_validate_checkpoint_dir_arg(checkpoint_dir)
+  resume          <- .cp_validate_scalar_logical(resume, "resume")
+  force_recompute <- .cp_validate_scalar_logical(force_recompute, "force_recompute")
+  if (force_recompute && is.null(checkpoint_dir)) {
+    stop("`force_recompute = TRUE` requires a non-NULL `checkpoint_dir`.", call. = FALSE)
+  }
+
   # ---- Parallel Mode Resolution ----
   parallel_mode <- .resolve_parallel_mode(
     parallel,
@@ -1302,6 +1328,9 @@ nested_sum_roc <- function(data,
   }
   if (parallel_mode %in% c("native_tbb", "native_outer_fold") && tuning != "off") {
     stop(sprintf("`tuning` must be 'off' when `parallel = '%s'`.", parallel_mode), call. = FALSE)
+  }
+  if (!is.null(checkpoint_dir) && parallel_mode != "native_outer_fold") {
+    stop("`checkpoint_dir` is only supported when `parallel = 'native_outer_fold'`.", call. = FALSE)
   }
 
   # ---- Validate inputs ----
@@ -1442,22 +1471,53 @@ nested_sum_roc <- function(data,
       message("Running ", n_folds, " complete outer folds via native C++/TBB (", actual_workers,
               " thread", if (actual_workers == 1L) "" else "s", ")...")
     }
-    native_out <- .run_native_outer_folds_complete(
-      x_mat               = x_mat,
-      y_vec               = y,
-      outer_folds         = outer_folds,
-      items               = items,
-      min_items           = min_items,
-      max_items           = max_items,
-      cutoff_method       = cutoff_method,
-      preselect_by        = preselect_by,
-      selection_criterion = selection_criterion,
-      preselect_top_n     = preselect_top_n,
-      inner_k             = inner_k,
-      inner_repeats       = inner_repeats,
-      seed                = seed,
-      num_threads         = actual_workers
-    )
+    if (is.null(checkpoint_dir)) {
+      native_out <- .run_native_outer_folds_complete(
+        x_mat               = x_mat,
+        y_vec               = y,
+        outer_folds         = outer_folds,
+        items               = items,
+        min_items           = min_items,
+        max_items           = max_items,
+        cutoff_method       = cutoff_method,
+        preselect_by        = preselect_by,
+        selection_criterion = selection_criterion,
+        preselect_top_n     = preselect_top_n,
+        inner_k             = inner_k,
+        inner_repeats       = inner_repeats,
+        seed                = seed,
+        num_threads         = actual_workers
+      )
+    } else {
+      native_out <- .run_native_outer_folds_checkpointed(
+        x_mat               = x_mat,
+        y_vec               = y,
+        outer_folds         = outer_folds,
+        items               = items,
+        outcome_col         = outcome_col,
+        positive_label      = positive_label,
+        negative_label      = negative_label,
+        min_items           = min_items,
+        max_items           = max_items,
+        cutoff_method       = cutoff_method,
+        preselect_by        = preselect_by,
+        selection_criterion = selection_criterion,
+        preselect_top_n     = preselect_top_n,
+        outer_k             = outer_k,
+        inner_k             = inner_k,
+        outer_repeats       = outer_repeats,
+        inner_repeats       = inner_repeats,
+        stratified          = stratified,
+        seed                = seed,
+        num_threads         = actual_workers,
+        checkpoint_dir      = checkpoint_dir,
+        resume              = resume,
+        force_recompute     = force_recompute,
+        progress            = progress,
+        verbose             = verbose
+      )
+      settings$checkpoint_provenance <- native_out$provenance
+    }
     per_fold <- native_out$per_fold
     if (verbose) {
       message("All outer folds complete.")

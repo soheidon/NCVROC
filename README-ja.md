@@ -124,14 +124,14 @@ res <- nested_sum_roc(data = d, outcome = y, items = Q1:Q10,
                       engine = "Rcpp", parallel = "native_tbb", n_workers = 4,
                       tuning = "off")
 
-# 外側フォールド全体のネイティブ実行を明示的に opt-in（Scope B）
+# 外側フォールド全体のネイティブ実行を明示的に opt-in（Scope B、チェックポイント対応）
 res <- nested_sum_roc(data = d, outcome = y, items = Q1:Q10,
                       min_items = 1, max_items = 3, outer_k = 5, inner_k = 4,
                       engine = "Rcpp", parallel = "native_outer_fold", n_workers = 4,
-                      tuning = "off")
+                      tuning = "off", checkpoint_dir = "ncv_checkpoints", resume = TRUE)
 ```
 
-> **ネイティブ外側フォールド実行に関する注記:** `nested_sum_roc(..., parallel = "native_tbb")` は引き続き Scope A（外側候補探索のネイティブ化）、`parallel = "native_outer_fold"` は Scope B（外側フォールド全体のネイティブ実行）を実行します。いずれも最終的な結果集計は R 側で行われ、フォールド単位のチェックポイント保存や中断再開機能は提供されません。
+> **ネイティブ外側フォールド実行とチェックポイントに関する注記:** `nested_sum_roc(..., parallel = "native_tbb")` は引き続き Scope A（外側候補探索のネイティブ化、チェックポイント非対応）、`parallel = "native_outer_fold"` は Scope B（外側フォールド全体のネイティブ実行）を実行し、任意で外側フォールド単位のチェックポイント（`checkpoint_dir`、`resume`、`force_recompute`）を利用できます。保存・再利用されるのは完全に完了した外側フォールドのみであり、実行中に中断・失敗したフォールドは破棄されて再開時に最初から再計算されます（内側フォールド・候補単位・フォールド途中再開は非対応）。解析全体の結果キャッシュ（`cross_size_nested_cv(..., result_file = ...)`）とは独立した機能です。
 
 ---
 

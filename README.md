@@ -137,14 +137,14 @@ res <- nested_sum_roc(data = d, outcome = y, items = Q1:Q10,
                       engine = "Rcpp", parallel = "native_tbb", n_workers = 4,
                       tuning = "off")
 
-# Explicit end-to-end native outer-fold opt-in (Scope B):
+# Explicit end-to-end native outer-fold opt-in (Scope B) with checkpoint/resume:
 res <- nested_sum_roc(data = d, outcome = y, items = Q1:Q10,
                       min_items = 1, max_items = 3, outer_k = 5, inner_k = 4,
                       engine = "Rcpp", parallel = "native_outer_fold", n_workers = 4,
-                      tuning = "off")
+                      tuning = "off", checkpoint_dir = "ncv_checkpoints", resume = TRUE)
 ```
 
-> **Note on native outer-fold execution:** `nested_sum_roc(..., parallel = "native_tbb")` runs Scope A (native outer candidate search), while `parallel = "native_outer_fold"` runs Scope B (end-to-end native outer-fold execution). In both modes, final result aggregation remains in R, and fold-level checkpointing or interrupted-run resume are not provided.
+> **Note on native outer-fold execution & checkpointing:** `nested_sum_roc(..., parallel = "native_tbb")` runs Scope A (native outer candidate search) without checkpointing, while `parallel = "native_outer_fold"` runs Scope B (end-to-end native outer-fold execution) with optional outer-fold checkpointing (`checkpoint_dir`, `resume`, `force_recompute`). Only fully completed outer folds are persisted and reused; in-flight or failed folds are discarded and recomputed from the beginning on resume (inner-fold, candidate-level, and mid-fold checkpoints are not implemented). For whole-analysis result caching in `cross_size_nested_cv()`, use `result_file` instead of `checkpoint_dir`.
 
 ---
 
