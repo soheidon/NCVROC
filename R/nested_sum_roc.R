@@ -116,7 +116,8 @@
                                           inner_repeats,
                                           cutoff_method,
                                           seed_offset,
-                                          progress) {
+                                          progress,
+                                          precomputed_inner_folds = NULL) {
   n_candidates <- nrow(candidates_df)
 
   if (progress && n_candidates > 1) {
@@ -131,11 +132,15 @@
     items_vec <- .parse_itemset(items_str)
     k <- length(items_vec)
 
-    # Create inner folds on outer training data
-    inner_seed <- if (!is.null(seed_offset)) seed_offset + i else NULL
-    inner_folds <- make_stratified_folds(
-      y, k = inner_k, repeats = inner_repeats, seed = inner_seed
-    )
+    # Create inner folds on outer training data (or reuse frozen folds)
+    if (!is.null(precomputed_inner_folds)) {
+      inner_folds <- precomputed_inner_folds[[i]]
+    } else {
+      inner_seed <- if (!is.null(seed_offset)) seed_offset + i else NULL
+      inner_folds <- make_stratified_folds(
+        y, k = inner_k, repeats = inner_repeats, seed = inner_seed
+      )
+    }
 
     n_inner_folds <- length(inner_folds)
     aucs <- numeric(n_inner_folds)
@@ -388,7 +393,9 @@
                                                  cutoff_method,
                                                  seed,
                                                  progress,
-                                                 verbose) {
+                                                 verbose,
+                                                 precomputed_inner_folds = NULL,
+                                                 return_canonical_diag = FALSE) {
   test_idx  <- outer_folds[[i]]
   train_idx <- setdiff(seq_len(n_total), test_idx)
   fold_name <- names(outer_folds)[i]
@@ -396,14 +403,15 @@
   # Step 3: inner CV for each candidate
   inner_seed <- if (!is.null(seed)) seed + i else NULL
   inner_results <- .evaluate_candidates_inner_cv(
-    candidates_df  = top_candidates,
-    data           = full_data[train_idx, , drop = FALSE],
-    y              = y[train_idx],
-    inner_k        = inner_k,
-    inner_repeats  = as.integer(inner_repeats),
-    cutoff_method  = cutoff_method,
-    seed_offset    = inner_seed,
-    progress       = progress && verbose
+    candidates_df           = top_candidates,
+    data                    = full_data[train_idx, , drop = FALSE],
+    y                       = y[train_idx],
+    inner_k                 = inner_k,
+    inner_repeats           = as.integer(inner_repeats),
+    cutoff_method           = cutoff_method,
+    seed_offset             = inner_seed,
+    progress                = progress && verbose,
+    precomputed_inner_folds = precomputed_inner_folds
   )
 
   # Step 4: select best model by inner CV criterion
@@ -430,7 +438,7 @@
   # Map predictions row_index back to original row numbers
   test_result$predictions$row_index <- test_idx
 
-  list(
+  res <- list(
     outer_fold         = fold_name,
     selected_items     = best_row$items,
     n_items            = best_row$n_items,
@@ -446,6 +454,15 @@
     cutoff             = test_result$cutoff,
     predictions        = test_result$predictions
   )
+  if (isTRUE(return_canonical_diag)) {
+    attr(res, "ncvroc_inner_diag") <- list(
+      n_candidates_evaluated = as.integer(nrow(top_candidates)),
+      selected_global_rank   = NA_integer_,
+      inner_mean_sensitivity = as.numeric(best_row$mean_sensitivity),
+      inner_mean_specificity = as.numeric(best_row$mean_specificity)
+    )
+  }
+  res
 }
 
 #' Evaluate a single outer fold
@@ -476,7 +493,9 @@
                                         cl_chunk = NULL,
                                         parallel_inner = "none",
                                         n_workers_inner = NULL,
-                                        progress_callback = NULL) {
+                                        progress_callback = NULL,
+                                        precomputed_inner_folds = NULL,
+                                        return_canonical_diag = FALSE) {
   test_idx  <- outer_folds[[i]]
   train_idx <- setdiff(seq_len(n_total), test_idx)
   fold_name <- names(outer_folds)[i]
@@ -549,19 +568,21 @@
   }
 
   .evaluate_outer_fold_from_candidates(
-    top_candidates      = top_candidates,
-    i                   = i,
-    outer_folds         = outer_folds,
-    full_data           = full_data,
-    y                   = y,
-    n_total             = n_total,
-    selection_criterion = selection_criterion,
-    inner_k             = inner_k,
-    inner_repeats       = inner_repeats,
-    cutoff_method       = cutoff_method,
-    seed                = seed,
-    progress            = progress,
-    verbose             = verbose
+    top_candidates          = top_candidates,
+    i                       = i,
+    outer_folds             = outer_folds,
+    full_data               = full_data,
+    y                       = y,
+    n_total                 = n_total,
+    selection_criterion     = selection_criterion,
+    inner_k                 = inner_k,
+    inner_repeats           = inner_repeats,
+    cutoff_method           = cutoff_method,
+    seed                    = seed,
+    progress                = progress,
+    verbose                 = verbose,
+    precomputed_inner_folds = precomputed_inner_folds,
+    return_canonical_diag   = return_canonical_diag
   )
 }
 
@@ -783,9 +804,15 @@
     schema_version      = as.integer(schema_version)
   )
 
+  canonical_results <- Map(
+    function(nat_res, spec) .native_fold_to_canonical(nat_res, spec, items, y_vec = y_vec),
+    raw_results,
+    fold_specs
+  )
+
   list(
     raw_results = raw_results,
-    per_fold    = lapply(raw_results, .convert_native_outer_fold_result_to_r, items = items)
+    per_fold    = lapply(canonical_results, .canonical_to_r_aggregation_record)
   )
 }
 
@@ -1167,10 +1194,16 @@
 #'   warns if non-NULL.
 #' @param file_prefix Character, prefix for CSV filenames (default `"NCVROC"`).
 #' @param checkpoint_dir Optional character scalar path to a directory for
-#'   completed outer-fold checkpoint persistence and resume. Supported only when
-#'   `parallel = "native_outer_fold"`. Requires SHA-256 support via
-#'   \code{tools::sha256sum} (R >= 4.5.0) for identity and payload integrity
-#'   hashing. Default `NULL` disables checkpointing and performs no checkpoint I/O.
+#'   completed outer-fold checkpoint persistence and resume. Supported when
+#'   `parallel = "none"` (or \code{FALSE}, R serial) or
+#'   `parallel = "native_outer_fold"` (Scope B Native), with `tuning = "off"`.
+#'   Uses a backend-neutral canonical schema (schema version 2) so completed
+#'   outer-fold checkpoints can be reused interchangeably between R serial and
+#'   Scope B Native when analysis identity and schema match (in-flight state is
+#'   not portable; legacy v0.27 schema version 1 directories are rejected).
+#'   Requires SHA-256 support via \code{tools::sha256sum} (R >= 4.5.0) for
+#'   identity and payload integrity hashing. Default `NULL` disables
+#'   checkpointing and performs no checkpoint I/O.
 #' @param resume Logical scalar (default `TRUE`). When `checkpoint_dir` is
 #'   non-NULL and `force_recompute = FALSE`, reuse valid completed outer-fold
 #'   checkpoints matching the current analysis and split identity and compute
@@ -1329,8 +1362,11 @@ nested_sum_roc <- function(data,
   if (parallel_mode %in% c("native_tbb", "native_outer_fold") && tuning != "off") {
     stop(sprintf("`tuning` must be 'off' when `parallel = '%s'`.", parallel_mode), call. = FALSE)
   }
-  if (!is.null(checkpoint_dir) && parallel_mode != "native_outer_fold") {
-    stop("`checkpoint_dir` is only supported when `parallel = 'native_outer_fold'`.", call. = FALSE)
+  if (!is.null(checkpoint_dir) && !identical(tuning, "off")) {
+    stop("`tuning` must be 'off' when `checkpoint_dir` is provided.", call. = FALSE)
+  }
+  if (!is.null(checkpoint_dir) && !(parallel_mode %in% c("none", "native_outer_fold"))) {
+    stop("`checkpoint_dir` is only supported when `parallel = 'none'` (or FALSE) or `parallel = 'native_outer_fold'`.", call. = FALSE)
   }
 
   # ---- Validate inputs ----
@@ -1763,6 +1799,40 @@ nested_sum_roc <- function(data,
       )
       prg_i$finish()
     }
+
+  } else if (!is.null(checkpoint_dir)) {
+    x_mat <- as.matrix(full_data[, items, drop = FALSE])
+    cp_out <- .run_r_serial_outer_folds_checkpointed(
+      full_data           = full_data,
+      x_mat               = x_mat,
+      y_vec               = y,
+      outer_folds         = outer_folds,
+      items               = items,
+      outcome_col         = outcome_col,
+      positive_label      = positive_label,
+      negative_label      = negative_label,
+      min_items           = min_items,
+      max_items           = max_items,
+      cutoff_method       = cutoff_method,
+      preselect_by        = preselect_by,
+      selection_criterion = selection_criterion,
+      preselect_top_n     = preselect_top_n,
+      outer_k             = outer_k,
+      inner_k             = inner_k,
+      outer_repeats       = outer_repeats,
+      inner_repeats       = inner_repeats,
+      stratified          = stratified,
+      use_streaming_ncv   = use_streaming_ncv,
+      engine              = engine,
+      seed                = seed,
+      checkpoint_dir      = checkpoint_dir,
+      resume              = resume,
+      force_recompute     = force_recompute,
+      progress            = progress,
+      verbose             = verbose
+    )
+    settings$checkpoint_provenance <- cp_out$provenance
+    per_fold <- cp_out$per_fold
 
   } else {
     total_combos <- .count_total_combos(length(items), min_items, max_items)

@@ -1,3 +1,12 @@
+# NCVROC 0.28.0 (2026-11-13)
+
+## Backend-Neutral Completed Outer-Fold Checkpointing
+
+* Extended `nested_sum_roc()` outer-fold checkpointing (`checkpoint_dir`, `resume`, `force_recompute`) to support both R serial (`parallel = "none"` / `FALSE`) and Scope B Native (`parallel = "native_outer_fold"`) with `tuning = "off"`, enabling bidirectional and mixed-producer checkpoint reuse across the two execution paths.
+* Replaced the v0.27 Native-only checkpoint schema (`schema_version = 1`) with a backend-neutral canonical schema (`schema_version = 2`, statistical contract `NCVROC_nested_sum_roc_stat_contract_v1`). Analysis identity hashes canonical data, item order, 1-based splits, and statistical options without backend, thread count, or package version.
+* Added canonical conversion adapters (`.r_fold_to_canonical()`, `.native_fold_to_canonical()`, `.canonical_to_r_aggregation_record()`) and strict type/range/NaN/missing-value validation so reused and newly computed folds flow through one shared R aggregation contract without recomputation.
+* Legacy v0.27 (`schema_version = 1`) checkpoint directories and fold envelopes are explicitly rejected with an actionable error. Unsupported parallel modes (`"outer"`, `"chunks"`, `"threads"`, `"hybrid"`, `"native_tbb"`) and `tuning != "off"` remain rejected when `checkpoint_dir` is provided.
+
 # NCVROC 0.27.0 (2026-11-13)
 
 ## Completed Outer-Fold Checkpoint / Resume (Scope B)

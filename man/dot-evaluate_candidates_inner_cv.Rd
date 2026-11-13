@@ -12,7 +12,8 @@
   inner_repeats,
   cutoff_method,
   seed_offset,
-  progress
+  progress,
+  precomputed_inner_folds = NULL
 )
 }
 \arguments{

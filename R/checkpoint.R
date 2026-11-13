@@ -288,13 +288,16 @@
 # ---- Analysis & split identity ----
 
 .cp_build_split_descriptor <- function(spec) {
+  inner_1based <- lapply(spec$inner_folds, function(cand_folds) {
+    lapply(cand_folds, function(f_idx) as.integer(f_idx) + 1L)
+  })
   list(
     repeat_id       = as.integer(spec$repeat_id),
     outer_fold_id   = as.integer(spec$outer_fold_id),
     fold_name       = as.character(spec$fold_name),
-    train_indices   = as.integer(spec$train_indices),
-    test_indices    = as.integer(spec$test_indices),
-    inner_folds     = spec$inner_folds,
+    train_indices   = as.integer(spec$train_indices) + 1L,
+    test_indices    = as.integer(spec$test_indices) + 1L,
+    inner_folds     = inner_1based,
     has_seed        = isTRUE(spec$has_seed),
     inner_seed_base = as.integer(spec$inner_seed_base)
   )
@@ -325,10 +328,13 @@
                                         outer_repeats,
                                         inner_repeats,
                                         stratified,
-                                        seed) {
+                                        seed,
+                                        producer_backend = NULL) {
+  x_canon <- unname(as.matrix(x_mat))
+  storage.mode(x_canon) <- "double"
+
   data_repr <- list(
-    x_mat          = unname(x_mat),
-    colnames       = colnames(x_mat),
+    x_mat          = x_canon,
     y              = as.integer(y),
     items          = as.character(items),
     outcome_col    = as.character(outcome_col),
@@ -362,35 +368,36 @@
     outer_repeats       = as.integer(outer_repeats),
     inner_repeats       = as.integer(inner_repeats),
     stratified          = isTRUE(stratified),
-    seed                = seed
+    seed                = if (is.null(seed)) NULL else as.integer(seed)
   )
 
   pkg_ver <- as.character(utils::packageVersion("NCVROC"))
 
   core <- list(
-    format_id                    = .CHECKPOINT_IDENTITY_FORMAT_ID,
-    schema_version               = .CHECKPOINT_IDENTITY_SCHEMA_VERSION,
-    hash_algorithm               = .CHECKPOINT_HASH_ALGORITHM,
-    native_result_schema_version = .CHECKPOINT_NATIVE_SCHEMA_VERSION,
-    envelope_schema_version      = .CHECKPOINT_ENVELOPE_SCHEMA_VERSION,
-    package_version              = pkg_ver,
-    backend                      = .CHECKPOINT_BACKEND_ID,
-    data_digest                  = data_digest,
-    outer_folds_digest           = outer_folds_digest,
-    fold_identities              = fold_identities,
-    options                      = options_repr
+    format_id               = .CHECKPOINT_CANONICAL_IDENTITY_FORMAT_ID,
+    schema_version          = .CHECKPOINT_CANONICAL_IDENTITY_SCHEMA_VERSION,
+    envelope_schema_version = .CHECKPOINT_CANONICAL_ENVELOPE_SCHEMA_VERSION,
+    payload_schema_version  = .CHECKPOINT_CANONICAL_PAYLOAD_SCHEMA_VERSION,
+    statistical_contract_id = .CHECKPOINT_STATISTICAL_CONTRACT_ID,
+    hash_algorithm          = .CHECKPOINT_HASH_ALGORITHM,
+    data_digest             = data_digest,
+    outer_folds_digest      = outer_folds_digest,
+    fold_identities         = fold_identities,
+    options                 = options_repr
   )
 
   list(
-    format_id              = .CHECKPOINT_IDENTITY_FORMAT_ID,
-    schema_version         = .CHECKPOINT_IDENTITY_SCHEMA_VERSION,
+    format_id              = .CHECKPOINT_CANONICAL_IDENTITY_FORMAT_ID,
+    schema_version         = .CHECKPOINT_CANONICAL_IDENTITY_SCHEMA_VERSION,
     analysis_identity_hash = .cp_hash_object(core),
     core                   = core,
     provenance             = list(
-      created_at = format(Sys.time(), "%Y-%m-%dT%H:%M:%OS3%z"),
-      r_version  = paste(R.version$major, R.version$minor, sep = "."),
-      pid        = Sys.getpid(),
-      hostname   = unname(Sys.info()[["nodename"]])
+      created_at       = format(Sys.time(), "%Y-%m-%dT%H:%M:%OS3%z"),
+      package_version  = pkg_ver,
+      producer_backend = if (is.null(producer_backend)) NA_character_ else as.character(producer_backend),
+      r_version        = paste(R.version$major, R.version$minor, sep = "."),
+      pid              = Sys.getpid(),
+      hostname         = unname(Sys.info()[["nodename"]])
     )
   )
 }
@@ -425,10 +432,21 @@
   stored <- tryCatch(readRDS(id_file), error = function(e) {
     stop("Corrupt checkpoint identity.rds at ", id_file, ": ", conditionMessage(e), call. = FALSE)
   })
-  if (!is.list(stored) ||
-      !identical(stored$format_id, .CHECKPOINT_IDENTITY_FORMAT_ID) ||
-      !identical(as.integer(stored$schema_version), .CHECKPOINT_IDENTITY_SCHEMA_VERSION) ||
-      !is.list(stored$core)) {
+  if (!is.list(stored) || !is.list(stored$core)) {
+    stop("Unsupported or malformed checkpoint identity.rds at: ", id_file, call. = FALSE)
+  }
+  if (identical(stored$format_id, .CHECKPOINT_LEGACY_IDENTITY_FORMAT_ID) ||
+      identical(suppressWarnings(as.integer(stored$schema_version)), .CHECKPOINT_LEGACY_SCHEMA_VERSION)) {
+    stop(
+      sprintf(
+        "Unsupported legacy v0.27 checkpoint schema (schema_version = %s) at %s; use a new checkpoint_dir (canonical schema_version = %d required).",
+        as.character(stored$schema_version), id_file, .CHECKPOINT_CANONICAL_IDENTITY_SCHEMA_VERSION
+      ),
+      call. = FALSE
+    )
+  }
+  if (!identical(stored$format_id, .CHECKPOINT_CANONICAL_IDENTITY_FORMAT_ID) ||
+      !identical(suppressWarnings(as.integer(stored$schema_version)), .CHECKPOINT_CANONICAL_IDENTITY_SCHEMA_VERSION)) {
     stop("Unsupported or malformed checkpoint identity.rds at: ", id_file, call. = FALSE)
   }
   if (!identical(stored$core$hash_algorithm, identity_record$core$hash_algorithm)) {
@@ -437,21 +455,15 @@
                  as.character(identity_record$core$hash_algorithm)),
          call. = FALSE)
   }
-  if (!identical(stored$core$backend, identity_record$core$backend)) {
-    stop(sprintf("Checkpoint backend mismatch: stored '%s', current '%s'.",
-                 as.character(stored$core$backend),
-                 as.character(identity_record$core$backend)),
+  if (!identical(stored$core$statistical_contract_id, identity_record$core$statistical_contract_id)) {
+    stop(sprintf("Checkpoint statistical contract mismatch: stored '%s', current '%s'.",
+                 as.character(stored$core$statistical_contract_id),
+                 as.character(identity_record$core$statistical_contract_id)),
          call. = FALSE)
   }
-  if (!identical(stored$core$package_version, identity_record$core$package_version)) {
-    stop(sprintf("Checkpoint package version mismatch: stored '%s', current '%s'.",
-                 as.character(stored$core$package_version),
-                 as.character(identity_record$core$package_version)),
-         call. = FALSE)
-  }
-  if (!identical(as.integer(stored$core$native_result_schema_version),
-                 as.integer(identity_record$core$native_result_schema_version)) ||
-      !identical(as.integer(stored$core$envelope_schema_version),
+  if (!identical(suppressWarnings(as.integer(stored$core$payload_schema_version)),
+                 as.integer(identity_record$core$payload_schema_version)) ||
+      !identical(suppressWarnings(as.integer(stored$core$envelope_schema_version)),
                  as.integer(identity_record$core$envelope_schema_version))) {
     stop("Checkpoint schema version mismatch with existing directory.", call. = FALSE)
   }
@@ -468,63 +480,401 @@
   invisible(stored)
 }
 
-# ---- Envelope & payload validation ----
+# ---- Scalar & vector type validation helpers ----
 
-.cp_validate_native_payload <- function(payload, fold_spec, n_items_total) {
+.cp_is_valid_int_scalar <- function(v, min_val = -Inf, max_val = Inf, allow_na = FALSE) {
+  if (!is.numeric(v) || is.logical(v) || length(v) != 1L) {
+    return(FALSE)
+  }
+  if (is.nan(v)) {
+    return(FALSE)
+  }
+  if (is.na(v)) {
+    return(isTRUE(allow_na))
+  }
+  is.finite(v) && (v == floor(v)) && (v >= min_val) && (v <= max_val)
+}
+
+.cp_is_valid_int_vec <- function(v, min_val = -Inf, max_val = Inf, allow_na = FALSE) {
+  if (!is.numeric(v) || is.logical(v)) {
+    return(FALSE)
+  }
+  if (any(is.nan(v))) {
+    return(FALSE)
+  }
+  if (!isTRUE(allow_na) && anyNA(v)) {
+    return(FALSE)
+  }
+  non_na <- v[!is.na(v)]
+  if (length(non_na) == 0L) {
+    return(TRUE)
+  }
+  all(is.finite(non_na)) && all(non_na == floor(non_na)) &&
+    all(non_na >= min_val) && all(non_na <= max_val)
+}
+
+.cp_is_valid_num_scalar <- function(v, allow_na = FALSE) {
+  if (!is.numeric(v) || is.logical(v) || length(v) != 1L) {
+    return(FALSE)
+  }
+  if (is.nan(v)) {
+    return(FALSE)
+  }
+  if (is.na(v)) {
+    return(isTRUE(allow_na))
+  }
+  is.finite(v)
+}
+
+.cp_is_valid_num_vec <- function(v, allow_na = FALSE) {
+  if (!is.numeric(v) || is.logical(v)) {
+    return(FALSE)
+  }
+  if (any(is.nan(v))) {
+    return(FALSE)
+  }
+  if (!isTRUE(allow_na) && anyNA(v)) {
+    return(FALSE)
+  }
+  non_na <- v[!is.na(v)]
+  all(is.finite(non_na))
+}
+
+# ---- Canonical conversion adapters ----
+
+.cp_validate_source_predictions <- function(preds, fold_spec, y_vec = NULL) {
+  req_cols <- c("row_index", "true_outcome", "predicted_score", "predicted_class")
+  if (!is.data.frame(preds) || !all(req_cols %in% colnames(preds))) {
+    stop("Fold predictions must be a data.frame with required columns.", call. = FALSE)
+  }
+  expected_rows <- as.integer(fold_spec$test_indices + 1L)
+  if (!.cp_is_valid_int_vec(preds$row_index, min_val = 1, allow_na = FALSE) ||
+      !identical(as.integer(preds$row_index), expected_rows)) {
+    stop("Fold predictions row_index is invalid or does not match outer test split.", call. = FALSE)
+  }
+  if (!.cp_is_valid_int_vec(preds$true_outcome, min_val = 0, max_val = 1, allow_na = FALSE)) {
+    stop("Fold predictions true_outcome must be integral 0/1 values without NA/NaN.", call. = FALSE)
+  }
+  if (!is.null(y_vec) && !identical(as.integer(preds$true_outcome), as.integer(y_vec[expected_rows]))) {
+    stop("Fold predictions true_outcome does not match analysis outcome labels.", call. = FALSE)
+  }
+  if (!.cp_is_valid_num_vec(preds$predicted_score, allow_na = FALSE)) {
+    stop("Fold predictions predicted_score must be finite numeric values.", call. = FALSE)
+  }
+  if (!.cp_is_valid_int_vec(preds$predicted_class, min_val = 0, max_val = 1, allow_na = FALSE)) {
+    stop("Fold predictions predicted_class must be integral 0/1 values without NA/NaN.", call. = FALSE)
+  }
+  data.frame(
+    row_index       = as.integer(preds$row_index),
+    true_outcome    = as.integer(preds$true_outcome),
+    predicted_score = as.numeric(preds$predicted_score),
+    predicted_class = as.integer(preds$predicted_class),
+    stringsAsFactors = FALSE
+  )
+}
+
+.cp_validate_source_metrics <- function(src, context_label) {
+  req_finite <- c("inner_mean_auc", "cutoff", "accuracy")
+  for (nm in req_finite) {
+    if (!.cp_is_valid_num_scalar(src[[nm]], allow_na = FALSE)) {
+      stop(sprintf("%s scalar '%s' must be a finite numeric scalar.", context_label, nm), call. = FALSE)
+    }
+  }
+  opt_na <- c("inner_mean_youden", "auc", "sensitivity", "specificity", "youden", "ppv", "npv")
+  for (nm in opt_na) {
+    if (!.cp_is_valid_num_scalar(src[[nm]], allow_na = TRUE)) {
+      stop(sprintf("%s scalar '%s' must be a numeric scalar without NaN/Inf.", context_label, nm), call. = FALSE)
+    }
+  }
+}
+
+.r_fold_to_canonical <- function(r_fold, fold_spec, items, y_vec = NULL) {
+  if (!is.list(r_fold)) {
+    stop("R fold result must be a list.", call. = FALSE)
+  }
+  if (!.cp_is_valid_int_scalar(fold_spec$repeat_id, min_val = 1) ||
+      !.cp_is_valid_int_scalar(fold_spec$outer_fold_id, min_val = 1) ||
+      !is.character(fold_spec$fold_name) || length(fold_spec$fold_name) != 1L || is.na(fold_spec$fold_name)) {
+    stop("Invalid fold_spec identity for R fold canonicalization.", call. = FALSE)
+  }
+  diag <- attr(r_fold, "ncvroc_inner_diag", exact = TRUE)
+  sel_items_vec <- .parse_itemset(r_fold$selected_items)
+  sel_idx <- match(sel_items_vec, items)
+  if (length(sel_idx) < 1L || anyNA(sel_idx) || anyDuplicated(sel_idx)) {
+    stop("Cannot map R selected_items to canonical item indices.", call. = FALSE)
+  }
+  if (!is.null(r_fold$n_items) &&
+      (!.cp_is_valid_int_scalar(r_fold$n_items, min_val = 1, max_val = length(items)) ||
+       !identical(as.integer(r_fold$n_items), length(sel_idx)))) {
+    stop("R fold n_items is invalid or does not match selected_items.", call. = FALSE)
+  }
+  sel_idx <- as.integer(sel_idx)
+  sel_items_canon <- as.character(items[sel_idx])
+  sel_label <- format_items(sel_items_canon)
+
+  preds_canon <- .cp_validate_source_predictions(r_fold$predictions, fold_spec, y_vec = y_vec)
+  .cp_validate_source_metrics(r_fold, "R fold")
+
+  n_cand <- 1L
+  if (is.list(diag) && !is.null(diag$n_candidates_evaluated)) {
+    if (!.cp_is_valid_int_scalar(diag$n_candidates_evaluated, min_val = 1)) {
+      stop("R fold n_candidates_evaluated must be a positive integer scalar.", call. = FALSE)
+    }
+    n_cand <- as.integer(diag$n_candidates_evaluated)
+  }
+  glob_rank <- NA_integer_
+  if (is.list(diag) && !is.null(diag$selected_global_rank)) {
+    if (!.cp_is_valid_int_scalar(diag$selected_global_rank, min_val = 0, allow_na = TRUE)) {
+      stop("R fold selected_global_rank must be a non-negative integer scalar or NA.", call. = FALSE)
+    }
+    glob_rank <- as.integer(diag$selected_global_rank)
+  }
+  inner_sens <- NA_real_
+  if (is.list(diag) && !is.null(diag$inner_mean_sensitivity)) {
+    if (!.cp_is_valid_num_scalar(diag$inner_mean_sensitivity, allow_na = TRUE)) {
+      stop("R fold inner_mean_sensitivity must be a numeric scalar without NaN/Inf.", call. = FALSE)
+    }
+    inner_sens <- as.numeric(diag$inner_mean_sensitivity)
+  }
+  inner_spec <- NA_real_
+  if (is.list(diag) && !is.null(diag$inner_mean_specificity)) {
+    if (!.cp_is_valid_num_scalar(diag$inner_mean_specificity, allow_na = TRUE)) {
+      stop("R fold inner_mean_specificity must be a numeric scalar without NaN/Inf.", call. = FALSE)
+    }
+    inner_spec <- as.numeric(diag$inner_mean_specificity)
+  }
+
+  list(
+    schema_version          = .CHECKPOINT_CANONICAL_PAYLOAD_SCHEMA_VERSION,
+    statistical_contract_id = .CHECKPOINT_STATISTICAL_CONTRACT_ID,
+    repeat_id               = as.integer(fold_spec$repeat_id),
+    outer_fold_id           = as.integer(fold_spec$outer_fold_id),
+    outer_fold              = as.character(fold_spec$fold_name),
+    completion_status       = "complete",
+    selected_col_indices    = sel_idx,
+    selected_items          = sel_items_canon,
+    selected_items_label    = sel_label,
+    n_items                 = as.integer(length(sel_idx)),
+    n_candidates_evaluated  = n_cand,
+    selected_global_rank    = glob_rank,
+    inner_mean_auc          = as.numeric(r_fold$inner_mean_auc),
+    inner_mean_sensitivity  = inner_sens,
+    inner_mean_specificity  = inner_spec,
+    inner_mean_youden       = as.numeric(r_fold$inner_mean_youden),
+    auc                     = as.numeric(r_fold$auc),
+    cutoff                  = as.numeric(r_fold$cutoff),
+    sensitivity             = as.numeric(r_fold$sensitivity),
+    specificity             = as.numeric(r_fold$specificity),
+    youden                  = as.numeric(r_fold$youden),
+    accuracy                = as.numeric(r_fold$accuracy),
+    ppv                     = as.numeric(r_fold$ppv),
+    npv                     = as.numeric(r_fold$npv),
+    predictions             = preds_canon
+  )
+}
+
+.native_fold_to_canonical <- function(nat_res, fold_spec, items, y_vec = NULL) {
+  if (!is.list(nat_res) || !isTRUE(nat_res$completed) ||
+      !.cp_is_valid_int_scalar(nat_res$status_code, min_val = 0, max_val = 0)) {
+    stop("Cannot normalize incomplete NativeOuterFoldResult.", call. = FALSE)
+  }
+  if (!.cp_is_valid_int_scalar(nat_res$repeat_id, min_val = 1) ||
+      !.cp_is_valid_int_scalar(nat_res$outer_fold_id, min_val = 1) ||
+      !identical(as.integer(nat_res$repeat_id), as.integer(fold_spec$repeat_id)) ||
+      !identical(as.integer(nat_res$outer_fold_id), as.integer(fold_spec$outer_fold_id)) ||
+      !identical(nat_res$outer_fold, as.character(fold_spec$fold_name))) {
+    stop("Native fold identity is invalid or does not match expected fold.", call. = FALSE)
+  }
+  if (!.cp_is_valid_int_vec(nat_res$selected_col_indices, min_val = 1, max_val = length(items), allow_na = FALSE) ||
+      length(nat_res$selected_col_indices) < 1L || anyDuplicated(as.integer(nat_res$selected_col_indices))) {
+    stop("Native selected_col_indices invalid, out of bounds, or duplicated.", call. = FALSE)
+  }
+  sel_idx <- as.integer(nat_res$selected_col_indices)
+  if (!.cp_is_valid_int_scalar(nat_res$n_items, min_val = 1, max_val = length(items)) ||
+      !identical(as.integer(nat_res$n_items), length(sel_idx))) {
+    stop("Native n_items invalid or does not match selected_col_indices.", call. = FALSE)
+  }
+  if (!.cp_is_valid_int_scalar(nat_res$n_candidates_evaluated, min_val = 1)) {
+    stop("Native n_candidates_evaluated must be a positive integer scalar.", call. = FALSE)
+  }
+  if (!.cp_is_valid_int_scalar(nat_res$selected_global_rank, min_val = 0, allow_na = TRUE)) {
+    stop("Native selected_global_rank must be a non-negative integer scalar or NA.", call. = FALSE)
+  }
+  sel_items_canon <- as.character(items[sel_idx])
+  sel_label <- format_items(sel_items_canon)
+
+  preds_canon <- .cp_validate_source_predictions(nat_res$predictions, fold_spec, y_vec = y_vec)
+  .cp_validate_source_metrics(nat_res, "Native fold")
+  if (!.cp_is_valid_num_scalar(nat_res$inner_mean_sensitivity, allow_na = TRUE)) {
+    stop("Native fold scalar 'inner_mean_sensitivity' must be a numeric scalar without NaN/Inf.", call. = FALSE)
+  }
+  if (!.cp_is_valid_num_scalar(nat_res$inner_mean_specificity, allow_na = TRUE)) {
+    stop("Native fold scalar 'inner_mean_specificity' must be a numeric scalar without NaN/Inf.", call. = FALSE)
+  }
+
+  list(
+    schema_version          = .CHECKPOINT_CANONICAL_PAYLOAD_SCHEMA_VERSION,
+    statistical_contract_id = .CHECKPOINT_STATISTICAL_CONTRACT_ID,
+    repeat_id               = as.integer(nat_res$repeat_id),
+    outer_fold_id           = as.integer(nat_res$outer_fold_id),
+    outer_fold              = as.character(nat_res$outer_fold),
+    completion_status       = "complete",
+    selected_col_indices    = sel_idx,
+    selected_items          = sel_items_canon,
+    selected_items_label    = sel_label,
+    n_items                 = as.integer(length(sel_idx)),
+    n_candidates_evaluated  = as.integer(nat_res$n_candidates_evaluated),
+    selected_global_rank    = as.integer(nat_res$selected_global_rank),
+    inner_mean_auc          = as.numeric(nat_res$inner_mean_auc),
+    inner_mean_sensitivity  = as.numeric(nat_res$inner_mean_sensitivity),
+    inner_mean_specificity  = as.numeric(nat_res$inner_mean_specificity),
+    inner_mean_youden       = as.numeric(nat_res$inner_mean_youden),
+    auc                     = as.numeric(nat_res$auc),
+    cutoff                  = as.numeric(nat_res$cutoff),
+    sensitivity             = as.numeric(nat_res$sensitivity),
+    specificity             = as.numeric(nat_res$specificity),
+    youden                  = as.numeric(nat_res$youden),
+    accuracy                = as.numeric(nat_res$accuracy),
+    ppv                     = as.numeric(nat_res$ppv),
+    npv                     = as.numeric(nat_res$npv),
+    predictions             = preds_canon
+  )
+}
+
+.canonical_to_r_aggregation_record <- function(canon) {
+  preds <- data.frame(
+    row_index       = as.integer(canon$predictions$row_index),
+    true_outcome    = as.integer(canon$predictions$true_outcome),
+    predicted_score = as.numeric(canon$predictions$predicted_score),
+    predicted_class = as.integer(canon$predictions$predicted_class),
+    stringsAsFactors = FALSE
+  )
+  list(
+    outer_fold        = as.character(canon$outer_fold),
+    selected_items    = as.character(canon$selected_items_label),
+    n_items           = as.integer(canon$n_items),
+    inner_mean_auc    = as.numeric(canon$inner_mean_auc),
+    inner_mean_youden = as.numeric(canon$inner_mean_youden),
+    auc               = as.numeric(canon$auc),
+    sensitivity       = as.numeric(canon$sensitivity),
+    specificity       = as.numeric(canon$specificity),
+    youden            = as.numeric(canon$youden),
+    accuracy          = as.numeric(canon$accuracy),
+    ppv               = as.numeric(canon$ppv),
+    npv               = as.numeric(canon$npv),
+    cutoff            = as.numeric(canon$cutoff),
+    predictions       = preds
+  )
+}
+
+# ---- Envelope & canonical payload validation ----
+
+.cp_validate_canonical_payload <- function(payload, fold_spec, items, y_vec = NULL) {
   if (!is.list(payload)) {
     return("payload is not a list")
   }
-  if (!identical(as.integer(payload$schema_version), .CHECKPOINT_NATIVE_SCHEMA_VERSION)) {
+  if (!.cp_is_valid_int_scalar(payload$schema_version, min_val = 1, max_val = 1000) ||
+      !identical(as.integer(payload$schema_version), .CHECKPOINT_CANONICAL_PAYLOAD_SCHEMA_VERSION)) {
     return("payload schema_version mismatch")
   }
-  if (!isTRUE(payload$completed) || !identical(as.integer(payload$status_code), 0L)) {
-    return("payload is not marked completed with status_code == 0")
+  if (!identical(payload$statistical_contract_id, .CHECKPOINT_STATISTICAL_CONTRACT_ID)) {
+    return("payload statistical_contract_id mismatch")
   }
-  if (!identical(as.integer(payload$repeat_id), as.integer(fold_spec$repeat_id)) ||
+  if (!identical(payload$completion_status, "complete")) {
+    return("payload completion_status is not 'complete'")
+  }
+  if (!.cp_is_valid_int_scalar(payload$repeat_id, min_val = 1) ||
+      !.cp_is_valid_int_scalar(payload$outer_fold_id, min_val = 1) ||
+      !identical(as.integer(payload$repeat_id), as.integer(fold_spec$repeat_id)) ||
       !identical(as.integer(payload$outer_fold_id), as.integer(fold_spec$outer_fold_id)) ||
-      !identical(as.character(payload$outer_fold), as.character(fold_spec$fold_name))) {
+      !identical(payload$outer_fold, as.character(fold_spec$fold_name))) {
     return("payload fold identity does not match expected fold")
   }
+
+  n_items_total <- length(items)
   sel_idx <- payload$selected_col_indices
-  if (!is.integer(sel_idx) || length(sel_idx) < 1L || anyNA(sel_idx) ||
-      any(sel_idx < 1L) || any(sel_idx > n_items_total)) {
+  if (!.cp_is_valid_int_vec(sel_idx, min_val = 1, max_val = n_items_total, allow_na = FALSE) ||
+      length(sel_idx) < 1L || anyDuplicated(as.integer(sel_idx))) {
     return("payload selected_col_indices invalid")
   }
-  if (!identical(as.integer(payload$n_items), length(sel_idx))) {
+  sel_idx_int <- as.integer(sel_idx)
+  if (!.cp_is_valid_int_scalar(payload$n_items, min_val = 1, max_val = n_items_total) ||
+      !identical(as.integer(payload$n_items), length(sel_idx_int))) {
     return("payload n_items mismatch")
   }
-  preds <- payload$predictions
-  req_cols <- c("row_index", "true_outcome", "predicted_score", "predicted_class")
-  if (!is.data.frame(preds) || !all(req_cols %in% colnames(preds))) {
-    return("payload predictions data.frame missing required columns")
+  if (!is.character(payload$selected_items) || anyNA(payload$selected_items) ||
+      !identical(payload$selected_items, as.character(items[sel_idx_int]))) {
+    return("payload selected_items mismatch")
   }
-  expected_rows <- as.integer(fold_spec$test_indices + 1L)
-  if (!identical(as.integer(preds$row_index), expected_rows)) {
-    return("payload predictions row_index does not match outer test split")
+  if (!is.character(payload$selected_items_label) || length(payload$selected_items_label) != 1L ||
+      is.na(payload$selected_items_label) ||
+      !identical(payload$selected_items_label, format_items(items[sel_idx_int]))) {
+    return("payload selected_items_label mismatch")
   }
-  req_scalars <- c("n_candidates_evaluated", "selected_global_rank",
-                   "inner_mean_auc", "inner_mean_sensitivity",
-                   "inner_mean_specificity", "inner_mean_youden",
-                   "auc", "cutoff", "sensitivity", "specificity",
-                   "youden", "accuracy", "ppv", "npv")
-  for (nm in req_scalars) {
-    val <- payload[[nm]]
-    if (is.null(val) || !is.numeric(val) || length(val) != 1L) {
-      return(sprintf("payload scalar '%s' missing or invalid", nm))
+  if (!.cp_is_valid_int_scalar(payload$n_candidates_evaluated, min_val = 1)) {
+    return("payload n_candidates_evaluated invalid")
+  }
+  if (!.cp_is_valid_int_scalar(payload$selected_global_rank, min_val = 0, allow_na = TRUE)) {
+    return("payload selected_global_rank invalid")
+  }
+
+  req_finite <- c("inner_mean_auc", "cutoff", "accuracy")
+  for (nm in req_finite) {
+    if (!.cp_is_valid_num_scalar(payload[[nm]], allow_na = FALSE)) {
+      return(sprintf("payload scalar '%s' missing, non-finite, or invalid", nm))
     }
   }
+  opt_na <- c("inner_mean_sensitivity", "inner_mean_specificity", "inner_mean_youden",
+              "auc", "sensitivity", "specificity", "youden", "ppv", "npv")
+  for (nm in opt_na) {
+    if (!.cp_is_valid_num_scalar(payload[[nm]], allow_na = TRUE)) {
+      return(sprintf("payload scalar '%s' missing, NaN/Inf, or invalid", nm))
+    }
+  }
+
+  preds <- payload$predictions
+  req_cols <- c("row_index", "true_outcome", "predicted_score", "predicted_class")
+  if (!is.data.frame(preds) || !identical(colnames(preds), req_cols)) {
+    return("payload predictions data.frame missing or misordered required columns")
+  }
+  expected_rows <- as.integer(fold_spec$test_indices + 1L)
+  if (!.cp_is_valid_int_vec(preds$row_index, min_val = 1, allow_na = FALSE) ||
+      !identical(as.integer(preds$row_index), expected_rows)) {
+    return("payload predictions row_index does not match outer test split")
+  }
+  if (!.cp_is_valid_int_vec(preds$true_outcome, min_val = 0, max_val = 1, allow_na = FALSE)) {
+    return("payload predictions true_outcome invalid")
+  }
+  if (!is.null(y_vec) && !identical(as.integer(preds$true_outcome), as.integer(y_vec[expected_rows]))) {
+    return("payload predictions true_outcome does not match analysis outcome labels")
+  }
+  if (!.cp_is_valid_num_vec(preds$predicted_score, allow_na = FALSE)) {
+    return("payload predictions predicted_score invalid")
+  }
+  if (!.cp_is_valid_int_vec(preds$predicted_class, min_val = 0, max_val = 1, allow_na = FALSE)) {
+    return("payload predictions predicted_class invalid")
+  }
+
   NULL
 }
 
-.cp_validate_envelope <- function(env, identity_record, fold_spec, split_hash, n_items_total) {
+.cp_validate_envelope <- function(env, identity_record, fold_spec, split_hash, items, y_vec = NULL) {
   if (!is.list(env)) {
     return("envelope is not a list")
   }
-  if (!identical(env$format_id, .CHECKPOINT_FORMAT_ID)) {
+  if (identical(env$format_id, .CHECKPOINT_LEGACY_FORMAT_ID) ||
+      identical(suppressWarnings(as.integer(env$schema_version)), .CHECKPOINT_LEGACY_SCHEMA_VERSION)) {
+    return("unsupported legacy v0.27 checkpoint schema (schema_version = 1); use a new checkpoint_dir")
+  }
+  if (!identical(env$format_id, .CHECKPOINT_CANONICAL_FORMAT_ID)) {
     return("envelope format_id mismatch")
   }
-  if (!identical(as.integer(env$schema_version), .CHECKPOINT_ENVELOPE_SCHEMA_VERSION)) {
+  if (!.cp_is_valid_int_scalar(env$schema_version, min_val = 1) ||
+      !identical(as.integer(env$schema_version), .CHECKPOINT_CANONICAL_ENVELOPE_SCHEMA_VERSION)) {
     return("envelope schema_version mismatch")
+  }
+  if (!identical(env$statistical_contract_id, .CHECKPOINT_STATISTICAL_CONTRACT_ID)) {
+    return("envelope statistical_contract_id mismatch")
   }
   if (!identical(env$hash_algorithm, .CHECKPOINT_HASH_ALGORITHM)) {
     return("envelope hash_algorithm mismatch")
@@ -532,9 +882,11 @@
   if (!identical(env$analysis_identity_hash, identity_record$analysis_identity_hash)) {
     return("envelope analysis_identity_hash mismatch")
   }
-  if (!identical(as.integer(env$repeat_id), as.integer(fold_spec$repeat_id)) ||
+  if (!.cp_is_valid_int_scalar(env$repeat_id, min_val = 1) ||
+      !.cp_is_valid_int_scalar(env$outer_fold_id, min_val = 1) ||
+      !identical(as.integer(env$repeat_id), as.integer(fold_spec$repeat_id)) ||
       !identical(as.integer(env$outer_fold_id), as.integer(fold_spec$outer_fold_id)) ||
-      !identical(as.character(env$outer_fold), as.character(fold_spec$fold_name))) {
+      !identical(env$outer_fold, as.character(fold_spec$fold_name))) {
     return("envelope fold identity mismatch")
   }
   if (!identical(env$split_hash, split_hash)) {
@@ -545,12 +897,18 @@
   }
   prod <- env$producer
   if (!is.list(prod) ||
-      !identical(prod$package_version, identity_record$core$package_version) ||
-      !identical(prod$backend, .CHECKPOINT_BACKEND_ID) ||
-      !identical(as.integer(prod$native_result_schema_version), .CHECKPOINT_NATIVE_SCHEMA_VERSION)) {
-    return("envelope producer metadata mismatch")
+      !is.character(prod$backend) || length(prod$backend) != 1L || is.na(prod$backend) ||
+      !(prod$backend %in% .CHECKPOINT_SUPPORTED_PRODUCERS) ||
+      !is.character(prod$backend_provenance) || length(prod$backend_provenance) != 1L ||
+      is.na(prod$backend_provenance) || !nzchar(prod$backend_provenance) ||
+      !is.character(prod$package_version) || length(prod$package_version) != 1L ||
+      is.na(prod$package_version) || !nzchar(prod$package_version) ||
+      !identical(suppressWarnings(as.integer(prod$payload_schema_version)), .CHECKPOINT_CANONICAL_PAYLOAD_SCHEMA_VERSION) ||
+      !identical(suppressWarnings(as.integer(prod$envelope_schema_version)), .CHECKPOINT_CANONICAL_ENVELOPE_SCHEMA_VERSION) ||
+      !identical(prod$statistical_contract_id, .CHECKPOINT_STATISTICAL_CONTRACT_ID)) {
+    return("envelope producer metadata invalid or unsupported")
   }
-  payload_err <- .cp_validate_native_payload(env$payload, fold_spec, n_items_total)
+  payload_err <- .cp_validate_canonical_payload(env$payload, fold_spec, items, y_vec = y_vec)
   if (!is.null(payload_err)) {
     return(payload_err)
   }
@@ -561,31 +919,40 @@
   NULL
 }
 
-.cp_build_fold_envelope <- function(identity_record, fold_spec, split_hash, nat_res) {
+.cp_build_fold_envelope <- function(identity_record,
+                                    fold_spec,
+                                    split_hash,
+                                    canon_payload,
+                                    producer_backend,
+                                    backend_provenance = producer_backend) {
   list(
-    format_id              = .CHECKPOINT_FORMAT_ID,
-    schema_version         = .CHECKPOINT_ENVELOPE_SCHEMA_VERSION,
-    hash_algorithm         = .CHECKPOINT_HASH_ALGORITHM,
-    analysis_identity_hash = identity_record$analysis_identity_hash,
-    repeat_id              = as.integer(fold_spec$repeat_id),
-    outer_fold_id          = as.integer(fold_spec$outer_fold_id),
-    outer_fold             = as.character(fold_spec$fold_name),
-    split_hash             = split_hash,
-    completion_status      = "complete",
-    payload                = nat_res,
-    payload_hash           = .cp_hash_object(nat_res),
-    producer               = list(
-      package_version              = identity_record$core$package_version,
-      backend                      = .CHECKPOINT_BACKEND_ID,
-      native_result_schema_version = .CHECKPOINT_NATIVE_SCHEMA_VERSION,
-      backend_provenance           = as.character(nat_res$backend_provenance %||% .CHECKPOINT_BACKEND_ID)
+    format_id               = .CHECKPOINT_CANONICAL_FORMAT_ID,
+    schema_version          = .CHECKPOINT_CANONICAL_ENVELOPE_SCHEMA_VERSION,
+    statistical_contract_id = .CHECKPOINT_STATISTICAL_CONTRACT_ID,
+    hash_algorithm          = .CHECKPOINT_HASH_ALGORITHM,
+    analysis_identity_hash  = identity_record$analysis_identity_hash,
+    repeat_id               = as.integer(fold_spec$repeat_id),
+    outer_fold_id           = as.integer(fold_spec$outer_fold_id),
+    outer_fold              = as.character(fold_spec$fold_name),
+    split_hash              = split_hash,
+    completion_status       = "complete",
+    payload                 = canon_payload,
+    payload_hash            = .cp_hash_object(canon_payload),
+    producer                = list(
+      backend                 = as.character(producer_backend),
+      backend_provenance      = as.character(backend_provenance),
+      package_version         = as.character(utils::packageVersion("NCVROC")),
+      payload_schema_version  = .CHECKPOINT_CANONICAL_PAYLOAD_SCHEMA_VERSION,
+      envelope_schema_version = .CHECKPOINT_CANONICAL_ENVELOPE_SCHEMA_VERSION,
+      statistical_contract_id = .CHECKPOINT_STATISTICAL_CONTRACT_ID
     ),
-    provenance             = list(
-      saved_at = format(Sys.time(), "%Y-%m-%dT%H:%M:%OS3%z"),
-      pid      = Sys.getpid(),
-      hostname = unname(Sys.info()[["nodename"]])
+    provenance              = list(
+      saved_at  = format(Sys.time(), "%Y-%m-%dT%H:%M:%OS3%z"),
+      r_version = paste(R.version$major, R.version$minor, sep = "."),
+      pid       = Sys.getpid(),
+      hostname  = unname(Sys.info()[["nodename"]])
     ),
-    validation             = list(
+    validation              = list(
       validated_on_write = TRUE,
       read_back_verified = TRUE
     )
@@ -594,7 +961,7 @@
 
 # ---- Inspection & classification ----
 
-.cp_inspect_directory <- function(paths, identity_record, fold_specs_ordered, n_items_total) {
+.cp_inspect_directory <- function(paths, identity_record, fold_specs_ordered, items, y_vec = NULL) {
   expected_files <- vapply(fold_specs_ordered, function(s) {
     .cp_fold_filename(s$repeat_id, s$outer_fold_id)
   }, character(1L))
@@ -633,11 +1000,12 @@
 
     if (!file.exists(fpath)) {
       states[[i]] <- list(
-        status     = "ABSENT",
-        fold_name  = spec$fold_name,
-        file_path  = fpath,
-        split_hash = split_hashes[[i]],
-        payload    = NULL
+        status           = "ABSENT",
+        fold_name        = spec$fold_name,
+        file_path        = fpath,
+        split_hash       = split_hashes[[i]],
+        producer_backend = NA_character_,
+        payload          = NULL
       )
       next
     }
@@ -653,7 +1021,7 @@
         call. = FALSE
       )
     })
-    err <- .cp_validate_envelope(env, identity_record, spec, split_hashes[[i]], n_items_total)
+    err <- .cp_validate_envelope(env, identity_record, spec, split_hashes[[i]], items, y_vec = y_vec)
     if (!is.null(err)) {
       stop(
         sprintf("Invalid checkpoint envelope for %s (%s): %s",
@@ -662,11 +1030,12 @@
       )
     }
     states[[i]] <- list(
-      status     = "COMPLETE_VALID",
-      fold_name  = spec$fold_name,
-      file_path  = fpath,
-      split_hash = split_hashes[[i]],
-      payload    = env$payload
+      status           = "COMPLETE_VALID",
+      fold_name        = spec$fold_name,
+      file_path        = fpath,
+      split_hash       = split_hashes[[i]],
+      producer_backend = as.character(env$producer$backend),
+      payload          = env$payload
     )
   }
 
@@ -679,21 +1048,31 @@
                              identity_record,
                              fold_spec,
                              split_hash,
-                             nat_res,
-                             n_items_total,
-                             allow_replace = FALSE) {
+                             canon_payload,
+                             items,
+                             producer_backend,
+                             backend_provenance = producer_backend,
+                             allow_replace = FALSE,
+                             y_vec = NULL) {
   fold_name <- fold_spec$fold_name
   if (identical(.ncvroc_checkpoint_test_seams$fail_between_complete_and_write, fold_name) ||
       isTRUE(.ncvroc_checkpoint_test_seams$fail_between_complete_and_write)) {
     stop("Simulated failure between fold completion and checkpoint write for ", fold_name, call. = FALSE)
   }
 
-  payload_err <- .cp_validate_native_payload(nat_res, fold_spec, n_items_total)
+  payload_err <- .cp_validate_canonical_payload(canon_payload, fold_spec, items, y_vec = y_vec)
   if (!is.null(payload_err)) {
     stop("Cannot persist invalid fold result for ", fold_name, ": ", payload_err, call. = FALSE)
   }
 
-  env <- .cp_build_fold_envelope(identity_record, fold_spec, split_hash, nat_res)
+  env <- .cp_build_fold_envelope(
+    identity_record    = identity_record,
+    fold_spec          = fold_spec,
+    split_hash         = split_hash,
+    canon_payload      = canon_payload,
+    producer_backend   = producer_backend,
+    backend_provenance = backend_provenance
+  )
   nonce <- .cp_next_nonce()
   pending_name <- sprintf("repeat_%03d_fold_%03d_%s.rds.tmp",
                           as.integer(fold_spec$repeat_id),
@@ -727,7 +1106,7 @@
   rb_env <- tryCatch(readRDS(pending_path), error = function(e) {
     stop("Read-back failed for staged checkpoint ", pending_path, ": ", conditionMessage(e), call. = FALSE)
   })
-  rb_err <- .cp_validate_envelope(rb_env, identity_record, fold_spec, split_hash, n_items_total)
+  rb_err <- .cp_validate_envelope(rb_env, identity_record, fold_spec, split_hash, items, y_vec = y_vec)
   if (!is.null(rb_err)) {
     stop("Read-back validation failed for staged checkpoint ", pending_path, ": ", rb_err, call. = FALSE)
   }
@@ -796,7 +1175,7 @@
 
     # Verify newly published target before removing backup
     pub_rb <- tryCatch(readRDS(target_path), error = function(e) NULL)
-    pub_err <- if (is.null(pub_rb)) "readRDS failed" else .cp_validate_envelope(pub_rb, identity_record, fold_spec, split_hash, n_items_total)
+    pub_err <- if (is.null(pub_rb)) "readRDS failed" else .cp_validate_envelope(pub_rb, identity_record, fold_spec, split_hash, items, y_vec = y_vec)
     if (!is.null(pub_err)) {
       unlink(target_path, force = TRUE)
       file.rename(backup_path, target_path)
@@ -830,6 +1209,169 @@
   invisible(target_path)
 }
 
+# ---- Shared checkpoint preparation & provenance assembly ----
+
+.cp_prepare_run <- function(x_mat,
+                            y_vec,
+                            outer_folds,
+                            items,
+                            outcome_col,
+                            positive_label,
+                            negative_label,
+                            min_items,
+                            max_items,
+                            cutoff_method,
+                            preselect_by,
+                            selection_criterion,
+                            preselect_top_n,
+                            outer_k,
+                            inner_k,
+                            outer_repeats,
+                            inner_repeats,
+                            stratified,
+                            seed,
+                            checkpoint_dir,
+                            resume,
+                            force_recompute,
+                            consumer_backend,
+                            progress,
+                            verbose) {
+  total_combos <- .count_total_combos(length(items), min_items, max_items)
+  n_candidates <- as.integer(min(preselect_top_n, total_combos))
+
+  # Precompute all outer and inner fold assignments before any skips (RNG invariance)
+  fold_specs_raw <- .build_native_outer_fold_specs(
+    outer_folds   = outer_folds,
+    y             = y_vec,
+    n_total       = length(y_vec),
+    inner_k       = inner_k,
+    inner_repeats = as.integer(inner_repeats),
+    n_candidates  = n_candidates,
+    seed          = seed
+  )
+  fold_specs <- .cp_order_fold_specs(fold_specs_raw)
+  n_folds <- length(fold_specs)
+
+  paths <- .cp_resolve_root(checkpoint_dir)
+  lock_token <- .cp_acquire_lock(paths)
+
+  identity_record <- tryCatch({
+    id_rec <- .cp_build_analysis_identity(
+      x_mat               = x_mat,
+      y                   = y_vec,
+      items               = items,
+      outcome_col         = outcome_col,
+      positive_label      = positive_label,
+      negative_label      = negative_label,
+      fold_specs_ordered  = fold_specs,
+      min_items           = min_items,
+      max_items           = max_items,
+      cutoff_method       = cutoff_method,
+      preselect_top_n     = preselect_top_n,
+      preselect_by        = preselect_by,
+      selection_criterion = selection_criterion,
+      outer_k             = outer_k,
+      inner_k             = inner_k,
+      outer_repeats       = outer_repeats,
+      inner_repeats       = inner_repeats,
+      stratified          = stratified,
+      seed                = seed,
+      producer_backend    = consumer_backend
+    )
+    .cp_validate_or_create_identity(paths, id_rec)
+    id_rec
+  }, error = function(e) {
+    .cp_release_lock(lock_token)
+    stop(e)
+  })
+
+  states <- tryCatch(
+    .cp_inspect_directory(paths, identity_record, fold_specs, items, y_vec = y_vec),
+    error = function(e) {
+      .cp_release_lock(lock_token)
+      stop(e)
+    }
+  )
+
+  # Enforce resume = FALSE non-overwrite rule
+  if (!isTRUE(resume) && !isTRUE(force_recompute)) {
+    existing_valid <- vapply(states, function(st) identical(st$status, "COMPLETE_VALID"), logical(1L))
+    if (any(existing_valid)) {
+      .cp_release_lock(lock_token)
+      existing_names <- vapply(states[existing_valid], `[[`, character(1L), "fold_name")
+      stop(
+        sprintf(
+          "Existing fold checkpoint(s) found (%s) with `resume = FALSE` and `force_recompute = FALSE`. Use a new `checkpoint_dir`, set `resume = TRUE` to reuse, or set `force_recompute = TRUE` to recompute and replace.",
+          paste(existing_names, collapse = ", ")
+        ),
+        call. = FALSE
+      )
+    }
+  }
+
+  reused_idx       <- integer(0L)
+  compute_idx      <- integer(0L)
+  final_canon      <- vector("list", n_folds)
+  reused_producers <- character(0L)
+  fold_producers   <- stats::setNames(rep(NA_character_, n_folds), vapply(fold_specs, `[[`, character(1L), "fold_name"))
+
+  for (i in seq_len(n_folds)) {
+    if (identical(states[[i]]$status, "COMPLETE_VALID") && isTRUE(resume) && !isTRUE(force_recompute)) {
+      reused_idx <- c(reused_idx, i)
+      final_canon[[i]] <- states[[i]]$payload
+      prod_b <- as.character(states[[i]]$producer_backend)
+      reused_producers <- c(reused_producers, prod_b)
+      fold_producers[[i]] <- prod_b
+    } else {
+      compute_idx <- c(compute_idx, i)
+    }
+  }
+
+  reused_names  <- vapply(fold_specs[reused_idx], `[[`, character(1L), "fold_name")
+  compute_names <- vapply(fold_specs[compute_idx], `[[`, character(1L), "fold_name")
+
+  if (isTRUE(progress) || isTRUE(verbose)) {
+    message(sprintf(
+      "Checkpoint: %d/%d outer fold(s) reused; %d/%d outer fold(s) to compute.",
+      length(reused_idx), n_folds, length(compute_idx), n_folds
+    ))
+  }
+
+  list(
+    paths            = paths,
+    lock_token       = lock_token,
+    identity_record  = identity_record,
+    fold_specs       = fold_specs,
+    states           = states,
+    n_folds          = n_folds,
+    reused_idx       = reused_idx,
+    compute_idx      = compute_idx,
+    reused_names     = reused_names,
+    compute_names    = compute_names,
+    reused_producers = reused_producers,
+    fold_producers   = fold_producers,
+    final_canon      = final_canon
+  )
+}
+
+.cp_build_provenance <- function(prep, consumer_backend, resume, force_recompute) {
+  list(
+    checkpoint_enabled       = TRUE,
+    consumer_backend         = as.character(consumer_backend),
+    canonical_checkpoint_dir = prep$paths$root_canonical,
+    analysis_identity_hash   = prep$identity_record$analysis_identity_hash,
+    reused_folds             = prep$reused_names,
+    computed_folds           = prep$compute_names,
+    n_reused                 = length(prep$reused_idx),
+    n_computed               = length(prep$compute_idx),
+    reused_from_r            = as.integer(sum(prep$reused_producers == "r_serial")),
+    reused_from_native       = as.integer(sum(prep$reused_producers == "scope_b_native_outer_fold")),
+    fold_producers           = prep$fold_producers,
+    resume                   = isTRUE(resume),
+    force_recompute          = isTRUE(force_recompute)
+  )
+}
+
 # ---- Scope B checkpointed execution driver ----
 
 .run_native_outer_folds_checkpointed <- function(x_mat,
@@ -858,103 +1400,48 @@
                                                  progress,
                                                  verbose,
                                                  schema_version = 1L) {
-  total_combos <- .count_total_combos(length(items), min_items, max_items)
-  n_candidates <- as.integer(min(preselect_top_n, total_combos))
-
-  # Precompute all outer and inner fold assignments before any skips (RNG invariance)
-  fold_specs_raw <- .build_native_outer_fold_specs(
-    outer_folds   = outer_folds,
-    y             = y_vec,
-    n_total       = length(y_vec),
-    inner_k       = inner_k,
-    inner_repeats = as.integer(inner_repeats),
-    n_candidates  = n_candidates,
-    seed          = seed
-  )
-  fold_specs <- .cp_order_fold_specs(fold_specs_raw)
-  n_folds <- length(fold_specs)
-  n_items_total <- length(items)
-
-  paths <- .cp_resolve_root(checkpoint_dir)
-  lock_token <- .cp_acquire_lock(paths)
-  on.exit(.cp_release_lock(lock_token), add = TRUE)
-
-  identity_record <- .cp_build_analysis_identity(
+  prep <- .cp_prepare_run(
     x_mat               = x_mat,
-    y                   = y_vec,
+    y_vec               = y_vec,
+    outer_folds         = outer_folds,
     items               = items,
     outcome_col         = outcome_col,
     positive_label      = positive_label,
     negative_label      = negative_label,
-    fold_specs_ordered  = fold_specs,
     min_items           = min_items,
     max_items           = max_items,
     cutoff_method       = cutoff_method,
-    preselect_top_n     = preselect_top_n,
     preselect_by        = preselect_by,
     selection_criterion = selection_criterion,
+    preselect_top_n     = preselect_top_n,
     outer_k             = outer_k,
     inner_k             = inner_k,
     outer_repeats       = outer_repeats,
     inner_repeats       = inner_repeats,
     stratified          = stratified,
-    seed                = seed
+    seed                = seed,
+    checkpoint_dir      = checkpoint_dir,
+    resume              = resume,
+    force_recompute     = force_recompute,
+    consumer_backend    = "scope_b_native_outer_fold",
+    progress            = progress,
+    verbose             = verbose
   )
-  .cp_validate_or_create_identity(paths, identity_record)
-
-  states <- .cp_inspect_directory(paths, identity_record, fold_specs, n_items_total)
-
-  # Enforce resume = FALSE non-overwrite rule
-  if (!isTRUE(resume) && !isTRUE(force_recompute)) {
-    existing_valid <- vapply(states, function(st) identical(st$status, "COMPLETE_VALID"), logical(1L))
-    if (any(existing_valid)) {
-      existing_names <- vapply(states[existing_valid], `[[`, character(1L), "fold_name")
-      stop(
-        sprintf(
-          "Existing fold checkpoint(s) found (%s) with `resume = FALSE` and `force_recompute = FALSE`. Use a new `checkpoint_dir`, set `resume = TRUE` to reuse, or set `force_recompute = TRUE` to recompute and replace.",
-          paste(existing_names, collapse = ", ")
-        ),
-        call. = FALSE
-      )
-    }
-  }
-
-  reused_idx   <- integer(0L)
-  compute_idx  <- integer(0L)
-  final_raw    <- vector("list", n_folds)
-
-  for (i in seq_len(n_folds)) {
-    if (identical(states[[i]]$status, "COMPLETE_VALID") && isTRUE(resume) && !isTRUE(force_recompute)) {
-      reused_idx <- c(reused_idx, i)
-      final_raw[[i]] <- states[[i]]$payload
-    } else {
-      compute_idx <- c(compute_idx, i)
-    }
-  }
-
-  reused_names  <- vapply(fold_specs[reused_idx], `[[`, character(1L), "fold_name")
-  compute_names <- vapply(fold_specs[compute_idx], `[[`, character(1L), "fold_name")
-
-  if (isTRUE(progress) || isTRUE(verbose)) {
-    message(sprintf(
-      "Checkpoint: %d/%d outer fold(s) reused; %d/%d outer fold(s) to compute.",
-      length(reused_idx), n_folds, length(compute_idx), n_folds
-    ))
-  }
+  on.exit(.cp_release_lock(prep$lock_token), add = TRUE)
 
   if (isTRUE(.ncvroc_checkpoint_test_seams$fail_before_compute)) {
     stop("Simulated failure before computing remaining folds.", call. = FALSE)
   }
 
-  if (length(compute_idx) > 0L) {
-    split_hashes <- vapply(states, `[[`, character(1L), "split_hash")
+  if (length(prep$compute_idx) > 0L) {
+    split_hashes <- vapply(prep$states, `[[`, character(1L), "split_hash")
     allow_rep <- isTRUE(force_recompute)
 
     if (as.integer(num_threads) == 1L) {
       # Serial execution: run and persist one fold at a time so each completed fold
       # is durably saved before the next fold begins.
-      for (idx in compute_idx) {
-        spec <- fold_specs[[idx]]
+      for (idx in prep$compute_idx) {
+        spec <- prep$fold_specs[[idx]]
         if (!is.null(.ncvroc_checkpoint_test_seams$fail_during_compute_fold) &&
             identical(.ncvroc_checkpoint_test_seams$fail_during_compute_fold, spec$fold_name)) {
           stop("Simulated failure during native computation of ", spec$fold_name, call. = FALSE)
@@ -990,22 +1477,27 @@
             call. = FALSE
           )
         }
+        canon_res <- .native_fold_to_canonical(nat_res, spec, items, y_vec = y_vec)
         .cp_publish_fold(
-          paths           = paths,
-          identity_record = identity_record,
-          fold_spec       = spec,
-          split_hash      = split_hashes[[idx]],
-          nat_res         = nat_res,
-          n_items_total   = n_items_total,
-          allow_replace   = allow_rep
+          paths              = prep$paths,
+          identity_record    = prep$identity_record,
+          fold_spec          = spec,
+          split_hash         = split_hashes[[idx]],
+          canon_payload      = canon_res,
+          items              = items,
+          producer_backend   = "scope_b_native_outer_fold",
+          backend_provenance = as.character(nat_res$backend_provenance %||% "scope_b_native_serial"),
+          allow_replace      = allow_rep,
+          y_vec              = y_vec
         )
-        final_raw[[idx]] <- nat_res
+        prep$final_canon[[idx]] <- canon_res
+        prep$fold_producers[[idx]] <- "scope_b_native_outer_fold"
       }
     } else {
       # Parallel TBB execution: receive per-fold success/failure records without
       # throwing across worker boundaries; persist every completed fold on the main
       # R control thread before reporting any deterministic failure.
-      specs_to_run <- fold_specs[compute_idx]
+      specs_to_run <- prep$fold_specs[prep$compute_idx]
       .ncvroc_checkpoint_test_seams$native_call_count <- as.integer(.ncvroc_checkpoint_test_seams$native_call_count) + 1L
       .ncvroc_checkpoint_test_seams$native_folds_executed <- as.integer(.ncvroc_checkpoint_test_seams$native_folds_executed) + length(specs_to_run)
       res_list <- evaluate_outer_folds_native_cpp(
@@ -1025,9 +1517,9 @@
       )
 
       first_failure <- NULL
-      for (k in seq_along(compute_idx)) {
-        idx <- compute_idx[[k]]
-        spec <- fold_specs[[idx]]
+      for (k in seq_along(prep$compute_idx)) {
+        idx <- prep$compute_idx[[k]]
+        spec <- prep$fold_specs[[idx]]
         nat_res <- res_list[[k]]
         if (!identical(as.integer(nat_res$repeat_id), as.integer(spec$repeat_id)) ||
             !identical(as.integer(nat_res$outer_fold_id), as.integer(spec$outer_fold_id))) {
@@ -1040,16 +1532,21 @@
           nat_res$status_message <- paste0("Simulated worker failure at ", spec$fold_name)
         }
         if (isTRUE(nat_res$completed) && identical(as.integer(nat_res$status_code), 0L)) {
+          canon_res <- .native_fold_to_canonical(nat_res, spec, items, y_vec = y_vec)
           .cp_publish_fold(
-            paths           = paths,
-            identity_record = identity_record,
-            fold_spec       = spec,
-            split_hash      = split_hashes[[idx]],
-            nat_res         = nat_res,
-            n_items_total   = n_items_total,
-            allow_replace   = allow_rep
+            paths              = prep$paths,
+            identity_record    = prep$identity_record,
+            fold_spec          = spec,
+            split_hash         = split_hashes[[idx]],
+            canon_payload      = canon_res,
+            items              = items,
+            producer_backend   = "scope_b_native_outer_fold",
+            backend_provenance = as.character(nat_res$backend_provenance %||% "scope_b_native_tbb"),
+            allow_replace      = allow_rep,
+            y_vec              = y_vec
           )
-          final_raw[[idx]] <- nat_res
+          prep$final_canon[[idx]] <- canon_res
+          prep$fold_producers[[idx]] <- "scope_b_native_outer_fold"
         } else if (is.null(first_failure)) {
           first_failure <- nat_res
         }
@@ -1073,7 +1570,7 @@
     if (isTRUE(progress) || isTRUE(verbose)) {
       message(sprintf(
         "Checkpoint: %d newly computed outer fold(s) persisted (%d/%d complete).",
-        length(compute_idx), n_folds, n_folds
+        length(prep$compute_idx), prep$n_folds, prep$n_folds
       ))
     }
   }
@@ -1083,18 +1580,171 @@
   }
 
   list(
-    raw_results = final_raw,
-    per_fold    = lapply(final_raw, .convert_native_outer_fold_result_to_r, items = items),
-    provenance  = list(
-      checkpoint_enabled       = TRUE,
-      canonical_checkpoint_dir = paths$root_canonical,
-      analysis_identity_hash   = identity_record$analysis_identity_hash,
-      reused_folds             = reused_names,
-      computed_folds           = compute_names,
-      n_reused                 = length(reused_idx),
-      n_computed               = length(compute_idx),
-      resume                   = isTRUE(resume),
-      force_recompute          = isTRUE(force_recompute)
-    )
+    canonical_results = prep$final_canon,
+    per_fold          = lapply(prep$final_canon, .canonical_to_r_aggregation_record),
+    provenance        = .cp_build_provenance(prep, "scope_b_native_outer_fold", resume, force_recompute)
+  )
+}
+
+# ---- R serial checkpointed execution driver ----
+
+.run_r_serial_outer_folds_checkpointed <- function(full_data,
+                                                   x_mat,
+                                                   y_vec,
+                                                   outer_folds,
+                                                   items,
+                                                   outcome_col,
+                                                   positive_label,
+                                                   negative_label,
+                                                   min_items,
+                                                   max_items,
+                                                   cutoff_method,
+                                                   preselect_by,
+                                                   selection_criterion,
+                                                   preselect_top_n,
+                                                   outer_k,
+                                                   inner_k,
+                                                   outer_repeats,
+                                                   inner_repeats,
+                                                   stratified,
+                                                   use_streaming_ncv,
+                                                   engine,
+                                                   seed,
+                                                   checkpoint_dir,
+                                                   resume,
+                                                   force_recompute,
+                                                   progress,
+                                                   verbose) {
+  prep <- .cp_prepare_run(
+    x_mat               = x_mat,
+    y_vec               = y_vec,
+    outer_folds         = outer_folds,
+    items               = items,
+    outcome_col         = outcome_col,
+    positive_label      = positive_label,
+    negative_label      = negative_label,
+    min_items           = min_items,
+    max_items           = max_items,
+    cutoff_method       = cutoff_method,
+    preselect_by        = preselect_by,
+    selection_criterion = selection_criterion,
+    preselect_top_n     = preselect_top_n,
+    outer_k             = outer_k,
+    inner_k             = inner_k,
+    outer_repeats       = outer_repeats,
+    inner_repeats       = inner_repeats,
+    stratified          = stratified,
+    seed                = seed,
+    checkpoint_dir      = checkpoint_dir,
+    resume              = resume,
+    force_recompute     = force_recompute,
+    consumer_backend    = "r_serial",
+    progress            = progress,
+    verbose             = verbose
+  )
+  on.exit(.cp_release_lock(prep$lock_token), add = TRUE)
+
+  if (isTRUE(.ncvroc_checkpoint_test_seams$fail_before_compute)) {
+    stop("Simulated failure before computing remaining folds.", call. = FALSE)
+  }
+
+  if (length(prep$compute_idx) > 0L) {
+    split_hashes <- vapply(prep$states, `[[`, character(1L), "split_hash")
+    allow_rep <- isTRUE(force_recompute)
+    total_combos <- .count_total_combos(length(items), min_items, max_items)
+    n_total <- length(y_vec)
+
+    for (idx in prep$compute_idx) {
+      spec <- prep$fold_specs[[idx]]
+      if (!is.null(.ncvroc_checkpoint_test_seams$fail_during_compute_fold) &&
+          identical(.ncvroc_checkpoint_test_seams$fail_during_compute_fold, spec$fold_name)) {
+        stop("Simulated failure during R serial computation of ", spec$fold_name, call. = FALSE)
+      }
+
+      .ncvroc_checkpoint_test_seams$r_folds_executed <- as.integer(.ncvroc_checkpoint_test_seams$r_folds_executed) + 1L
+
+      orig_i <- match(spec$fold_name, names(outer_folds))
+      if (is.na(orig_i)) {
+        stop("Fold name mismatch during R serial checkpointed execution: ", spec$fold_name, call. = FALSE)
+      }
+
+      precomp_inner <- lapply(spec$inner_folds, function(cand_folds) {
+        lapply(cand_folds, function(f_idx) as.integer(f_idx) + 1L)
+      })
+
+      prg_i <- .progress_make(
+        total_combos,
+        label = sprintf("NCVROC [Fold %d/%d]", idx, prep$n_folds),
+        enabled = progress,
+        progress_mode = "exact",
+        unit = "candidates"
+      )
+      cb_i <- if (progress) function(n_done) prg_i$tick(n_done) else NULL
+
+      r_fold <- .evaluate_single_outer_fold(
+        i                       = orig_i,
+        outer_folds             = outer_folds,
+        full_data               = full_data,
+        y                       = y_vec,
+        n_total                 = n_total,
+        items                   = items,
+        outcome_col             = outcome_col,
+        min_items               = min_items,
+        max_items               = max_items,
+        positive_label          = positive_label,
+        negative_label          = negative_label,
+        cutoff_method           = cutoff_method,
+        preselect_top_n         = preselect_top_n,
+        preselect_by            = preselect_by,
+        selection_criterion     = selection_criterion,
+        inner_k                 = inner_k,
+        inner_repeats           = inner_repeats,
+        use_streaming_ncv       = use_streaming_ncv,
+        engine                  = engine,
+        seed                    = seed,
+        progress                = FALSE,
+        verbose                 = verbose,
+        cl_chunk                = NULL,
+        parallel_inner          = "none",
+        n_workers_inner         = 1L,
+        progress_callback       = cb_i,
+        precomputed_inner_folds = precomp_inner,
+        return_canonical_diag   = TRUE
+      )
+      prg_i$finish()
+
+      canon_res <- .r_fold_to_canonical(r_fold, spec, items, y_vec = y_vec)
+      .cp_publish_fold(
+        paths              = prep$paths,
+        identity_record    = prep$identity_record,
+        fold_spec          = spec,
+        split_hash         = split_hashes[[idx]],
+        canon_payload      = canon_res,
+        items              = items,
+        producer_backend   = "r_serial",
+        backend_provenance = paste0("r_serial_", as.character(engine)),
+        allow_replace      = allow_rep,
+        y_vec              = y_vec
+      )
+      prep$final_canon[[idx]] <- canon_res
+      prep$fold_producers[[idx]] <- "r_serial"
+    }
+
+    if (isTRUE(progress) || isTRUE(verbose)) {
+      message(sprintf(
+        "Checkpoint: %d newly computed outer fold(s) persisted (%d/%d complete).",
+        length(prep$compute_idx), prep$n_folds, prep$n_folds
+      ))
+    }
+  }
+
+  if (isTRUE(.ncvroc_checkpoint_test_seams$fail_before_aggregate)) {
+    stop("Simulated failure before final aggregation.", call. = FALSE)
+  }
+
+  list(
+    canonical_results = prep$final_canon,
+    per_fold          = lapply(prep$final_canon, .canonical_to_r_aggregation_record),
+    provenance        = .cp_build_provenance(prep, "r_serial", resume, force_recompute)
   )
 }

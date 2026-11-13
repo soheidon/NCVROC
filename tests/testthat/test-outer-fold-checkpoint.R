@@ -70,8 +70,8 @@ test_that("R1: API validation, backend restriction, and checkpoint_dir = NULL le
 
   cp_unused <- tempfile("cp_unused_")
   on.exit(unlink(cp_unused, recursive = TRUE, force = TRUE), add = TRUE)
-  for (pm in c("none", "outer", "chunks", "threads", "native_tbb")) {
-    eng <- if (pm == "native_tbb") "Rcpp" else "R"
+  for (pm in c("outer", "chunks", "threads", "hybrid", "native_tbb")) {
+    eng <- if (pm %in% c("hybrid", "native_tbb")) "Rcpp" else "R"
     expect_error(
       nested_sum_roc(td$data, td$outcome, td$items, max_items = 2,
                      engine = eng, parallel = pm,

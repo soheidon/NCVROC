@@ -143,10 +143,16 @@ warns if non-NULL.}
 \item{file_prefix}{Character, prefix for CSV filenames (default `"NCVROC"`).}
 
 \item{checkpoint_dir}{Optional character scalar path to a directory for
-completed outer-fold checkpoint persistence and resume. Supported only when
-`parallel = "native_outer_fold"`. Requires SHA-256 support via
-\code{tools::sha256sum} (R >= 4.5.0) for identity and payload integrity
-hashing. Default `NULL` disables checkpointing and performs no checkpoint I/O.}
+completed outer-fold checkpoint persistence and resume. Supported when
+`parallel = "none"` (or \code{FALSE}, R serial) or
+`parallel = "native_outer_fold"` (Scope B Native), with `tuning = "off"`.
+Uses a backend-neutral canonical schema (schema version 2) so completed
+outer-fold checkpoints can be reused interchangeably between R serial and
+Scope B Native when analysis identity and schema match (in-flight state is
+not portable; legacy v0.27 schema version 1 directories are rejected).
+Requires SHA-256 support via \code{tools::sha256sum} (R >= 4.5.0) for
+identity and payload integrity hashing. Default `NULL` disables
+checkpointing and performs no checkpoint I/O.}
 
 \item{resume}{Logical scalar (default `TRUE`). When `checkpoint_dir` is
 non-NULL and `force_recompute = FALSE`, reuse valid completed outer-fold
