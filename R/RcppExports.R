@@ -45,3 +45,11 @@ native_outer_fold_result_roundtrip_cpp <- function(r_result) {
     .Call(`_NCVROC_native_outer_fold_result_roundtrip_cpp`, r_result)
 }
 
+native_eval_candidate_batches_cpp <- function(x, y, train_indices_list, task_fold_idx, task_repeat_id, task_outer_fold_id, task_model_size, task_local_rank_start_0, task_local_rank_end_0, task_level_start_0, cutoff_method, rank_by, preselect_top_n, prefer_fewer_items = TRUE, num_threads = 1L) {
+    .Call(`_NCVROC_native_eval_candidate_batches_cpp`, x, y, train_indices_list, task_fold_idx, task_repeat_id, task_outer_fold_id, task_model_size, task_local_rank_start_0, task_local_rank_end_0, task_level_start_0, cutoff_method, rank_by, preselect_top_n, prefer_fewer_items, num_threads)
+}
+
+check_user_interrupt_cpp <- function() {
+    invisible(.Call(`_NCVROC_check_user_interrupt_cpp`))
+}
+

@@ -504,7 +504,9 @@ test_that("R4: Parallel TBB status transport persists completed siblings before 
   expect_false(isTRUE(cpp_res[[2L]]$completed))
   expect_true(isTRUE(cpp_res[[3L]]$completed))
 
-  # Parallel checkpointed run where Rep1_Fold2 fails: Fold1 & Fold3 must be persisted!
+  # Bounded-wave parallel checkpointed run (wave_size = n_workers = 2):
+  # Wave 1 runs Fold1 & Fold2; Fold1 is persisted before Fold2's deterministic error,
+  # and Wave 2 (Fold3) is not dispatched after Wave 1 fails.
   seams <- NCVROC:::.ncvroc_checkpoint_test_seams
   reset_seams()
   seams$fail_during_compute_fold <- "Rep1_Fold2"
@@ -519,9 +521,9 @@ test_that("R4: Parallel TBB status transport persists completed siblings before 
   )
   expect_true(file.exists(file.path(cp_dir, "folds", "repeat_001_fold_001.rds")))
   expect_false(file.exists(file.path(cp_dir, "folds", "repeat_001_fold_002.rds")))
-  expect_true(file.exists(file.path(cp_dir, "folds", "repeat_001_fold_003.rds")))
+  expect_false(file.exists(file.path(cp_dir, "folds", "repeat_001_fold_003.rds")))
 
-  # Resume with 2 threads computes only Rep1_Fold2 and matches fresh run
+  # Resume with 2 threads computes remaining Rep1_Fold2 and Rep1_Fold3 and matches fresh run
   NCVROC:::.reset_ncvroc_checkpoint_test_seams()
   res_resumed <- nested_sum_roc(
     td$data, td$outcome, td$items, max_items = 2,
@@ -529,9 +531,9 @@ test_that("R4: Parallel TBB status transport persists completed siblings before 
     engine = "Rcpp", parallel = "native_outer_fold", n_workers = 2L,
     checkpoint_dir = cp_dir, resume = TRUE, progress = FALSE, verbose = FALSE
   )
-  expect_identical(NCVROC:::.ncvroc_checkpoint_test_seams$native_folds_executed, 1L)
-  expect_identical(res_resumed$settings$checkpoint_provenance$reused_folds, c("Rep1_Fold1", "Rep1_Fold3"))
-  expect_identical(res_resumed$settings$checkpoint_provenance$computed_folds, "Rep1_Fold2")
+  expect_identical(NCVROC:::.ncvroc_checkpoint_test_seams$native_folds_executed, 2L)
+  expect_identical(res_resumed$settings$checkpoint_provenance$reused_folds, "Rep1_Fold1")
+  expect_identical(res_resumed$settings$checkpoint_provenance$computed_folds, c("Rep1_Fold2", "Rep1_Fold3"))
 
   fresh_2t <- nested_sum_roc(
     td$data, td$outcome, td$items, max_items = 2,

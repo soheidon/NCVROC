@@ -48,6 +48,16 @@
   .ncvroc_checkpoint_test_seams$native_call_count              <- 0L
   .ncvroc_checkpoint_test_seams$native_folds_executed          <- 0L
   .ncvroc_checkpoint_test_seams$r_folds_executed               <- 0L
+  .ncvroc_checkpoint_test_seams$batch_size_override            <- NULL
+  .ncvroc_checkpoint_test_seams$fail_during_batch_write        <- NULL
+  .ncvroc_checkpoint_test_seams$fail_during_model_size_write   <- NULL
+  .ncvroc_checkpoint_test_seams$fail_before_outer_promotion    <- NULL
+  .ncvroc_checkpoint_test_seams$r_batches_executed             <- 0L
+  .ncvroc_checkpoint_test_seams$native_batches_executed        <- 0L
+  .ncvroc_checkpoint_test_seams$model_sizes_executed           <- 0L
+  .ncvroc_checkpoint_test_seams$simulate_interrupt_at          <- NULL
+  .ncvroc_checkpoint_test_seams$interrupt_waves_completed      <- 0L
+  .ncvroc_checkpoint_test_seams$r_interrupt_hook               <- NULL
   invisible(NULL)
 }
 .reset_ncvroc_checkpoint_test_seams()
@@ -1372,6 +1382,179 @@
   )
 }
 
+# ---- User cancellation and cooperative interrupt helpers ----
+
+.cp_resolve_cancel_dir <- function(checkpoint_dir, create_if_missing = FALSE) {
+  if (!is.character(checkpoint_dir) || length(checkpoint_dir) != 1L ||
+      is.na(checkpoint_dir) || !nzchar(trimws(checkpoint_dir))) {
+    stop("`checkpoint_dir` must be a single non-empty character path.", call. = FALSE)
+  }
+  if (!dir.exists(checkpoint_dir)) {
+    if (file.exists(checkpoint_dir)) {
+      stop("`checkpoint_dir` exists as a non-directory file: ", checkpoint_dir, call. = FALSE)
+    }
+    if (!isTRUE(create_if_missing)) {
+      return(NULL)
+    }
+    ok <- dir.create(checkpoint_dir, recursive = TRUE, showWarnings = FALSE)
+    if (!ok && !dir.exists(checkpoint_dir)) {
+      stop("Failed to create `checkpoint_dir`: ", checkpoint_dir, call. = FALSE)
+    }
+  }
+  root_canonical <- normalizePath(checkpoint_dir, winslash = "/", mustWork = TRUE)
+  if (.cp_is_symlink_or_reparse(root_canonical)) {
+    stop("Canonical `checkpoint_dir` must not be a symbolic link or reparse point: ", root_canonical, call. = FALSE)
+  }
+  root_canonical
+}
+
+#' Request Safe Cancellation of a Checkpointed NCVROC Run
+#'
+#' Creates a `.cancel` marker file inside `checkpoint_dir`. A running
+#' checkpointed `ncvroc()` or `nested_sum_roc()` execution polls this marker at
+#' safe unit/wave boundaries, persists all already-completed units, discards
+#' any in-flight work, releases the checkpoint lock, and exits cleanly with an
+#' `ncvroc_interrupted` condition so the run can be resumed later with
+#' `resume = TRUE`.
+#'
+#' @param checkpoint_dir Character(1). Path to the checkpoint directory.
+#'
+#' @return Invisibly returns the normalized path to the `.cancel` marker file.
+#' @export
+ncvroc_request_cancel <- function(checkpoint_dir) {
+  root_canonical <- .cp_resolve_cancel_dir(checkpoint_dir, create_if_missing = TRUE)
+  cancel_path <- file.path(root_canonical, ".cancel")
+  .cp_assert_contained(root_canonical, cancel_path, must_exist = FALSE)
+  if (.cp_is_symlink_or_reparse(cancel_path)) {
+    stop("Cancel marker path must not be a symbolic link or reparse point: ", cancel_path, call. = FALSE)
+  }
+  writeLines(
+    c(
+      sprintf("requested_at=%s", format(Sys.time(), "%Y-%m-%dT%H:%M:%SZ", tz = "UTC")),
+      sprintf("requested_by_pid=%d", Sys.getpid())
+    ),
+    con = cancel_path
+  )
+  invisible(cancel_path)
+}
+
+#' Clear a Pending Cancellation Marker in a Checkpoint Directory
+#'
+#' Removes any `.cancel` marker file inside `checkpoint_dir` if present.
+#'
+#' @param checkpoint_dir Character(1). Path to the checkpoint directory.
+#'
+#' @return Invisibly returns `TRUE` if a `.cancel` marker existed and was
+#'   removed, or `FALSE` if none was present.
+#' @export
+ncvroc_clear_cancel <- function(checkpoint_dir) {
+  root_canonical <- .cp_resolve_cancel_dir(checkpoint_dir, create_if_missing = FALSE)
+  if (is.null(root_canonical)) {
+    return(invisible(FALSE))
+  }
+  cancel_path <- file.path(root_canonical, ".cancel")
+  .cp_assert_contained(root_canonical, cancel_path, must_exist = FALSE)
+  if (file.exists(cancel_path)) {
+    unlink(cancel_path, force = TRUE)
+    return(invisible(TRUE))
+  }
+  invisible(FALSE)
+}
+
+.cp_cancel_file_path <- function(paths) {
+  file.path(paths$root_canonical, ".cancel")
+}
+
+.cp_clear_cancel_file <- function(paths) {
+  cancel_path <- .cp_cancel_file_path(paths)
+  if (file.exists(cancel_path)) {
+    unlink(cancel_path, force = TRUE)
+  }
+  invisible(NULL)
+}
+
+.cp_poll_interrupt <- function(paths, stage_label = NULL, unit_index = NULL) {
+  sim_at <- .ncvroc_checkpoint_test_seams$simulate_interrupt_at
+  if (!is.null(sim_at)) {
+    matched <- FALSE
+    if (is.numeric(sim_at) && !is.null(unit_index) &&
+        identical(as.integer(sim_at), as.integer(unit_index))) {
+      matched <- TRUE
+    } else if (is.character(sim_at) && !is.null(stage_label) &&
+               identical(as.character(sim_at), as.character(stage_label))) {
+      matched <- TRUE
+    }
+    if (matched) {
+      return("simulated_interrupt")
+    }
+  }
+
+  cancel_path <- .cp_cancel_file_path(paths)
+  if (file.exists(cancel_path)) {
+    return("cancel_file")
+  }
+
+  hook <- .ncvroc_checkpoint_test_seams$r_interrupt_hook
+  if (is.function(hook)) {
+    res <- tryCatch(
+      {
+        hook(stage_label = stage_label, unit_index = unit_index)
+        NULL
+      },
+      interrupt = function(e) "r_user_interrupt"
+    )
+    if (!is.null(res)) {
+      return(res)
+    }
+  }
+
+  tryCatch(
+    {
+      check_user_interrupt_cpp()
+      NULL
+    },
+    interrupt = function(e) "r_user_interrupt"
+  )
+}
+
+.cp_signal_interrupted <- function(paths,
+                                  reason,
+                                  completed_units = 0L,
+                                  total_units = 0L,
+                                  unit_label = "outer fold(s)",
+                                  granularity = "outer_fold") {
+  .cp_clear_cancel_file(paths)
+  msg <- sprintf(
+    paste0(
+      "NCVROC checkpointed execution INTERRUPTED (%s). ",
+      "Saved %d/%d COMPLETE %s under checkpoint_dir = \"%s\" ",
+      "(granularity = \"%s\"); any in-flight work was discarded without partial persistence. ",
+      "Re-run the same call with `resume = TRUE` and `checkpoint_dir = \"%s\"` to resume."
+    ),
+    as.character(reason),
+    as.integer(completed_units),
+    as.integer(total_units),
+    as.character(unit_label),
+    paths$root_canonical,
+    as.character(granularity),
+    paths$root_canonical
+  )
+  cond <- structure(
+    list(
+      message         = msg,
+      status          = "INTERRUPTED",
+      reason          = as.character(reason),
+      checkpoint_dir  = paths$root_canonical,
+      granularity     = as.character(granularity),
+      completed_units = as.integer(completed_units),
+      total_units     = as.integer(total_units),
+      unit_label      = as.character(unit_label)
+    ),
+    class = c("ncvroc_interrupted", "error", "condition")
+  )
+  stop(cond)
+}
+
 # ---- Scope B checkpointed execution driver ----
 
 .run_native_outer_folds_checkpointed <- function(x_mat,
@@ -1440,8 +1623,25 @@
     if (as.integer(num_threads) == 1L) {
       # Serial execution: run and persist one fold at a time so each completed fold
       # is durably saved before the next fold begins.
-      for (idx in prep$compute_idx) {
+      for (wave_i in seq_along(prep$compute_idx)) {
+        idx <- prep$compute_idx[[wave_i]]
         spec <- prep$fold_specs[[idx]]
+        intr_reason <- .cp_poll_interrupt(
+          prep$paths,
+          stage_label = spec$fold_name,
+          unit_index = wave_i
+        )
+        if (!is.null(intr_reason)) {
+          n_saved <- sum(!vapply(prep$final_canon, is.null, logical(1L)))
+          .cp_signal_interrupted(
+            paths           = prep$paths,
+            reason          = intr_reason,
+            completed_units = n_saved,
+            total_units     = prep$n_folds,
+            unit_label      = "outer fold(s)",
+            granularity     = "outer_fold"
+          )
+        }
         if (!is.null(.ncvroc_checkpoint_test_seams$fail_during_compute_fold) &&
             identical(.ncvroc_checkpoint_test_seams$fail_during_compute_fold, spec$fold_name)) {
           stop("Simulated failure during native computation of ", spec$fold_name, call. = FALSE)
@@ -1492,78 +1692,110 @@
         )
         prep$final_canon[[idx]] <- canon_res
         prep$fold_producers[[idx]] <- "scope_b_native_outer_fold"
+        .ncvroc_checkpoint_test_seams$interrupt_waves_completed <-
+          as.integer(.ncvroc_checkpoint_test_seams$interrupt_waves_completed) + 1L
       }
     } else {
-      # Parallel TBB execution: receive per-fold success/failure records without
-      # throwing across worker boundaries; persist every completed fold on the main
-      # R control thread before reporting any deterministic failure.
-      specs_to_run <- prep$fold_specs[prep$compute_idx]
-      .ncvroc_checkpoint_test_seams$native_call_count <- as.integer(.ncvroc_checkpoint_test_seams$native_call_count) + 1L
-      .ncvroc_checkpoint_test_seams$native_folds_executed <- as.integer(.ncvroc_checkpoint_test_seams$native_folds_executed) + length(specs_to_run)
-      res_list <- evaluate_outer_folds_native_cpp(
-        x                   = x_mat,
-        y                   = y_vec,
-        fold_specs          = specs_to_run,
-        min_items           = as.integer(min_items),
-        max_items           = as.integer(max_items),
-        cutoff_method       = cutoff_method,
-        preselect_by        = preselect_by,
-        selection_criterion = selection_criterion,
-        preselect_top_n     = as.integer(preselect_top_n),
-        prefer_fewer_items  = TRUE,
-        num_threads         = as.integer(num_threads),
-        schema_version      = as.integer(schema_version),
-        throw_on_error      = FALSE
-      )
+      # Bounded-wave parallel TBB execution: dispatch at most `num_threads` folds per
+      # .Call(), persist every completed fold on the R main control thread, and poll
+      # for user interrupt / cancel marker between waves.
+      wave_size <- max(1L, as.integer(num_threads))
+      n_compute <- length(prep$compute_idx)
+      wave_starts <- seq.int(1L, n_compute, by = wave_size)
 
-      first_failure <- NULL
-      for (k in seq_along(prep$compute_idx)) {
-        idx <- prep$compute_idx[[k]]
-        spec <- prep$fold_specs[[idx]]
-        nat_res <- res_list[[k]]
-        if (!identical(as.integer(nat_res$repeat_id), as.integer(spec$repeat_id)) ||
-            !identical(as.integer(nat_res$outer_fold_id), as.integer(spec$outer_fold_id))) {
-          stop("Native outer fold result order mismatch at ", spec$fold_name, call. = FALSE)
-        }
-        if (!is.null(.ncvroc_checkpoint_test_seams$fail_during_compute_fold) &&
-            identical(.ncvroc_checkpoint_test_seams$fail_during_compute_fold, spec$fold_name)) {
-          nat_res$completed <- FALSE
-          nat_res$status_code <- 99L
-          nat_res$status_message <- paste0("Simulated worker failure at ", spec$fold_name)
-        }
-        if (isTRUE(nat_res$completed) && identical(as.integer(nat_res$status_code), 0L)) {
-          canon_res <- .native_fold_to_canonical(nat_res, spec, items, y_vec = y_vec)
-          .cp_publish_fold(
-            paths              = prep$paths,
-            identity_record    = prep$identity_record,
-            fold_spec          = spec,
-            split_hash         = split_hashes[[idx]],
-            canon_payload      = canon_res,
-            items              = items,
-            producer_backend   = "scope_b_native_outer_fold",
-            backend_provenance = as.character(nat_res$backend_provenance %||% "scope_b_native_tbb"),
-            allow_replace      = allow_rep,
-            y_vec              = y_vec
-          )
-          prep$final_canon[[idx]] <- canon_res
-          prep$fold_producers[[idx]] <- "scope_b_native_outer_fold"
-        } else if (is.null(first_failure)) {
-          first_failure <- nat_res
-        }
-      }
+      for (w_idx in seq_along(wave_starts)) {
+        w_start <- wave_starts[[w_idx]]
+        w_end <- min(n_compute, w_start + wave_size - 1L)
+        wave_compute_idx <- prep$compute_idx[w_start:w_end]
 
-      if (!is.null(first_failure)) {
-        stop(
-          sprintf(
-            "Native outer fold failed at %s (repeat_id=%d, outer_fold_id=%d, status=%d): %s",
-            as.character(first_failure$outer_fold),
-            as.integer(first_failure$repeat_id),
-            as.integer(first_failure$outer_fold_id),
-            as.integer(first_failure$status_code),
-            as.character(first_failure$status_message)
-          ),
-          call. = FALSE
+        intr_reason <- .cp_poll_interrupt(
+          prep$paths,
+          stage_label = sprintf("wave_%d", w_idx),
+          unit_index = w_idx
         )
+        if (!is.null(intr_reason)) {
+          n_saved <- sum(!vapply(prep$final_canon, is.null, logical(1L)))
+          .cp_signal_interrupted(
+            paths           = prep$paths,
+            reason          = intr_reason,
+            completed_units = n_saved,
+            total_units     = prep$n_folds,
+            unit_label      = "outer fold(s)",
+            granularity     = "outer_fold"
+          )
+        }
+
+        specs_to_run <- prep$fold_specs[wave_compute_idx]
+        .ncvroc_checkpoint_test_seams$native_call_count <- as.integer(.ncvroc_checkpoint_test_seams$native_call_count) + 1L
+        .ncvroc_checkpoint_test_seams$native_folds_executed <- as.integer(.ncvroc_checkpoint_test_seams$native_folds_executed) + length(specs_to_run)
+        res_list <- evaluate_outer_folds_native_cpp(
+          x                   = x_mat,
+          y                   = y_vec,
+          fold_specs          = specs_to_run,
+          min_items           = as.integer(min_items),
+          max_items           = as.integer(max_items),
+          cutoff_method       = cutoff_method,
+          preselect_by        = preselect_by,
+          selection_criterion = selection_criterion,
+          preselect_top_n     = as.integer(preselect_top_n),
+          prefer_fewer_items  = TRUE,
+          num_threads         = as.integer(num_threads),
+          schema_version      = as.integer(schema_version),
+          throw_on_error      = FALSE
+        )
+
+        first_failure <- NULL
+        for (k in seq_along(wave_compute_idx)) {
+          idx <- wave_compute_idx[[k]]
+          spec <- prep$fold_specs[[idx]]
+          nat_res <- res_list[[k]]
+          if (!identical(as.integer(nat_res$repeat_id), as.integer(spec$repeat_id)) ||
+              !identical(as.integer(nat_res$outer_fold_id), as.integer(spec$outer_fold_id))) {
+            stop("Native outer fold result order mismatch at ", spec$fold_name, call. = FALSE)
+          }
+          if (!is.null(.ncvroc_checkpoint_test_seams$fail_during_compute_fold) &&
+              identical(.ncvroc_checkpoint_test_seams$fail_during_compute_fold, spec$fold_name)) {
+            nat_res$completed <- FALSE
+            nat_res$status_code <- 99L
+            nat_res$status_message <- paste0("Simulated worker failure at ", spec$fold_name)
+          }
+          if (isTRUE(nat_res$completed) && identical(as.integer(nat_res$status_code), 0L)) {
+            canon_res <- .native_fold_to_canonical(nat_res, spec, items, y_vec = y_vec)
+            .cp_publish_fold(
+              paths              = prep$paths,
+              identity_record    = prep$identity_record,
+              fold_spec          = spec,
+              split_hash         = split_hashes[[idx]],
+              canon_payload      = canon_res,
+              items              = items,
+              producer_backend   = "scope_b_native_outer_fold",
+              backend_provenance = as.character(nat_res$backend_provenance %||% "scope_b_native_tbb"),
+              allow_replace      = allow_rep,
+              y_vec              = y_vec
+            )
+            prep$final_canon[[idx]] <- canon_res
+            prep$fold_producers[[idx]] <- "scope_b_native_outer_fold"
+          } else if (is.null(first_failure)) {
+            first_failure <- nat_res
+          }
+        }
+
+        .ncvroc_checkpoint_test_seams$interrupt_waves_completed <-
+          as.integer(.ncvroc_checkpoint_test_seams$interrupt_waves_completed) + 1L
+
+        if (!is.null(first_failure)) {
+          stop(
+            sprintf(
+              "Native outer fold failed at %s (repeat_id=%d, outer_fold_id=%d, status=%d): %s",
+              as.character(first_failure$outer_fold),
+              as.integer(first_failure$repeat_id),
+              as.integer(first_failure$outer_fold_id),
+              as.integer(first_failure$status_code),
+              as.character(first_failure$status_message)
+            ),
+            call. = FALSE
+          )
+        }
       }
     }
 
@@ -1654,8 +1886,25 @@
     total_combos <- .count_total_combos(length(items), min_items, max_items)
     n_total <- length(y_vec)
 
-    for (idx in prep$compute_idx) {
+    for (wave_i in seq_along(prep$compute_idx)) {
+      idx <- prep$compute_idx[[wave_i]]
       spec <- prep$fold_specs[[idx]]
+      intr_reason <- .cp_poll_interrupt(
+        prep$paths,
+        stage_label = spec$fold_name,
+        unit_index = wave_i
+      )
+      if (!is.null(intr_reason)) {
+        n_saved <- sum(!vapply(prep$final_canon, is.null, logical(1L)))
+        .cp_signal_interrupted(
+          paths           = prep$paths,
+          reason          = intr_reason,
+          completed_units = n_saved,
+          total_units     = prep$n_folds,
+          unit_label      = "outer fold(s)",
+          granularity     = "outer_fold"
+        )
+      }
       if (!is.null(.ncvroc_checkpoint_test_seams$fail_during_compute_fold) &&
           identical(.ncvroc_checkpoint_test_seams$fail_during_compute_fold, spec$fold_name)) {
         stop("Simulated failure during R serial computation of ", spec$fold_name, call. = FALSE)
@@ -1681,36 +1930,54 @@
       )
       cb_i <- if (progress) function(n_done) prg_i$tick(n_done) else NULL
 
-      r_fold <- .evaluate_single_outer_fold(
-        i                       = orig_i,
-        outer_folds             = outer_folds,
-        full_data               = full_data,
-        y                       = y_vec,
-        n_total                 = n_total,
-        items                   = items,
-        outcome_col             = outcome_col,
-        min_items               = min_items,
-        max_items               = max_items,
-        positive_label          = positive_label,
-        negative_label          = negative_label,
-        cutoff_method           = cutoff_method,
-        preselect_top_n         = preselect_top_n,
-        preselect_by            = preselect_by,
-        selection_criterion     = selection_criterion,
-        inner_k                 = inner_k,
-        inner_repeats           = inner_repeats,
-        use_streaming_ncv       = use_streaming_ncv,
-        engine                  = engine,
-        seed                    = seed,
-        progress                = FALSE,
-        verbose                 = verbose,
-        cl_chunk                = NULL,
-        parallel_inner          = "none",
-        n_workers_inner         = 1L,
-        progress_callback       = cb_i,
-        precomputed_inner_folds = precomp_inner,
-        return_canonical_diag   = TRUE
+      interrupted_mid_fold <- FALSE
+      r_fold <- tryCatch(
+        .evaluate_single_outer_fold(
+          i                       = orig_i,
+          outer_folds             = outer_folds,
+          full_data               = full_data,
+          y                       = y_vec,
+          n_total                 = n_total,
+          items                   = items,
+          outcome_col             = outcome_col,
+          min_items               = min_items,
+          max_items               = max_items,
+          positive_label          = positive_label,
+          negative_label          = negative_label,
+          cutoff_method           = cutoff_method,
+          preselect_top_n         = preselect_top_n,
+          preselect_by            = preselect_by,
+          selection_criterion     = selection_criterion,
+          inner_k                 = inner_k,
+          inner_repeats           = inner_repeats,
+          use_streaming_ncv       = use_streaming_ncv,
+          engine                  = engine,
+          seed                    = seed,
+          progress                = FALSE,
+          verbose                 = verbose,
+          cl_chunk                = NULL,
+          parallel_inner          = "none",
+          n_workers_inner         = 1L,
+          progress_callback       = cb_i,
+          precomputed_inner_folds = precomp_inner,
+          return_canonical_diag   = TRUE
+        ),
+        interrupt = function(e) {
+          interrupted_mid_fold <<- TRUE
+          NULL
+        }
       )
+      if (isTRUE(interrupted_mid_fold)) {
+        n_saved <- sum(!vapply(prep$final_canon, is.null, logical(1L)))
+        .cp_signal_interrupted(
+          paths           = prep$paths,
+          reason          = "r_user_interrupt",
+          completed_units = n_saved,
+          total_units     = prep$n_folds,
+          unit_label      = "outer fold(s)",
+          granularity     = "outer_fold"
+        )
+      }
       prg_i$finish()
 
       canon_res <- .r_fold_to_canonical(r_fold, spec, items, y_vec = y_vec)
@@ -1728,6 +1995,8 @@
       )
       prep$final_canon[[idx]] <- canon_res
       prep$fold_producers[[idx]] <- "r_serial"
+      .ncvroc_checkpoint_test_seams$interrupt_waves_completed <-
+        as.integer(.ncvroc_checkpoint_test_seams$interrupt_waves_completed) + 1L
     }
 
     if (isTRUE(progress) || isTRUE(verbose)) {

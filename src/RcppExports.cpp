@@ -213,6 +213,40 @@ BEGIN_RCPP
     return rcpp_result_gen;
 END_RCPP
 }
+// native_eval_candidate_batches_cpp
+List native_eval_candidate_batches_cpp(NumericMatrix x, IntegerVector y, List train_indices_list, IntegerVector task_fold_idx, IntegerVector task_repeat_id, IntegerVector task_outer_fold_id, IntegerVector task_model_size, NumericVector task_local_rank_start_0, NumericVector task_local_rank_end_0, NumericVector task_level_start_0, std::string cutoff_method, std::string rank_by, int preselect_top_n, bool prefer_fewer_items, int num_threads);
+RcppExport SEXP _NCVROC_native_eval_candidate_batches_cpp(SEXP xSEXP, SEXP ySEXP, SEXP train_indices_listSEXP, SEXP task_fold_idxSEXP, SEXP task_repeat_idSEXP, SEXP task_outer_fold_idSEXP, SEXP task_model_sizeSEXP, SEXP task_local_rank_start_0SEXP, SEXP task_local_rank_end_0SEXP, SEXP task_level_start_0SEXP, SEXP cutoff_methodSEXP, SEXP rank_bySEXP, SEXP preselect_top_nSEXP, SEXP prefer_fewer_itemsSEXP, SEXP num_threadsSEXP) {
+BEGIN_RCPP
+    Rcpp::RObject rcpp_result_gen;
+    Rcpp::RNGScope rcpp_rngScope_gen;
+    Rcpp::traits::input_parameter< NumericMatrix >::type x(xSEXP);
+    Rcpp::traits::input_parameter< IntegerVector >::type y(ySEXP);
+    Rcpp::traits::input_parameter< List >::type train_indices_list(train_indices_listSEXP);
+    Rcpp::traits::input_parameter< IntegerVector >::type task_fold_idx(task_fold_idxSEXP);
+    Rcpp::traits::input_parameter< IntegerVector >::type task_repeat_id(task_repeat_idSEXP);
+    Rcpp::traits::input_parameter< IntegerVector >::type task_outer_fold_id(task_outer_fold_idSEXP);
+    Rcpp::traits::input_parameter< IntegerVector >::type task_model_size(task_model_sizeSEXP);
+    Rcpp::traits::input_parameter< NumericVector >::type task_local_rank_start_0(task_local_rank_start_0SEXP);
+    Rcpp::traits::input_parameter< NumericVector >::type task_local_rank_end_0(task_local_rank_end_0SEXP);
+    Rcpp::traits::input_parameter< NumericVector >::type task_level_start_0(task_level_start_0SEXP);
+    Rcpp::traits::input_parameter< std::string >::type cutoff_method(cutoff_methodSEXP);
+    Rcpp::traits::input_parameter< std::string >::type rank_by(rank_bySEXP);
+    Rcpp::traits::input_parameter< int >::type preselect_top_n(preselect_top_nSEXP);
+    Rcpp::traits::input_parameter< bool >::type prefer_fewer_items(prefer_fewer_itemsSEXP);
+    Rcpp::traits::input_parameter< int >::type num_threads(num_threadsSEXP);
+    rcpp_result_gen = Rcpp::wrap(native_eval_candidate_batches_cpp(x, y, train_indices_list, task_fold_idx, task_repeat_id, task_outer_fold_id, task_model_size, task_local_rank_start_0, task_local_rank_end_0, task_level_start_0, cutoff_method, rank_by, preselect_top_n, prefer_fewer_items, num_threads));
+    return rcpp_result_gen;
+END_RCPP
+}
+// check_user_interrupt_cpp
+void check_user_interrupt_cpp();
+RcppExport SEXP _NCVROC_check_user_interrupt_cpp() {
+BEGIN_RCPP
+    Rcpp::RNGScope rcpp_rngScope_gen;
+    check_user_interrupt_cpp();
+    return R_NilValue;
+END_RCPP
+}
 
 static const R_CallMethodDef CallEntries[] = {
     {"_NCVROC_evaluate_combos_cpp", (DL_FUNC) &_NCVROC_evaluate_combos_cpp, 6},
@@ -226,6 +260,8 @@ static const R_CallMethodDef CallEntries[] = {
     {"_NCVROC_evaluate_candidate_stability_bootstrap_cpp", (DL_FUNC) &_NCVROC_evaluate_candidate_stability_bootstrap_cpp, 9},
     {"_NCVROC_evaluate_outer_folds_native_cpp", (DL_FUNC) &_NCVROC_evaluate_outer_folds_native_cpp, 13},
     {"_NCVROC_native_outer_fold_result_roundtrip_cpp", (DL_FUNC) &_NCVROC_native_outer_fold_result_roundtrip_cpp, 1},
+    {"_NCVROC_native_eval_candidate_batches_cpp", (DL_FUNC) &_NCVROC_native_eval_candidate_batches_cpp, 15},
+    {"_NCVROC_check_user_interrupt_cpp", (DL_FUNC) &_NCVROC_check_user_interrupt_cpp, 0},
     {NULL, NULL, 0}
 };
 

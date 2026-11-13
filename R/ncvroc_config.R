@@ -95,8 +95,11 @@ ncvroc_config <- function(outcome,
   parallel_mode <- .resolve_parallel_mode(
     parallel,
     context = "nested",
-    allowed = c("none", "outer", "chunks", "threads", "hybrid")
+    allowed = c("none", "outer", "chunks", "threads", "hybrid", "native_outer_fold")
   )
+  if (identical(parallel_mode, "native_outer_fold") && !identical(engine, "Rcpp")) {
+    stop("parallel = 'native_outer_fold' requires engine = 'Rcpp'.", call. = FALSE)
+  }
 
   if (!is.null(n_workers)) {
     if (!is.numeric(n_workers) || length(n_workers) != 1L ||

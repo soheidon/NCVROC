@@ -649,6 +649,17 @@
 #' @param item_count Concise model-size specification: `"==4"` (exactly 4
 #'   items), `"<=4"` (up to 4 items), or `"2:4"` (2 through 4 items).
 #'   Cannot be combined with `min_items` or `max_items`. Default NULL.
+#' @param checkpoint_dir Optional character(1) path to a checkpoint directory
+#'   for outer-CV checkpoint/resume (default `NULL`, disabled). Forwarded to
+#'   `run_ncvroc()` / `nested_sum_roc()`. Note: `final_search` is NOT
+#'   checkpointed or resumable.
+#' @param checkpoint_granularity Checkpoint unit granularity when
+#'   `checkpoint_dir` is set: `"outer_fold"` (default), `"model_size"`, or
+#'   `"candidate_batch"`.
+#' @param resume Logical(1). Reuse verified `COMPLETE` units in
+#'   `checkpoint_dir` when `TRUE` (default).
+#' @param force_recompute Logical(1). Recompute existing checkpoint units when
+#'   `TRUE` (default `FALSE`).
 #' @details
 #' When `final_search = TRUE` and `ci = TRUE`, confidence intervals are
 #' attached to `final_model` and `final_candidates`:
@@ -741,7 +752,11 @@ ncvroc <- function(data,
                    parallel = FALSE,
                    n_workers = NULL,
                    threads_per_worker = 1L,
-                   item_count = NULL) {
+                   item_count = NULL,
+                   checkpoint_dir = NULL,
+                   checkpoint_granularity = "outer_fold",
+                   resume = TRUE,
+                   force_recompute = FALSE) {
 
   # ---- 1. Capture & resolve ----
   caller_env   <- parent.frame()
@@ -765,7 +780,7 @@ ncvroc <- function(data,
   parallel_mode <- .resolve_parallel_mode(
     parallel,
     context = "nested",
-    allowed = c("none", "outer", "chunks", "threads", "hybrid")
+    allowed = c("none", "outer", "chunks", "threads", "hybrid", "native_outer_fold")
   )
 
   if (!is.null(n_workers)) {
@@ -899,13 +914,17 @@ ncvroc <- function(data,
 
   # ---- 4. Nested CV ----
   nested_result <- run_ncvroc(
-    data     = analysis_dat,
-    items    = item_names,
-    config   = cfg,
-    seed     = seed,
-    progress = progress,
-    verbose  = verbose,
-    return   = return
+    data                   = analysis_dat,
+    items                  = item_names,
+    config                 = cfg,
+    seed                   = seed,
+    progress               = progress,
+    verbose                = verbose,
+    return                 = return,
+    checkpoint_dir         = checkpoint_dir,
+    checkpoint_granularity = checkpoint_granularity,
+    resume                 = resume,
+    force_recompute        = force_recompute
   )
 
   # ---- 5. Optional final exhaustive search ----
@@ -924,6 +943,7 @@ ncvroc <- function(data,
       pid <- Sys.getpid()
       building_dir <- file.path(cache_dir, paste0(cache_key, ".building-", pid))
       dir.create(building_dir, recursive = TRUE, showWarnings = FALSE)
+      on.exit(unlink(building_dir, recursive = TRUE, force = TRUE), add = TRUE)
     }
 
     final_parallel <- if (parallel_mode == "hybrid") {
@@ -935,29 +955,52 @@ ncvroc <- function(data,
     }
     final_n_workers <- if (parallel_mode == "hybrid") threads_per_worker else n_workers
 
-    eval_result <- .evaluate_final_exhaustive(
-      analysis_dat       = analysis_dat,
-      outcome_name       = outcome_name,
-      item_names         = item_names,
-      min_items          = min_items,
-      max_items          = max_items,
-      positive_label     = positive_label,
-      negative_label     = negative_label,
-      cutoff_method      = cutoff_method,
-      final_rank_by      = final_rank_by,
-      engine             = engine,
-      progress           = progress,
-      storage_mode       = results_storage,
-      results_dir        = results_dir,
-      results_name       = results_name,
-      chunk_size         = chunk_size,
-      cache              = cache,
-      cache_dir          = cache_dir,
-      building_dir       = building_dir,
-      resolved_item_count = resolved_item_count,
-      function_name       = "ncvroc",
-      parallel            = final_parallel,
-      n_workers           = final_n_workers
+    eval_result <- tryCatch(
+      .evaluate_final_exhaustive(
+        analysis_dat       = analysis_dat,
+        outcome_name       = outcome_name,
+        item_names         = item_names,
+        min_items          = min_items,
+        max_items          = max_items,
+        positive_label     = positive_label,
+        negative_label     = negative_label,
+        cutoff_method      = cutoff_method,
+        final_rank_by      = final_rank_by,
+        engine             = engine,
+        progress           = progress,
+        storage_mode       = results_storage,
+        results_dir        = results_dir,
+        results_name       = results_name,
+        chunk_size         = chunk_size,
+        cache              = cache,
+        cache_dir          = cache_dir,
+        building_dir       = building_dir,
+        resolved_item_count = resolved_item_count,
+        function_name       = "ncvroc",
+        parallel            = final_parallel,
+        n_workers           = final_n_workers
+      ),
+      interrupt = function(e) {
+        cp_note <- if (!is.null(checkpoint_dir)) {
+          sprintf(
+            " Outer CV checkpoints under checkpoint_dir = \"%s\" remain intact and will be reused with resume = TRUE.",
+            checkpoint_dir
+          )
+        } else {
+          ""
+        }
+        cond <- structure(
+          list(
+            message        = paste0("NCVROC final_search was interrupted. Note: final_search is NOT checkpointed or resumable.", cp_note),
+            status         = "INTERRUPTED",
+            reason         = "r_user_interrupt",
+            stage          = "final_search",
+            checkpoint_dir = checkpoint_dir
+          ),
+          class = c("ncvroc_final_search_interrupted", "ncvroc_interrupted", "error", "condition")
+        )
+        stop(cond)
+      }
     )
 
     final_exhaustive_ranked <- eval_result$final_exhaustive_ranked

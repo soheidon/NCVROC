@@ -1,3 +1,21 @@
+# NCVROC 0.29.0 (2026-11-14)
+
+## User-Initiated Safe Interruption and Resume
+
+* Added cooperative safe interruption for checkpointed `ncvroc()`, `run_ncvroc()`, and `nested_sum_roc()` runs in both R serial (`parallel = "none"`) and Scope B Native (`parallel = "native_outer_fold"`) across `"outer_fold"`, `"model_size"`, and `"candidate_batch"` granularities:
+  * Standard R interrupts (`Stop` / `Esc` / `Ctrl+C`) are polled safely on the main R control thread (`check_user_interrupt_cpp()`, never inside worker threads) and caught cleanly at unit/wave boundaries.
+  * Added `ncvroc_request_cancel(checkpoint_dir)` and `ncvroc_clear_cancel(checkpoint_dir)` to manage an explicit `<checkpoint_dir>/.cancel` marker file for programmatic or external-session cancellation.
+  * Scope B Native parallel execution now dispatches bounded waves of at most `num_threads` units per `.Call()`, persisting completed units on the R main thread and polling for interrupts between waves.
+  * On interruption, remaining dispatches stop, already-completed units are persisted, any in-flight work is discarded without partial persistence, the checkpoint lock and `.cancel` marker are released/cleared, and a typed `ncvroc_interrupted` condition (`status = "INTERRUPTED"`) is signaled with saved counts and resume instructions.
+* Forwarded `checkpoint_dir`, `checkpoint_granularity`, `resume`, and `force_recompute` cleanly through `ncvroc()` and `run_ncvroc()` to `nested_sum_roc()`, and enabled `parallel = "native_outer_fold"` in `ncvroc()` / `ncvroc_config()` when `engine = "Rcpp"`.
+* Clarified and enforced the `final_search` boundary: `final_search` runs after outer CV and is NOT checkpointed or resumable; interrupting `final_search` cleans up temporary `.building-*` directories via `on.exit()` while preserving outer CV checkpoints.
+
+## Fine-Grained Model-Size and Candidate-Batch Checkpointing
+
+* Added `checkpoint_granularity` (`"outer_fold"` default, `"model_size"`, `"candidate_batch"`) to `nested_sum_roc()`, enabling opt-in recovery of completed model sizes and contiguous candidate batches within incomplete outer folds while preserving `"outer_fold"` as the highest-priority reuse unit.
+* Added deterministic candidate enumeration (`NCVROC_candidate_enum_v1`), bounded top-`preselect_top_n` batch payloads with exact tie-breaking parity, dependency-validated `candidate_batch` -> `model_size` -> `outer_fold` promotion, and R <-> Scope B Native cross-backend portability for all three granularities.
+* Added `native_eval_candidate_batches_cpp()` for pure C++/RcppParallel evaluation of missing batches/model sizes without R API or RNG calls in worker threads. Inner-fold unit persistence remains explicitly deferred.
+
 # NCVROC 0.28.0 (2026-11-13)
 
 ## Backend-Neutral Completed Outer-Fold Checkpointing

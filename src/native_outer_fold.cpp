@@ -1000,3 +1000,331 @@ List native_outer_fold_result_roundtrip_cpp(List r_result) {
   NativeOuterFoldResult decoded = r_list_to_native_outer_fold_result(r_result);
   return native_outer_fold_result_to_r_list(decoded);
 }
+
+struct NativeBatchTask {
+  int fold_slot;
+  int repeat_id;
+  int outer_fold_id;
+  int model_size;
+  double local_rank_start_0;
+  double local_rank_end_0;
+  double level_start_0;
+};
+
+struct NativeBatchResult {
+  int repeat_id;
+  int outer_fold_id;
+  int model_size;
+  double local_rank_start_1;
+  double local_rank_end_1;
+  bool completed;
+  int status_code;
+  std::string status_message;
+  std::vector<CandidateRecord> top_candidates;
+
+  NativeBatchResult()
+    : repeat_id(0),
+      outer_fold_id(0),
+      model_size(0),
+      local_rank_start_1(0.0),
+      local_rank_end_1(0.0),
+      completed(false),
+      status_code(-1) {}
+};
+
+struct PrebuiltFoldTrainData {
+  int n_train;
+  int total_pos;
+  int total_neg;
+  std::vector<double> x_train;
+  std::vector<int> y_train;
+};
+
+struct CandidateBatchWorker : public RcppParallel::Worker {
+  int n_cols;
+  const std::vector<PrebuiltFoldTrainData>& fold_data;
+  const std::vector<NativeBatchTask>& tasks;
+  CutoffMethod cutoff_method;
+  RankMetric rank_metric;
+  bool prefer_fewer_items;
+  int preselect_top_n;
+  std::vector<NativeBatchResult>& results;
+
+  CandidateBatchWorker(
+      int n_cols_,
+      const std::vector<PrebuiltFoldTrainData>& fold_data_,
+      const std::vector<NativeBatchTask>& tasks_,
+      CutoffMethod cm_,
+      RankMetric rm_,
+      bool pfi_,
+      int top_n_,
+      std::vector<NativeBatchResult>& results_)
+    : n_cols(n_cols_),
+      fold_data(fold_data_),
+      tasks(tasks_),
+      cutoff_method(cm_),
+      rank_metric(rm_),
+      prefer_fewer_items(pfi_),
+      preselect_top_n(top_n_),
+      results(results_) {}
+
+  void operator()(std::size_t begin, std::size_t end) {
+    NestedCandidateComparator comp(rank_metric, prefer_fewer_items);
+    for (std::size_t t = begin; t < end; ++t) {
+      const NativeBatchTask& task = tasks[t];
+      NativeBatchResult& res = results[t];
+      res = NativeBatchResult();
+      res.repeat_id = task.repeat_id;
+      res.outer_fold_id = task.outer_fold_id;
+      res.model_size = task.model_size;
+      res.local_rank_start_1 = task.local_rank_start_0 + 1.0;
+      res.local_rank_end_1 = task.local_rank_end_0;
+
+      try {
+        const PrebuiltFoldTrainData& fd = fold_data[task.fold_slot];
+        if (fd.total_pos == 0 || fd.total_neg == 0) {
+          throw std::runtime_error("Outer training fold must contain both positive and negative outcomes.");
+        }
+        std::vector<double> single_level_start(1, task.level_start_0);
+        ThreadLocalBuffer buf(fd.n_train);
+        std::priority_queue<CandidateRecord, std::vector<CandidateRecord>, NestedCandidateComparator> heap(comp);
+
+        double start_g = task.level_start_0 + task.local_rank_start_0;
+        double end_g = task.level_start_0 + task.local_rank_end_0;
+        for (double g_rank = start_g; g_rank < end_g; g_rank += 1.0) {
+          int n_items_val = 0;
+          double auc_val = 0.0, cutoff_val = 0.0, sens_val = 0.0, spec_val = 0.0;
+          double youden_val = 0.0, acc_val = 0.0, ppv_val = 0.0, npv_val = 0.0;
+
+          evaluate_single_candidate(
+            g_rank,
+            fd.x_train.data(),
+            fd.y_train.data(),
+            fd.n_train,
+            n_cols,
+            task.model_size,
+            1,
+            single_level_start,
+            fd.total_pos,
+            fd.total_neg,
+            fd.n_train,
+            cutoff_method,
+            buf,
+            n_items_val,
+            auc_val,
+            cutoff_val,
+            sens_val,
+            spec_val,
+            youden_val,
+            acc_val,
+            ppv_val,
+            npv_val
+          );
+
+          CandidateRecord cand;
+          cand.global_rank = g_rank;
+          cand.n_items = n_items_val;
+          cand.auc = auc_val;
+          cand.cutoff = cutoff_val;
+          cand.sensitivity = sens_val;
+          cand.specificity = spec_val;
+          cand.youden = youden_val;
+          cand.accuracy = acc_val;
+          cand.ppv = ppv_val;
+          cand.npv = npv_val;
+          cand.n_positive = fd.total_pos;
+          cand.n_negative = fd.total_neg;
+
+          if ((int)heap.size() < preselect_top_n) {
+            heap.push(cand);
+          } else if (comp(cand, heap.top())) {
+            heap.pop();
+            heap.push(cand);
+          }
+        }
+
+        res.top_candidates.clear();
+        res.top_candidates.reserve(heap.size());
+        while (!heap.empty()) {
+          res.top_candidates.push_back(heap.top());
+          heap.pop();
+        }
+        std::sort(res.top_candidates.begin(), res.top_candidates.end(), comp);
+        res.completed = true;
+        res.status_code = 0;
+      } catch (const std::exception& e) {
+        res.completed = false;
+        res.status_code = 1;
+        res.status_message = e.what();
+      } catch (...) {
+        res.completed = false;
+        res.status_code = 2;
+        res.status_message = "Unknown C++ exception in candidate batch worker.";
+      }
+    }
+  }
+};
+
+// Pure C++ / RcppParallel deterministic evaluation of missing candidate-batch / model-size tasks
+// [[Rcpp::export]]
+List native_eval_candidate_batches_cpp(
+    NumericMatrix x,
+    IntegerVector y,
+    List train_indices_list,
+    IntegerVector task_fold_idx,
+    IntegerVector task_repeat_id,
+    IntegerVector task_outer_fold_id,
+    IntegerVector task_model_size,
+    NumericVector task_local_rank_start_0,
+    NumericVector task_local_rank_end_0,
+    NumericVector task_level_start_0,
+    std::string cutoff_method,
+    std::string rank_by,
+    int preselect_top_n,
+    bool prefer_fewer_items = true,
+    int num_threads = 1) {
+
+  const int n_full = x.nrow();
+  const int n_cols = x.ncol();
+  if (y.size() != n_full) {
+    stop("Length of y must match nrow(x).");
+  }
+  if (preselect_top_n < 1) {
+    stop("preselect_top_n must be a positive integer.");
+  }
+  if (num_threads < 1) {
+    num_threads = 1;
+  }
+
+  CutoffMethod cm = CUTOFF_YOUDEN;
+  if (cutoff_method == "closest_topleft") cm = CUTOFF_CLOSEST_TOPLEFT;
+  else if (cutoff_method != "youden") stop("Unsupported cutoff_method.");
+
+  RankMetric rm = RANK_AUC;
+  if (rank_by == "youden") rm = RANK_YOUDEN;
+  else if (rank_by == "sensitivity") rm = RANK_SENSITIVITY;
+  else if (rank_by == "specificity") rm = RANK_SPECIFICITY;
+  else if (rank_by == "accuracy") rm = RANK_ACCURACY;
+  else if (rank_by != "auc") stop("Unsupported rank_by metric.");
+
+  const int n_fold_slots = train_indices_list.size();
+  const double* x_ptr = &x[0];
+  const int* y_ptr = &y[0];
+
+  std::vector<PrebuiltFoldTrainData> fold_data(n_fold_slots);
+  for (int f = 0; f < n_fold_slots; ++f) {
+    std::vector<int> tr_idx = validate_and_extract_0based_indices(
+      train_indices_list[f], n_full, "train_indices_list"
+    );
+    PrebuiltFoldTrainData& fd = fold_data[f];
+    fd.n_train = (int)tr_idx.size();
+    fd.x_train.resize((std::size_t)fd.n_train * (std::size_t)n_cols);
+    fd.y_train.resize(fd.n_train);
+    fd.total_pos = 0;
+    fd.total_neg = 0;
+    for (int r = 0; r < fd.n_train; ++r) {
+      int orig = tr_idx[r];
+      int yv = y_ptr[orig];
+      fd.y_train[r] = yv;
+      if (yv == 1) fd.total_pos++; else fd.total_neg++;
+      for (int c = 0; c < n_cols; ++c) {
+        fd.x_train[r + c * fd.n_train] = x_ptr[orig + c * n_full];
+      }
+    }
+  }
+
+  const int n_tasks = task_fold_idx.size();
+  std::vector<NativeBatchTask> tasks(n_tasks);
+  for (int t = 0; t < n_tasks; ++t) {
+    int f_slot = task_fold_idx[t];
+    if (f_slot < 0 || f_slot >= n_fold_slots) {
+      stop("task_fold_idx out of bounds.");
+    }
+    tasks[t].fold_slot = f_slot;
+    tasks[t].repeat_id = task_repeat_id[t];
+    tasks[t].outer_fold_id = task_outer_fold_id[t];
+    tasks[t].model_size = task_model_size[t];
+    tasks[t].local_rank_start_0 = task_local_rank_start_0[t];
+    tasks[t].local_rank_end_0 = task_local_rank_end_0[t];
+    tasks[t].level_start_0 = task_level_start_0[t];
+  }
+
+  std::vector<NativeBatchResult> results(n_tasks);
+  if (n_tasks > 0) {
+    CandidateBatchWorker worker(
+      n_cols, fold_data, tasks, cm, rm, prefer_fewer_items, preselect_top_n, results
+    );
+    if (num_threads == 1 || n_tasks == 1) {
+      worker(0, (std::size_t)n_tasks);
+    } else {
+      RcppParallel::parallelFor(0, (std::size_t)n_tasks, worker, 1, num_threads);
+    }
+  }
+
+  List out(n_tasks);
+  for (int t = 0; t < n_tasks; ++t) {
+    const NativeBatchResult& r = results[t];
+    int m = (int)r.top_candidates.size();
+    NumericVector global_rank(m);
+    NumericVector local_rank(m);
+    IntegerVector n_items_vec(m);
+    NumericVector auc_vec(m);
+    NumericVector cutoff_vec(m);
+    NumericVector sens_vec(m);
+    NumericVector spec_vec(m);
+    NumericVector youden_vec(m);
+    NumericVector acc_vec(m);
+    NumericVector ppv_vec(m);
+    NumericVector npv_vec(m);
+
+    double level_start = tasks[t].level_start_0;
+    for (int i = 0; i < m; ++i) {
+      const CandidateRecord& c = r.top_candidates[i];
+      global_rank[i] = c.global_rank + 1.0; // 1-based canonical rank
+      local_rank[i] = (c.global_rank - level_start) + 1.0; // 1-based canonical local rank
+      n_items_vec[i] = c.n_items;
+      auc_vec[i] = c.auc;
+      cutoff_vec[i] = c.cutoff;
+      sens_vec[i] = c.sensitivity;
+      spec_vec[i] = c.specificity;
+      youden_vec[i] = c.youden;
+      acc_vec[i] = c.accuracy;
+      ppv_vec[i] = c.ppv;
+      npv_vec[i] = c.npv;
+    }
+
+    DataFrame cand_df = DataFrame::create(
+      Named("global_rank") = global_rank,
+      Named("local_rank") = local_rank,
+      Named("n_items") = n_items_vec,
+      Named("auc") = auc_vec,
+      Named("cutoff") = cutoff_vec,
+      Named("sensitivity") = sens_vec,
+      Named("specificity") = spec_vec,
+      Named("youden") = youden_vec,
+      Named("accuracy") = acc_vec,
+      Named("ppv") = ppv_vec,
+      Named("npv") = npv_vec
+    );
+
+    out[t] = List::create(
+      Named("repeat_id") = r.repeat_id,
+      Named("outer_fold_id") = r.outer_fold_id,
+      Named("model_size") = r.model_size,
+      Named("rank_start") = r.local_rank_start_1,
+      Named("rank_end") = r.local_rank_end_1,
+      Named("completed") = r.completed,
+      Named("status_code") = r.status_code,
+      Named("status_message") = r.status_message,
+      Named("candidates") = cand_df
+    );
+  }
+
+  return out;
+}
+
+// Main-thread-only cooperative interrupt check (never called from worker threads)
+// [[Rcpp::export]]
+void check_user_interrupt_cpp() {
+  Rcpp::checkUserInterrupt();
+}

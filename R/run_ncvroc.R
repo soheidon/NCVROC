@@ -16,12 +16,22 @@
 #' @param progress Logical, show progress bars (default TRUE).
 #' @param verbose Logical, print diagnostic messages (default TRUE).
 #' @param return Return mode: `"full"` or `"summary"` (default `"full"`).
+#' @param checkpoint_dir Optional character(1) path to a checkpoint directory
+#'   for outer-CV checkpoint/resume (default `NULL`, disabled).
+#' @param checkpoint_granularity Checkpoint unit granularity when
+#'   `checkpoint_dir` is set: `"outer_fold"` (default), `"model_size"`, or
+#'   `"candidate_batch"`.
+#' @param resume Logical(1). Reuse verified `COMPLETE` units in
+#'   `checkpoint_dir` when `TRUE` (default).
+#' @param force_recompute Logical(1). Recompute existing checkpoint units when
+#'   `TRUE` (default `FALSE`).
 #'
 #' @return An `ncvroc_result` object from `nested_sum_roc()`.
 #' @export
 #'
 #' @examples
 #' cfg <- ncvroc_config("y", items = paste0("q", 1:5), max_items = 2, mode = "quick")
+#' set.seed(1)
 #' d <- data.frame(
 #'   y  = sample(0:1, 100, replace = TRUE),
 #'   q1 = sample(0:2, 100, replace = TRUE),
@@ -39,7 +49,11 @@ run_ncvroc <- function(data,
                        seed = NULL,
                        progress = TRUE,
                        verbose = TRUE,
-                       return = c("full", "summary")) {
+                       return = c("full", "summary"),
+                       checkpoint_dir = NULL,
+                       checkpoint_granularity = "outer_fold",
+                       resume = TRUE,
+                       force_recompute = FALSE) {
   if (!inherits(config, "ncvroc_config")) {
     stop("config must be an object created by ncvroc_config().", call. = FALSE)
   }
@@ -87,8 +101,12 @@ run_ncvroc <- function(data,
     parallel            = config$parallel,
     n_workers           = config$n_workers,
     threads_per_worker  = if (is.null(config$threads_per_worker)) 1L else config$threads_per_worker,
-    progress            = progress,
-    verbose             = verbose,
-    return              = return
+    progress               = progress,
+    verbose                = verbose,
+    return                 = return,
+    checkpoint_dir         = checkpoint_dir,
+    checkpoint_granularity = checkpoint_granularity,
+    resume                 = resume,
+    force_recompute        = force_recompute
   )
 }

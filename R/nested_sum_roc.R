@@ -1215,6 +1215,11 @@
 #'   `resume = TRUE`, replacing prior fold checkpoints only after the new
 #'   result is complete and read-back validated. Directory analysis identity
 #'   must still match the current call.
+#' @param checkpoint_granularity Character scalar specifying checkpointing unit
+#'   granularity when `checkpoint_dir` is provided: `"outer_fold"` (default),
+#'   `"model_size"`, or `"candidate_batch"`. All three granularities are
+#'   supported and portable across `parallel = "none"` and
+#'   `parallel = "native_outer_fold"`.
 #'
 #' @return An object of class `"ncvroc_result"`, a list with elements:
 #'   \item{summary}{data.frame of per-fold test performance.}
@@ -1269,7 +1274,8 @@ nested_sum_roc <- function(data,
                            file_prefix = "NCVROC",
                            checkpoint_dir = NULL,
                            resume = TRUE,
-                           force_recompute = FALSE) {
+                           force_recompute = FALSE,
+                           checkpoint_granularity = "outer_fold") {
 
   # ---- Capture settings ----
   settings <- as.list(environment())
@@ -1326,9 +1332,10 @@ nested_sum_roc <- function(data,
             call. = FALSE)
   }
 
-  checkpoint_dir  <- .cp_validate_checkpoint_dir_arg(checkpoint_dir)
-  resume          <- .cp_validate_scalar_logical(resume, "resume")
-  force_recompute <- .cp_validate_scalar_logical(force_recompute, "force_recompute")
+  checkpoint_dir         <- .cp_validate_checkpoint_dir_arg(checkpoint_dir)
+  checkpoint_granularity <- .cp_validate_granularity(checkpoint_granularity)
+  resume                 <- .cp_validate_scalar_logical(resume, "resume")
+  force_recompute        <- .cp_validate_scalar_logical(force_recompute, "force_recompute")
   if (force_recompute && is.null(checkpoint_dir)) {
     stop("`force_recompute = TRUE` requires a non-NULL `checkpoint_dir`.", call. = FALSE)
   }
@@ -1524,7 +1531,7 @@ nested_sum_roc <- function(data,
         seed                = seed,
         num_threads         = actual_workers
       )
-    } else {
+    } else if (identical(checkpoint_granularity, "outer_fold")) {
       native_out <- .run_native_outer_folds_checkpointed(
         x_mat               = x_mat,
         y_vec               = y,
@@ -1551,6 +1558,39 @@ nested_sum_roc <- function(data,
         force_recompute     = force_recompute,
         progress            = progress,
         verbose             = verbose
+      )
+      settings$checkpoint_provenance <- native_out$provenance
+    } else {
+      native_out <- .run_fine_grained_checkpointed(
+        full_data              = full_data,
+        x_mat                  = x_mat,
+        y_vec                  = y,
+        outer_folds            = outer_folds,
+        items                  = items,
+        outcome_col            = outcome_col,
+        positive_label         = positive_label,
+        negative_label         = negative_label,
+        min_items              = min_items,
+        max_items              = max_items,
+        cutoff_method          = cutoff_method,
+        preselect_by           = preselect_by,
+        selection_criterion    = selection_criterion,
+        preselect_top_n        = preselect_top_n,
+        outer_k                = outer_k,
+        inner_k                = inner_k,
+        outer_repeats          = outer_repeats,
+        inner_repeats          = inner_repeats,
+        stratified             = stratified,
+        engine                 = engine,
+        seed                   = seed,
+        num_threads            = actual_workers,
+        consumer_backend       = "scope_b_native_outer_fold",
+        checkpoint_dir         = checkpoint_dir,
+        checkpoint_granularity = checkpoint_granularity,
+        resume                 = resume,
+        force_recompute        = force_recompute,
+        progress               = progress,
+        verbose                = verbose
       )
       settings$checkpoint_provenance <- native_out$provenance
     }
@@ -1802,35 +1842,69 @@ nested_sum_roc <- function(data,
 
   } else if (!is.null(checkpoint_dir)) {
     x_mat <- as.matrix(full_data[, items, drop = FALSE])
-    cp_out <- .run_r_serial_outer_folds_checkpointed(
-      full_data           = full_data,
-      x_mat               = x_mat,
-      y_vec               = y,
-      outer_folds         = outer_folds,
-      items               = items,
-      outcome_col         = outcome_col,
-      positive_label      = positive_label,
-      negative_label      = negative_label,
-      min_items           = min_items,
-      max_items           = max_items,
-      cutoff_method       = cutoff_method,
-      preselect_by        = preselect_by,
-      selection_criterion = selection_criterion,
-      preselect_top_n     = preselect_top_n,
-      outer_k             = outer_k,
-      inner_k             = inner_k,
-      outer_repeats       = outer_repeats,
-      inner_repeats       = inner_repeats,
-      stratified          = stratified,
-      use_streaming_ncv   = use_streaming_ncv,
-      engine              = engine,
-      seed                = seed,
-      checkpoint_dir      = checkpoint_dir,
-      resume              = resume,
-      force_recompute     = force_recompute,
-      progress            = progress,
-      verbose             = verbose
-    )
+    if (identical(checkpoint_granularity, "outer_fold")) {
+      cp_out <- .run_r_serial_outer_folds_checkpointed(
+        full_data           = full_data,
+        x_mat               = x_mat,
+        y_vec               = y,
+        outer_folds         = outer_folds,
+        items               = items,
+        outcome_col         = outcome_col,
+        positive_label      = positive_label,
+        negative_label      = negative_label,
+        min_items           = min_items,
+        max_items           = max_items,
+        cutoff_method       = cutoff_method,
+        preselect_by        = preselect_by,
+        selection_criterion = selection_criterion,
+        preselect_top_n     = preselect_top_n,
+        outer_k             = outer_k,
+        inner_k             = inner_k,
+        outer_repeats       = outer_repeats,
+        inner_repeats       = inner_repeats,
+        stratified          = stratified,
+        use_streaming_ncv   = use_streaming_ncv,
+        engine              = engine,
+        seed                = seed,
+        checkpoint_dir      = checkpoint_dir,
+        resume              = resume,
+        force_recompute     = force_recompute,
+        progress            = progress,
+        verbose             = verbose
+      )
+    } else {
+      cp_out <- .run_fine_grained_checkpointed(
+        full_data              = full_data,
+        x_mat                  = x_mat,
+        y_vec                  = y,
+        outer_folds            = outer_folds,
+        items                  = items,
+        outcome_col            = outcome_col,
+        positive_label         = positive_label,
+        negative_label         = negative_label,
+        min_items              = min_items,
+        max_items              = max_items,
+        cutoff_method          = cutoff_method,
+        preselect_by           = preselect_by,
+        selection_criterion    = selection_criterion,
+        preselect_top_n        = preselect_top_n,
+        outer_k                = outer_k,
+        inner_k                = inner_k,
+        outer_repeats          = outer_repeats,
+        inner_repeats          = inner_repeats,
+        stratified             = stratified,
+        engine                 = engine,
+        seed                   = seed,
+        num_threads            = 1L,
+        consumer_backend       = "r_serial",
+        checkpoint_dir         = checkpoint_dir,
+        checkpoint_granularity = checkpoint_granularity,
+        resume                 = resume,
+        force_recompute        = force_recompute,
+        progress               = progress,
+        verbose                = verbose
+      )
+    }
     settings$checkpoint_provenance <- cp_out$provenance
     per_fold <- cp_out$per_fold
 

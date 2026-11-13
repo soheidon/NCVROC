@@ -11,7 +11,11 @@ run_ncvroc(
   seed = NULL,
   progress = TRUE,
   verbose = TRUE,
-  return = c("full", "summary")
+  return = c("full", "summary"),
+  checkpoint_dir = NULL,
+  checkpoint_granularity = "outer_fold",
+  resume = TRUE,
+  force_recompute = FALSE
 )
 }
 \arguments{
@@ -28,6 +32,19 @@ run_ncvroc(
 \item{verbose}{Logical, print diagnostic messages (default TRUE).}
 
 \item{return}{Return mode: `"full"` or `"summary"` (default `"full"`).}
+
+\item{checkpoint_dir}{Optional character(1) path to a checkpoint directory
+for outer-CV checkpoint/resume (default `NULL`, disabled).}
+
+\item{checkpoint_granularity}{Checkpoint unit granularity when
+`checkpoint_dir` is set: `"outer_fold"` (default), `"model_size"`, or
+`"candidate_batch"`.}
+
+\item{resume}{Logical(1). Reuse verified `COMPLETE` units in
+`checkpoint_dir` when `TRUE` (default).}
+
+\item{force_recompute}{Logical(1). Recompute existing checkpoint units when
+`TRUE` (default `FALSE`).}
 }
 \value{
 An `ncvroc_result` object from `nested_sum_roc()`.
@@ -39,6 +56,7 @@ execution options (`parallel`, `n_workers`, `threads_per_worker`).
 }
 \examples{
 cfg <- ncvroc_config("y", items = paste0("q", 1:5), max_items = 2, mode = "quick")
+set.seed(1)
 d <- data.frame(
   y  = sample(0:1, 100, replace = TRUE),
   q1 = sample(0:2, 100, replace = TRUE),

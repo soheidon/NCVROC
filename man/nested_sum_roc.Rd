@@ -34,7 +34,8 @@ nested_sum_roc(
   file_prefix = "NCVROC",
   checkpoint_dir = NULL,
   resume = TRUE,
-  force_recompute = FALSE
+  force_recompute = FALSE,
+  checkpoint_granularity = "outer_fold"
 )
 }
 \arguments{
@@ -166,6 +167,12 @@ a non-NULL `checkpoint_dir`), recompute all outer folds even when
 `resume = TRUE`, replacing prior fold checkpoints only after the new
 result is complete and read-back validated. Directory analysis identity
 must still match the current call.}
+
+\item{checkpoint_granularity}{Character scalar specifying checkpointing unit
+granularity when `checkpoint_dir` is provided: `"outer_fold"` (default),
+`"model_size"`, or `"candidate_batch"`. All three granularities are
+supported and portable across `parallel = "none"` and
+`parallel = "native_outer_fold"`.}
 }
 \value{
 An object of class `"ncvroc_result"`, a list with elements:

@@ -131,7 +131,9 @@ res <- nested_sum_roc(data = d, outcome = y, items = Q1:Q10,
                       tuning = "off", checkpoint_dir = "ncv_checkpoints", resume = TRUE)
 ```
 
-> **ネイティブ外側フォールド実行とチェックポイントに関する注記:** `nested_sum_roc(..., parallel = "native_tbb")` は引き続き Scope A（外側候補探索のネイティブ化、チェックポイント非対応）です。`parallel = "none"`（または `FALSE`、R 逐次実行）および `parallel = "native_outer_fold"`（Scope B Native）では `tuning = "off"` の下で任意の外側フォールド単位チェックポイント（`checkpoint_dir`、`resume`、`force_recompute`）を利用できます。完了済み外側フォールドはバックエンド中立の正規スキーマ（v2）で保存されるため、解析同一性とスキーマが一致すれば R 逐次実行と Scope B Native の間でチェックポイントを再利用できます。保存・再利用されるのは完全に完了した外側フォールドのみであり、実行中状態は移植対象外で、中断・失敗したフォールドは破棄されて再開時に最初から再計算されます（内側フォールド・候補単位・フォールド途中再開は非対応）。解析全体の結果キャッシュ（`cross_size_nested_cv(..., result_file = ...)`）とは独立した機能です。
+> **ネイティブ外側フォールド実行とチェックポイントに関する注記:** `nested_sum_roc(..., parallel = "native_tbb")` は引き続き Scope A（外側候補探索のネイティブ化、チェックポイント非対応）です。`parallel = "none"`（または `FALSE`、R 逐次実行）および `parallel = "native_outer_fold"`（Scope B Native）では `tuning = "off"` の下でチェックポイント（`checkpoint_dir`、`checkpoint_granularity`、`resume`、`force_recompute`）を利用できます。`checkpoint_granularity` の既定値は `"outer_fold"` で、未完了フォールド内の部分再開向けに `"model_size"` および `"candidate_batch"` も選択できます（フォールド完了時に正規 `"outer_fold"` チェックポイントへ昇格します）。3 つの粒度すべてがバックエンド中立の正規スキーマを使用し、解析同一性とスキーマが一致すれば R 逐次実行と Scope B Native の間で相互に再利用できます。保存・再利用されるのは完全に完了した作業単位（`COMPLETE`）のみであり、中断・実行中単位は破棄されて再開時にその単位の先頭から再計算されます（内側フォールド単位・バッチ途中再開は非実装）。解析全体の結果キャッシュ（`cross_size_nested_cv(..., result_file = ...)`）とは独立した機能です。
+>
+> **安全な中断と再開:** `ncvroc()`、`run_ncvroc()`、`nested_sum_roc()` のチェックポイント実行では、R の標準割り込み（`Stop` / `Esc` / `Ctrl+C`、R メインスレッド上の単位・ウェーブ境界でポーリング）および `ncvroc_request_cancel(checkpoint_dir)` / `ncvroc_clear_cancel(checkpoint_dir)` による安全な中断をサポートしています。完了済み単位は保存され、実行中の単位は破棄されてロックが解放され、`ncvroc_interrupted` 条件を送出して終了するため、`resume = TRUE` で再開できます。なお、`ncvroc()` の `final_search` は外側 CV 完了後に実行されるため、チェックポイント・再開の対象外です。
 
 ---
 

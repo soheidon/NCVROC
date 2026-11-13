@@ -43,7 +43,11 @@ ncvroc(
   parallel = FALSE,
   n_workers = NULL,
   threads_per_worker = 1L,
-  item_count = NULL
+  item_count = NULL,
+  checkpoint_dir = NULL,
+  checkpoint_granularity = "outer_fold",
+  resume = TRUE,
+  force_recompute = FALSE
 )
 }
 \arguments{
@@ -158,6 +162,21 @@ be reduced according to the CPU budget, resolved outer worker count, and
 \item{item_count}{Concise model-size specification: `"==4"` (exactly 4
 items), `"<=4"` (up to 4 items), or `"2:4"` (2 through 4 items).
 Cannot be combined with `min_items` or `max_items`. Default NULL.}
+
+\item{checkpoint_dir}{Optional character(1) path to a checkpoint directory
+for outer-CV checkpoint/resume (default `NULL`, disabled). Forwarded to
+`run_ncvroc()` / `nested_sum_roc()`. Note: `final_search` is NOT
+checkpointed or resumable.}
+
+\item{checkpoint_granularity}{Checkpoint unit granularity when
+`checkpoint_dir` is set: `"outer_fold"` (default), `"model_size"`, or
+`"candidate_batch"`.}
+
+\item{resume}{Logical(1). Reuse verified `COMPLETE` units in
+`checkpoint_dir` when `TRUE` (default).}
+
+\item{force_recompute}{Logical(1). Recompute existing checkpoint units when
+`TRUE` (default `FALSE`).}
 }
 \value{
 An object of class `"ncvroc_analysis"`.
