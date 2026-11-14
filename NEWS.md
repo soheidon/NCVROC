@@ -1,3 +1,13 @@
+# NCVROC 0.34.0 (2026-11-14)
+
+## Generalized Model Selection Stability Framework
+
+* Added `feature_selection_stability()` (with `print()` and `summary()` S3 methods) implementing Nogueira et al. (2018) chance-corrected feature selection stability index over a fixed `eligible_features` universe, preserving unclipped negative finite-sample estimates down to `-1/(M - 1)`, returning `status = "undefined"` on degenerate boundaries (`M < 2`, `d = 0`, all empty, all full), and blocking asymptotic i.i.d. CIs on dependent resamples by default.
+* Added `subsampling_stability()` (with `print()`, `summary()`, and `plot()` S3 methods) for without-replacement subsampling (`sample_fraction`, `stratified`, `m_rule`), computing Variable Inclusion Frequency (VIF), Model Selection Frequency (MSF) with order-invariant canonical signatures and truncation tracking, integrated Nogueira and Pairwise metrics, deterministic per-iteration RNG, and atomic RDS checkpoint save/resume.
+* Added `pairwise_selection_stability()` (with `print()`, `summary()`, and `plot()` heatmaps) computing exact `both`, `neither`, `i_only`, `j_only`, PIF, XOR, conditional substitution, and descriptive `VIF_i * VIF_j` over a common valid iteration set.
+* Added `near_optimal_candidates()` (with `print()`, `summary()`, and `plot()` S3 methods) implementing exact two-pass streaming aggregation (Pass 1 determines `T_best`; Pass 2 streams exact counts, feature frequencies, size distribution, and Jaccard-to-best) with bounded candidate-pair overlap detail and explicit NCVROC-extension notes.
+* Added `model_selection_stability_report()` and `compare_selection_stability()` keeping all stability targets separated and explicitly reporting coefficient stability (RCB/RMSDR) as `not_applicable` for unweighted sum-score NCVROC models.
+
 # NCVROC 0.33.0 (2026-11-14)
 
 ## Permutation-Based Null Benchmark & Case Influence Analysis
