@@ -1,3 +1,12 @@
+# NCVROC 0.33.0 (2026-11-14)
+
+## Permutation-Based Null Benchmark & Case Influence Analysis
+
+* Added `permutation_selection_roc()` (with `print()`, `summary()`, and `plot()` S3 methods) to benchmark combinatorial ROC selection against an empirical or exact label-permutation null distribution while preserving class counts and keeping `X` fixed.
+* Supports three strictly separated modes (`"apparent_max_auc"`, `"cv_selected"`, `"nested_cv"`), regenerating label-dependent CV folds inside every permutation, rejecting non-exchangeable/clustered inputs (`exchangeable = FALSE` or `cluster_col`), tracking candidate-pool provenance, automatically switching to exact enumeration without `+1` when `B >= N_all - 1` (bounded by `max_exact`), and performing bounded-memory uniform unique Monte Carlo sampling excluding the observed labeling with `(1 + count) / (B + 1)` p-value and explicit failed-iteration accounting.
+* Added `case_influence_roc()` (with `print()`, `summary()`, and `plot()` S3 methods) for leave-one-case-out (LOO) re-selection diagnostics across `"all"`, `"positive"`, `"negative"`, and `"selected"` subsets, reporting selection diffs, Jaccard similarity (empty-empty = 1), `baseline_rank_in_loo` when available, comparable `cutoff_diff` when the selected item set is unchanged, invalid-state handling, and strictly separated prediction target sets (full data, remaining training data, and asymmetric excluded case) with anonymized case indices by default.
+* Supports deterministic per-iteration RNG, atomic RDS checkpoint save/resume (`result_file`, `checkpoint_every`, `force_recompute`), cooperative user interruption, and `selection_result` / `stability_result` integration.
+
 # NCVROC 0.32.0 (2026-11-14)
 
 ## Cutoff Stability & Individual Classification Instability
