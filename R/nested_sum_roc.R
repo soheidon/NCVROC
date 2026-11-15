@@ -869,6 +869,23 @@
 
 #' Internal dispatch wrapper for Scope B complete native outer-fold execution
 #'
+#' @param x_mat Numeric predictor matrix.
+#' @param y_vec Integer binary outcome vector (`0`/`1`).
+#' @param outer_folds List of outer fold definitions.
+#' @param items Character vector of item names.
+#' @param min_items Integer minimum number of items per model.
+#' @param max_items Integer maximum number of items per model.
+#' @param cutoff_method Character cutoff selection method.
+#' @param preselect_by Character preselection ranking metric.
+#' @param selection_criterion Character inner-CV selection criterion.
+#' @param preselect_top_n Integer number of top candidates to retain.
+#' @param inner_k Integer number of inner CV folds.
+#' @param inner_repeats Integer number of inner CV repeats.
+#' @param seed Optional integer RNG seed.
+#' @param num_threads Integer number of native TBB threads.
+#' @param schema_version Integer native schema version.
+#' @param outer_fold_progress Optional callback function invoked as
+#'   `outer_fold_progress(n, kind = "computed")` when outer folds complete.
 #' @keywords internal
 .run_native_outer_folds_complete <- function(x_mat,
                                              y_vec,
@@ -1357,6 +1374,11 @@
 #'   `"model_size"`, or `"candidate_batch"`. All three granularities are
 #'   supported across `parallel = "none"`, `"native_outer_fold"`,
 #'   `"native_streaming"`, and `"auto"`.
+#' @param artifact_dir Optional character(1) root directory for the 5-category
+#'   organized artifact layout. When non-NULL, validates that any
+#'   `checkpoint_dir` lies under `<artifact_dir>/checkpoints` and registers
+#'   the checkpoint artifact in `artifact_manifest.rds` without altering
+#'   `analysis_identity`, RNG/seed, or statistical results.
 #'
 #' @return An object of class `"ncvroc_result"`, a list with elements:
 #'   \item{summary}{data.frame of per-fold test performance.}
@@ -1419,7 +1441,8 @@ nested_sum_roc <- function(data,
                            checkpoint_dir = NULL,
                            resume = TRUE,
                            force_recompute = FALSE,
-                           checkpoint_granularity = "outer_fold") {
+                           checkpoint_granularity = "outer_fold",
+                           artifact_dir = NULL) {
 
   # ---- Capture settings ----
   settings <- as.list(environment())
@@ -1482,6 +1505,16 @@ nested_sum_roc <- function(data,
   force_recompute        <- .cp_validate_scalar_logical(force_recompute, "force_recompute")
   if (force_recompute && is.null(checkpoint_dir)) {
     stop("`force_recompute = TRUE` requires a non-NULL `checkpoint_dir`.", call. = FALSE)
+  }
+
+  artifact_layout <- NULL
+  if (!is.null(artifact_dir)) {
+    artifact_layout <- ncvroc_artifact_layout(artifact_dir, create = FALSE)
+    if (!is.null(checkpoint_dir) &&
+        !.artifact_is_subpath(checkpoint_dir, artifact_layout$categories[["checkpoints"]])) {
+      stop("Conflicting `checkpoint_dir` and `artifact_dir`: when `artifact_dir` is set, checkpoints must be placed under ",
+           artifact_layout$categories[["checkpoints"]], ".", call. = FALSE)
+    }
   }
 
   # ---- Parallel Mode Resolution ----
@@ -2260,7 +2293,26 @@ nested_sum_roc <- function(data,
       "Outer folds computed this run: %d/%d; reused: %d/%d.",
       outer_progress_computed, n_folds, outer_progress_reused, n_folds
     ))
+  }
+  if (isTRUE(verbose) && identical(outer_progress_done, n_folds)) {
     message("All outer folds complete.")
+  }
+  if (!is.null(artifact_layout) && !is.null(checkpoint_dir) && dir.exists(checkpoint_dir)) {
+    cp_status <- if (inherits(result, "ncvroc_interrupted")) "in_progress" else "complete"
+    cp_id <- if (!is.null(result$settings$checkpoint_provenance$analysis_identity)) {
+      result$settings$checkpoint_provenance$analysis_identity
+    } else {
+      NULL
+    }
+    ncvroc_register_artifact(
+      artifact_dir      = artifact_layout$artifact_dir,
+      category          = "checkpoints",
+      role              = "outer_fold_checkpoint",
+      path              = checkpoint_dir,
+      producer          = "nested_sum_roc",
+      status            = cp_status,
+      analysis_identity = cp_id
+    )
   }
   result
 }

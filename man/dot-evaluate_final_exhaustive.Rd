@@ -26,7 +26,8 @@
   resolved_item_count,
   function_name = "ncvroc",
   parallel = "none",
-  n_workers = NULL
+  n_workers = NULL,
+  chunk_base_dir = NULL
 )
 }
 \arguments{

@@ -390,7 +390,7 @@ ncvroc_native_diagnostics_report <- function(log_file) {
   last_idx <- nrow(events)
   end_rows <- which(events$event == "run_end")
   status <- if (length(end_rows)) {
-    sub(".*status=([^;]+).*", "\\1", events$detail[[tail(end_rows, 1L)]])
+    sub(".*status=([^;]+).*", "\\1", events$detail[[utils::tail(end_rows, 1L)]])
   } else {
     "PROCESS_TERMINATED_OR_RUN_INCOMPLETE"
   }

@@ -971,11 +971,12 @@ bootstrap_select_sum_roc <- function(
   # Combination frequencies
   sel_combos_all <- replicates_df$selected_items
   combo_counts <- table(sel_combos_all[!is.na(sel_combos_all)])
+  combo_counts_num <- as.numeric(combo_counts)
   combo_freq_df <- data.frame(
-    items            = names(combo_counts),
+    items            = as.character(names(combo_counts)),
     count            = as.integer(combo_counts),
-    proportion_valid = if (n_valid > 0L) as.numeric(combo_counts) / n_valid else 0.0,
-    proportion_all   = as.numeric(combo_counts) / bootstrap_reps,
+    proportion_valid = if (n_valid > 0L) combo_counts_num / n_valid else numeric(length(combo_counts)),
+    proportion_all   = combo_counts_num / bootstrap_reps,
     stringsAsFactors = FALSE
   )
   combo_freq_df$n_items <- vapply(combo_freq_df$items, function(s) length(.parse_itemset(s)), integer(1L))

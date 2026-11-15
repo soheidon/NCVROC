@@ -19,8 +19,43 @@
   inner_repeats = 1L,
   seed = NULL,
   num_threads = 1L,
-  schema_version = 1L
+  schema_version = 1L,
+  outer_fold_progress = NULL
 )
+}
+\arguments{
+\item{x_mat}{Numeric predictor matrix.}
+
+\item{y_vec}{Integer binary outcome vector (`0`/`1`).}
+
+\item{outer_folds}{List of outer fold definitions.}
+
+\item{items}{Character vector of item names.}
+
+\item{min_items}{Integer minimum number of items per model.}
+
+\item{max_items}{Integer maximum number of items per model.}
+
+\item{cutoff_method}{Character cutoff selection method.}
+
+\item{preselect_by}{Character preselection ranking metric.}
+
+\item{selection_criterion}{Character inner-CV selection criterion.}
+
+\item{preselect_top_n}{Integer number of top candidates to retain.}
+
+\item{inner_k}{Integer number of inner CV folds.}
+
+\item{inner_repeats}{Integer number of inner CV repeats.}
+
+\item{seed}{Optional integer RNG seed.}
+
+\item{num_threads}{Integer number of native TBB threads.}
+
+\item{schema_version}{Integer native schema version.}
+
+\item{outer_fold_progress}{Optional callback function invoked as
+`outer_fold_progress(n, kind = "computed")` when outer folds complete.}
 }
 \description{
 Internal dispatch wrapper for Scope B complete native outer-fold execution

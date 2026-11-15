@@ -812,12 +812,13 @@ test_that("Phase 4B-F Progress/Verbose Contract: all flag combinations and compl
 
   expect_true(any(grepl("Running 3 outer folds via native TBB", msgs_v_only)))
   expect_true(any(grepl("All outer folds complete", msgs_v_only)))
-  # Must not contain ETA or percentage indicators
+  # Must not contain ETA, percentage, or progress-bar indicators
   expect_false(any(grepl("ETA", msgs_v_only, ignore.case = TRUE)))
   expect_false(any(grepl("%", msgs_v_only)))
+  expect_false(any(grepl("Outer folds:", msgs_v_only)))
 
   # 2. progress = TRUE, verbose = FALSE:
-  # Suppresses verbose status messages; native TBB emits no worker-side/fake ETA progress.
+  # Suppresses verbose status/completion messages; emits accurate outer-fold progress only.
   msgs_p_only <- capture.output({
     res_p_only <- nested_sum_roc(
       df, "y", items, engine = "Rcpp", parallel = "native_tbb", n_workers = 2L,
@@ -829,8 +830,8 @@ test_that("Phase 4B-F Progress/Verbose Contract: all flag combinations and compl
   expect_false(any(grepl("Running.*outer folds", msgs_p_only)))
   expect_false(any(grepl("All outer folds complete", msgs_p_only)))
   expect_false(any(grepl("ETA", msgs_p_only, ignore.case = TRUE)))
-  expect_false(any(grepl("%", msgs_p_only)))
-  expect_identical(length(msgs_p_only), 0L)
+  expect_true(any(grepl("Outer folds", msgs_p_only)))
+  expect_true(any(grepl("3 / 3 complete", msgs_p_only)))
 
   # 3. Both flags FALSE (progress = FALSE, verbose = FALSE):
   # Complete silence guaranteed.
@@ -869,4 +870,5 @@ test_that("Phase 4B-F Progress/Verbose Contract: all flag combinations and compl
   expect_match(conditionMessage(err), "simulated post-dispatch failure in native candidate search")
   expect_true(any(grepl("Running 3 outer folds via native TBB", err_msgs)))
   expect_false(any(grepl("All outer folds complete", err_msgs)))
+  expect_false(any(grepl("3 / 3 complete", err_msgs)))
 })

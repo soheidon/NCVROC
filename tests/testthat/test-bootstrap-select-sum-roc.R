@@ -473,3 +473,36 @@ test_that("Reviewer finding: checkpoint compatibility rejects differing pkg_vers
   new_obj <- readRDS(tmp_file)
   expect_identical(new_obj$compat_key$pkg_version, as.character(utils::packageVersion("NCVROC")))
 })
+
+test_that("bootstrap_select_sum_roc returns empty 0-row selection_frequency when n_valid == 0", {
+  dat <- data.frame(
+    I1 = c(1, 0, 1, 0, 1, 0),
+    y  = c(1, 1, 0, 0, 1, 0)
+  )
+
+  res <- suppressWarnings(bootstrap_select_sum_roc(
+    data             = dat,
+    outcome          = "y",
+    items            = "I1",
+    model_sizes      = 1,
+    bootstrap_reps   = 5L,
+    cutoff_method    = "clinical_constraint",
+    sensitivity_min  = 0.99,
+    specificity_min  = 0.99,
+    no_feasible      = "record_failure",
+    seed             = 42L,
+    progress         = FALSE
+  ))
+
+  expect_s3_class(res, "bootstrap_select_sum_roc_result")
+  expect_identical(res$bootstrap_summary$n_reps_valid, 0L)
+  expect_identical(res$bootstrap_summary$n_reps_failed, 5L)
+  expect_true(all(res$bootstrap_results$status == "failed"))
+  expect_s3_class(res$selection_frequency, "data.frame")
+  expect_identical(nrow(res$selection_frequency), 0L)
+  expect_identical(
+    names(res$selection_frequency),
+    c("items", "count", "proportion_valid", "proportion_all", "n_items")
+  )
+  expect_type(res$selection_frequency$proportion_valid, "double")
+})

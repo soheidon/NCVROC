@@ -47,7 +47,8 @@ ncvroc(
   checkpoint_dir = NULL,
   checkpoint_granularity = "outer_fold",
   resume = TRUE,
-  force_recompute = FALSE
+  force_recompute = FALSE,
+  artifact_dir = NULL
 )
 }
 \arguments{
@@ -188,6 +189,16 @@ and `"auto"`. Note: `final_search` is NOT checkpointed or resumable.}
 
 \item{force_recompute}{Logical(1). Recompute existing checkpoint units when
 `TRUE` (default `FALSE`).}
+
+\item{artifact_dir}{Optional character(1) root directory for the 5-category
+organized artifact layout (`reports/`, `results/`, `candidate_chunks/`,
+`checkpoints/`, `diagnostics/` and `artifact_manifest.rds`). When `NULL`
+(default), preserves legacy output behavior. When non-NULL, routes CSV
+reports to `reports/`, final RDS results to `results/`, candidate chunks
+to `candidate_chunks/`, validates that any `checkpoint_dir` lies under
+`checkpoints/`, and registers produced artifacts in `artifact_manifest.rds`.
+Does not alter `analysis_identity`, `cache_key`, RNG/seed, or statistical
+results, and does not auto-enable native diagnostics or crash dumps.}
 }
 \value{
 An object of class `"ncvroc_analysis"` containing `nested_result`,

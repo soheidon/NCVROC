@@ -35,7 +35,8 @@ nested_sum_roc(
   checkpoint_dir = NULL,
   resume = TRUE,
   force_recompute = FALSE,
-  checkpoint_granularity = "outer_fold"
+  checkpoint_granularity = "outer_fold",
+  artifact_dir = NULL
 )
 }
 \arguments{
@@ -184,6 +185,12 @@ granularity when `checkpoint_dir` is provided: `"outer_fold"` (default),
 `"model_size"`, or `"candidate_batch"`. All three granularities are
 supported across `parallel = "none"`, `"native_outer_fold"`,
 `"native_streaming"`, and `"auto"`.}
+
+\item{artifact_dir}{Optional character(1) root directory for the 5-category
+organized artifact layout. When non-NULL, validates that any
+`checkpoint_dir` lies under `<artifact_dir>/checkpoints` and registers
+the checkpoint artifact in `artifact_manifest.rds` without altering
+`analysis_identity`, RNG/seed, or statistical results.}
 }
 \value{
 An object of class `"ncvroc_result"`, a list with elements:

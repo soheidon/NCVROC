@@ -91,7 +91,7 @@ test_that("Native Outer Fold and Streaming report separate truthful progress sta
   native_text <- paste(native$messages, collapse = "\n")
   expect_match(native_text, "Outer folds")
   expect_match(native_text, "3 / 3 complete")
-  expect_match(native_text, "All outer folds complete\\.")
+  expect_false(any(grepl("All outer folds complete\\.", native$messages)))
   expect_equal(native$value$summary, reference$summary, tolerance = 1e-12)
 
   streaming <- .capture_nested_progress(
@@ -122,7 +122,8 @@ test_that("Native Outer Fold and Streaming report separate truthful progress sta
       data, "native_streaming", progress = FALSE, verbose = TRUE
     )
   )
-  expect_false(any(grepl("All outer folds complete|Native Streaming candidates|complete\\]", verbose_only$messages)))
+  expect_true(any(grepl("All outer folds complete\\.", verbose_only$messages)))
+  expect_false(any(grepl("Native Streaming candidates|complete\\]", verbose_only$messages)))
 })
 
 test_that("legacy Nested CV backends report only completed outer folds", {
@@ -135,7 +136,7 @@ test_that("legacy Nested CV backends report only completed outer folds", {
     )
     output <- paste(captured$messages, collapse = "\n")
     expect_match(output, "3 / 3 complete", info = backend)
-    expect_match(output, "All outer folds complete\\.", info = backend)
+    expect_false(any(grepl("All outer folds complete\\.", captured$messages)), info = backend)
     expect_equal(captured$value$summary, reference$summary, tolerance = 1e-12, info = backend)
   }
 })
@@ -237,7 +238,7 @@ test_that("ncvroc reports final search separately and completion only after succ
     .run_nested_progress_fixture(data, "native_outer_fold", progress = TRUE, final_search = TRUE)
   )
   result_text <- paste(result$messages, collapse = "\n")
-  outer_pos <- regexpr("All outer folds complete\\.", result_text)[[1L]]
+  outer_pos <- regexpr("3 / 3 complete", result_text)[[1L]]
   analysis_pos <- regexpr("Analysis complete\\.", result_text)[[1L]]
   expect_gt(outer_pos, 0L)
   expect_gt(analysis_pos, outer_pos)

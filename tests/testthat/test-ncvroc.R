@@ -846,7 +846,7 @@ test_that("item_count is the last formal argument in ncvroc()", {
                  "progress", "verbose", "return")
   expect_identical(head(names(formals(ncvroc)), length(old_names)), old_names)
   expect_identical(
-    tail(names(formals(ncvroc)), 5L),
-    c("item_count", "checkpoint_dir", "checkpoint_granularity", "resume", "force_recompute")
+    tail(names(formals(ncvroc)), 6L),
+    c("item_count", "checkpoint_dir", "checkpoint_granularity", "resume", "force_recompute", "artifact_dir")
   )
 })

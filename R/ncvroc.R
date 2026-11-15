@@ -287,7 +287,8 @@
                                         resolved_item_count,
                                         function_name = "ncvroc",
                                         parallel = "none",
-                                        n_workers = NULL) {
+                                        n_workers = NULL,
+                                        chunk_base_dir = NULL) {
   total_combos <- .count_total_combos(length(item_names), min_items, max_items)
   is_large <- total_combos > AUTO_MEMORY_LIMIT
 
@@ -503,8 +504,14 @@
       chunk_dir <- file.path(building_dir, "chunks")
       dir.create(chunk_dir, recursive = TRUE, showWarnings = FALSE)
     } else {
-      chunk_base_dir <- if (is.null(results_dir)) tempdir() else results_dir
-      chunk_dir <- .make_chunk_dir(chunk_base_dir)
+      chunk_base_use <- if (!is.null(chunk_base_dir)) {
+        chunk_base_dir
+      } else if (is.null(results_dir)) {
+        tempdir()
+      } else {
+        results_dir
+      }
+      chunk_dir <- .make_chunk_dir(chunk_base_use)
     }
 
     if (parallel == "chunks") {
@@ -687,6 +694,15 @@
 #'   `checkpoint_dir` when `TRUE` (default).
 #' @param force_recompute Logical(1). Recompute existing checkpoint units when
 #'   `TRUE` (default `FALSE`).
+#' @param artifact_dir Optional character(1) root directory for the 5-category
+#'   organized artifact layout (`reports/`, `results/`, `candidate_chunks/`,
+#'   `checkpoints/`, `diagnostics/` and `artifact_manifest.rds`). When `NULL`
+#'   (default), preserves legacy output behavior. When non-NULL, routes CSV
+#'   reports to `reports/`, final RDS results to `results/`, candidate chunks
+#'   to `candidate_chunks/`, validates that any `checkpoint_dir` lies under
+#'   `checkpoints/`, and registers produced artifacts in `artifact_manifest.rds`.
+#'   Does not alter `analysis_identity`, `cache_key`, RNG/seed, or statistical
+#'   results, and does not auto-enable native diagnostics or crash dumps.
 #' @details
 #' When `final_search = TRUE` and `ci = TRUE`, confidence intervals are
 #' attached to `final_model` and `final_candidates`:
@@ -788,7 +804,8 @@ ncvroc <- function(data,
                    checkpoint_dir = NULL,
                    checkpoint_granularity = "outer_fold",
                    resume = TRUE,
-                   force_recompute = FALSE) {
+                   force_recompute = FALSE,
+                   artifact_dir = NULL) {
 
   # ---- 1. Capture & resolve ----
   caller_env   <- parent.frame()
@@ -846,6 +863,32 @@ ncvroc <- function(data,
        is.na(results_dir) || !nzchar(trimws(results_dir)))) {
     stop("results_dir must be NULL or a single non-empty path.",
          call. = FALSE)
+  }
+
+  artifact_layout <- NULL
+  chunk_base_dir <- NULL
+  output_dir_missing <- missing(output_dir)
+  results_dir_missing <- missing(results_dir)
+  if (!is.null(artifact_dir)) {
+    artifact_layout <- ncvroc_artifact_layout(artifact_dir, create = FALSE)
+    if (output_dir_missing || identical(output_dir, ".")) {
+      output_dir <- artifact_layout$categories[["reports"]]
+    } else if (!.artifact_is_subpath(output_dir, artifact_layout$categories[["reports"]])) {
+      stop("Conflicting `output_dir` and `artifact_dir`: when `artifact_dir` is set, CSV reports must be placed under ",
+           artifact_layout$categories[["reports"]], ".", call. = FALSE)
+    }
+    if (results_dir_missing || is.null(results_dir)) {
+      results_dir <- artifact_layout$categories[["results"]]
+    } else if (!.artifact_is_subpath(results_dir, artifact_layout$categories[["results"]])) {
+      stop("Conflicting `results_dir` and `artifact_dir`: when `artifact_dir` is set, result RDS files must be placed under ",
+           artifact_layout$categories[["results"]], ".", call. = FALSE)
+    }
+    chunk_base_dir <- artifact_layout$categories[["candidate_chunks"]]
+    if (!is.null(checkpoint_dir) &&
+        !.artifact_is_subpath(checkpoint_dir, artifact_layout$categories[["checkpoints"]])) {
+      stop("Conflicting `checkpoint_dir` and `artifact_dir`: when `artifact_dir` is set, checkpoints must be placed under ",
+           artifact_layout$categories[["checkpoints"]], ".", call. = FALSE)
+    }
   }
 
   if (chunk_size <= 0 || chunk_size != as.integer(chunk_size)) {
@@ -942,6 +985,47 @@ ncvroc <- function(data,
       cache_load_result <- .load_cache(cache_dir, cache_key)
       if (!is.null(cache_load_result)) {
         cache_load_result$loaded_from_cache <- TRUE
+        if (!is.null(artifact_layout)) {
+          chunk_ref <- character(0L)
+          if (!is.null(cache_load_result$chunk_dir) && dir.exists(cache_load_result$chunk_dir)) {
+            chunk_entry <- ncvroc_register_artifact(
+              artifact_dir      = artifact_layout$artifact_dir,
+              category          = "candidate_chunks",
+              role              = "final_candidate_chunks",
+              path              = cache_load_result$chunk_dir,
+              producer          = "ncvroc_cache",
+              status            = "complete",
+              analysis_identity = cache_key,
+              metadata          = list(loaded_from_cache = TRUE),
+              allow_external    = TRUE
+            )
+            chunk_ref <- chunk_entry$artifact_id
+          }
+          cache_res_path <- if (!is.null(cache_load_result$results_file) &&
+                                file.exists(cache_load_result$results_file)) {
+            cache_load_result$results_file
+          } else if (!is.null(cache_load_result$cache_entry_dir) &&
+                     file.exists(file.path(cache_load_result$cache_entry_dir, "result.rds"))) {
+            file.path(cache_load_result$cache_entry_dir, "result.rds")
+          } else {
+            NULL
+          }
+          if (!is.null(cache_res_path)) {
+            ncvroc_register_artifact(
+              artifact_dir      = artifact_layout$artifact_dir,
+              category          = "results",
+              role              = "cached_ncvroc_result",
+              path              = cache_res_path,
+              producer          = "ncvroc_cache",
+              status            = "complete",
+              analysis_identity = cache_key,
+              references        = chunk_ref,
+              metadata          = list(loaded_from_cache = TRUE),
+              allow_external    = TRUE
+            )
+          }
+          cache_load_result$artifact_dir <- artifact_layout$artifact_dir
+        }
         if (isTRUE(progress)) {
           message("Analysis complete (loaded from cache).")
         }
@@ -1023,7 +1107,8 @@ ncvroc <- function(data,
         resolved_item_count = resolved_item_count,
         function_name       = "ncvroc",
         parallel            = final_parallel,
-        n_workers           = final_n_workers
+        n_workers           = final_n_workers,
+        chunk_base_dir      = chunk_base_dir
       ),
       interrupt = function(e) {
         cp_note <- if (!is.null(checkpoint_dir)) {
@@ -1256,6 +1341,101 @@ ncvroc <- function(data,
       metadata_list   = metadata_list,
       storage_backend = final_storage_backend
     )
+  }
+
+  if (!is.null(artifact_layout)) {
+    art_id <- if (!is.null(cache_key)) {
+      cache_key
+    } else {
+      .compute_cache_key(
+        cache_data          = analysis_dat,
+        cache_outcome       = outcome_name,
+        cache_items         = item_names,
+        min_items           = min_items,
+        max_items           = max_items,
+        mode                = mode,
+        outer_k             = outer_k,
+        inner_k             = inner_k,
+        outer_repeats       = outer_repeats,
+        inner_repeats       = inner_repeats,
+        cutoff_method       = cutoff_method,
+        selection_criterion = selection_criterion,
+        preselect_top_n     = cfg$preselect_top_n,
+        preselect_by        = preselect_by,
+        final_search        = final_search,
+        final_rank_by       = final_rank_by,
+        engine              = engine,
+        seed                = seed,
+        positive_label      = positive_label,
+        negative_label      = negative_label,
+        stratified          = stratified,
+        chunk_size          = chunk_size
+      )
+    }
+    chunk_ref <- character(0L)
+    if (!is.null(final_chunk_dir) && dir.exists(final_chunk_dir)) {
+      chunk_entry <- ncvroc_register_artifact(
+        artifact_dir      = artifact_layout$artifact_dir,
+        category          = "candidate_chunks",
+        role              = "final_candidate_chunks",
+        path              = final_chunk_dir,
+        producer          = "ncvroc",
+        status            = "complete",
+        analysis_identity = art_id,
+        metadata          = list(n_combinations = final_n_combinations, chunk_size = chunk_size)
+      )
+      chunk_ref <- chunk_entry$artifact_id
+    }
+    if (!is.null(final_exhaustive_file) && file.exists(final_exhaustive_file)) {
+      ncvroc_register_artifact(
+        artifact_dir      = artifact_layout$artifact_dir,
+        category          = "results",
+        role              = "final_exhaustive_rds",
+        path              = final_exhaustive_file,
+        producer          = "ncvroc",
+        status            = "complete",
+        analysis_identity = art_id,
+        references        = chunk_ref
+      )
+    }
+    if (!is.null(checkpoint_dir) && dir.exists(checkpoint_dir)) {
+      ncvroc_register_artifact(
+        artifact_dir      = artifact_layout$artifact_dir,
+        category          = "checkpoints",
+        role              = "outer_fold_checkpoint",
+        path              = checkpoint_dir,
+        producer          = "ncvroc",
+        status            = "complete",
+        analysis_identity = art_id
+      )
+    }
+    if (isTRUE(save_results)) {
+      csv_files <- c(
+        nested_cv_outer_fold_results       = file.path(output_dir, "nested_cv_outer_fold_results.csv"),
+        nested_cv_selected_models          = file.path(output_dir, "nested_cv_selected_models.csv"),
+        nested_cv_outer_predictions        = file.path(output_dir, "nested_cv_outer_predictions.csv"),
+        nested_cv_summary                  = file.path(output_dir, "nested_cv_summary.csv"),
+        nested_cv_selected_model_frequency = file.path(output_dir, "nested_cv_selected_model_frequency.csv"),
+        final_exhaustive_results_ranked    = file.path(output_dir, "final_exhaustive_results_ranked.csv"),
+        final_candidates                   = file.path(output_dir, "final_candidates.csv"),
+        final_model                        = file.path(output_dir, "final_model.csv")
+      )
+      for (nm in names(csv_files)) {
+        f <- csv_files[[nm]]
+        if (file.exists(f)) {
+          ncvroc_register_artifact(
+            artifact_dir      = artifact_layout$artifact_dir,
+            category          = "reports",
+            role              = nm,
+            path              = f,
+            producer          = "ncvroc",
+            status            = "complete",
+            analysis_identity = art_id
+          )
+        }
+      }
+    }
+    result$artifact_dir <- artifact_layout$artifact_dir
   }
 
   class(result) <- "ncvroc_analysis"
