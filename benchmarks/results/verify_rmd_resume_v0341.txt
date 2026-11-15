@@ -1,0 +1,15 @@
+NCVROC v0.34.1
+=== NCVROC v0.34.1 Verification (Steps 4 & 5) ===
+Loaded NCVROC version: 0.34.1
+Rmd found: CBCL短縮尺度の項目選択：統合解析.Rmd
+Existing RDS files in analysis_dir: 42
+  Read-only load OK: artifact_manifest.rds (class: list)
+  Read-only load OK: assessment_1-2-3items_candidate_bootstrap.rds (class: list)
+  Read-only load OK: assessment_1-2-3items_candidate_repeated_cv.rds (class: list)
+[1] "D:/NCVROC/2026-11-14-Added-statistical-auditing-functionality/verification_v0341/purled_rmd.R"
+CBCL integrated Rmd R chunks parsed cleanly (syntax OK).
+Baseline completed: 4 reps, 200 subjects, CII range [0.0000, 0.5000]
+Bootstrap interrupt verified: ref_done=TRUE, completed_reps=1, rep_id=2, rep_cursor=400
+PARITY OK [Ref-eval interrupt -> resume vs Baseline]: selected_items, cutoff, classifications, CII, and failure states match identically.
+PARITY OK [Bootstrap interrupt -> resume vs Baseline]: selected_items, cutoff, classifications, CII, and failure states match identically.
+=== All Steps 4 & 5 Verifications PASSED ===

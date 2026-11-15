@@ -2,62 +2,78 @@
 # Generator token: 10BE3573-1514-4C36-9D1C-5A225CD40393
 
 evaluate_combos_cpp <- function(x, y, combo_indices, cutoff_method, sensitivity_min = -1.0, specificity_min = -1.0) {
-    .Call(`_NCVROC_evaluate_combos_cpp`, x, y, combo_indices, cutoff_method, sensitivity_min, specificity_min)
+    .Call('_NCVROC_evaluate_combos_cpp', PACKAGE = 'NCVROC', x, y, combo_indices, cutoff_method, sensitivity_min, specificity_min)
 }
 
 evaluate_combos_cpp_chunk <- function(x, y, min_items, max_items, cutoff_method, chunk_start, chunk_size) {
-    .Call(`_NCVROC_evaluate_combos_cpp_chunk`, x, y, min_items, max_items, cutoff_method, chunk_start, chunk_size)
+    .Call('_NCVROC_evaluate_combos_cpp_chunk', PACKAGE = 'NCVROC', x, y, min_items, max_items, cutoff_method, chunk_start, chunk_size)
 }
 
 evaluate_combos_cpp_chunk_parallel <- function(x, y, min_items, max_items, cutoff_method, chunk_start, chunk_size, num_threads = -1L, grain_size = 1000L) {
-    .Call(`_NCVROC_evaluate_combos_cpp_chunk_parallel`, x, y, min_items, max_items, cutoff_method, chunk_start, chunk_size, num_threads, grain_size)
+    .Call('_NCVROC_evaluate_combos_cpp_chunk_parallel', PACKAGE = 'NCVROC', x, y, min_items, max_items, cutoff_method, chunk_start, chunk_size, num_threads, grain_size)
 }
 
 evaluate_outer_candidate_search_native_cpp <- function(x, y, train_indices, min_items, max_items, cutoff_method, rank_by, top_n, prefer_fewer_items = TRUE, num_threads = -1L) {
-    .Call(`_NCVROC_evaluate_outer_candidate_search_native_cpp`, x, y, train_indices, min_items, max_items, cutoff_method, rank_by, top_n, prefer_fewer_items, num_threads)
+    .Call('_NCVROC_evaluate_outer_candidate_search_native_cpp', PACKAGE = 'NCVROC', x, y, train_indices, min_items, max_items, cutoff_method, rank_by, top_n, prefer_fewer_items, num_threads)
 }
 
 evaluate_combos_cpp_chunk_parallel_topn <- function(x, y, min_items, max_items, cutoff_method, rank_by, top_n, prefer_fewer_items, chunk_start, chunk_size, num_threads = -1L, grain_size = 1000L) {
-    .Call(`_NCVROC_evaluate_combos_cpp_chunk_parallel_topn`, x, y, min_items, max_items, cutoff_method, rank_by, top_n, prefer_fewer_items, chunk_start, chunk_size, num_threads, grain_size)
+    .Call('_NCVROC_evaluate_combos_cpp_chunk_parallel_topn', PACKAGE = 'NCVROC', x, y, min_items, max_items, cutoff_method, rank_by, top_n, prefer_fewer_items, chunk_start, chunk_size, num_threads, grain_size)
 }
 
 evaluate_combos_cpp_sparse_parallel <- function(x, y, min_items, max_items, cutoff_method, global_ranks, num_threads = -1L) {
-    .Call(`_NCVROC_evaluate_combos_cpp_sparse_parallel`, x, y, min_items, max_items, cutoff_method, global_ranks, num_threads)
+    .Call('_NCVROC_evaluate_combos_cpp_sparse_parallel', PACKAGE = 'NCVROC', x, y, min_items, max_items, cutoff_method, global_ranks, num_threads)
 }
 
 evaluate_combos_cv_cpp <- function(x, y, combo_indices, test_indices, n_folds, repeats, cutoff_method, sensitivity_min = -1.0, specificity_min = -1.0, num_threads = 1L, grain_size = 64L) {
-    .Call(`_NCVROC_evaluate_combos_cv_cpp`, x, y, combo_indices, test_indices, n_folds, repeats, cutoff_method, sensitivity_min, specificity_min, num_threads, grain_size)
+    .Call('_NCVROC_evaluate_combos_cv_cpp', PACKAGE = 'NCVROC', x, y, combo_indices, test_indices, n_folds, repeats, cutoff_method, sensitivity_min, specificity_min, num_threads, grain_size)
 }
 
 evaluate_candidate_stability_cv_cpp <- function(x, y, combo_indices, test_indices, n_folds, repeats, cutoff_method, num_threads = 1L) {
-    .Call(`_NCVROC_evaluate_candidate_stability_cv_cpp`, x, y, combo_indices, test_indices, n_folds, repeats, cutoff_method, num_threads)
+    .Call('_NCVROC_evaluate_candidate_stability_cv_cpp', PACKAGE = 'NCVROC', x, y, combo_indices, test_indices, n_folds, repeats, cutoff_method, num_threads)
 }
 
 evaluate_candidate_stability_bootstrap_cpp <- function(x, y, combo_indices, train_indices, oob_indices, bootstrap_test, cutoff_method, apparent_auc, num_threads = 1L) {
-    .Call(`_NCVROC_evaluate_candidate_stability_bootstrap_cpp`, x, y, combo_indices, train_indices, oob_indices, bootstrap_test, cutoff_method, apparent_auc, num_threads)
+    .Call('_NCVROC_evaluate_candidate_stability_bootstrap_cpp', PACKAGE = 'NCVROC', x, y, combo_indices, train_indices, oob_indices, bootstrap_test, cutoff_method, apparent_auc, num_threads)
 }
 
 evaluate_bootstrap_replicates_native_cpp <- function(x, y, boot_indices_list, combo_0based, cutoff_method, selection_metric, sensitivity_min = -1.0, specificity_min = -1.0, prefer_fewer_items = TRUE, fallback_youden = TRUE, need_oob = TRUE, ref_items_0based = integer(), num_threads = 1L) {
-    .Call(`_NCVROC_evaluate_bootstrap_replicates_native_cpp`, x, y, boot_indices_list, combo_0based, cutoff_method, selection_metric, sensitivity_min, specificity_min, prefer_fewer_items, fallback_youden, need_oob, ref_items_0based, num_threads)
+    .Call('_NCVROC_evaluate_bootstrap_replicates_native_cpp', PACKAGE = 'NCVROC', x, y, boot_indices_list, combo_0based, cutoff_method, selection_metric, sensitivity_min, specificity_min, prefer_fewer_items, fallback_youden, need_oob, ref_items_0based, num_threads)
 }
 
 reduce_candidate_stability_replicates_cpp <- function(candidate_id, replicate_id, cand_n_items, rank_metric_vals, training_valid, test_sensitivity, test_specificity, check_training_valid, sensitivity_min, specificity_min, prefer_fewer_items, total_resamples) {
-    .Call(`_NCVROC_reduce_candidate_stability_replicates_cpp`, candidate_id, replicate_id, cand_n_items, rank_metric_vals, training_valid, test_sensitivity, test_specificity, check_training_valid, sensitivity_min, specificity_min, prefer_fewer_items, total_resamples)
+    .Call('_NCVROC_reduce_candidate_stability_replicates_cpp', PACKAGE = 'NCVROC', candidate_id, replicate_id, cand_n_items, rank_metric_vals, training_valid, test_sensitivity, test_specificity, check_training_valid, sensitivity_min, specificity_min, prefer_fewer_items, total_resamples)
+}
+
+cs_eval_candidate_batch_cpp <- function(x_sample, y_sample, model_sizes, size_offsets, ordinal_start, ordinal_end, cutoff_method, selection_metric, sensitivity_min = -1.0, specificity_min = -1.0, prefer_fewer_items = TRUE, num_threads = 1L) {
+    .Call('_NCVROC_cs_eval_candidate_batch_cpp', PACKAGE = 'NCVROC', x_sample, y_sample, model_sizes, size_offsets, ordinal_start, ordinal_end, cutoff_method, selection_metric, sensitivity_min, specificity_min, prefer_fewer_items, num_threads)
+}
+
+cs_unrank_combination_cpp <- function(n_cols, k, local_rank_0) {
+    .Call('_NCVROC_cs_unrank_combination_cpp', PACKAGE = 'NCVROC', n_cols, k, local_rank_0)
+}
+
+cs_durable_replace_file_cpp <- function(temp_path, target_path) {
+    .Call('_NCVROC_cs_durable_replace_file_cpp', PACKAGE = 'NCVROC', temp_path, target_path)
+}
+
+cs_check_durable_replace_cpp <- function(dir_path) {
+    .Call('_NCVROC_cs_check_durable_replace_cpp', PACKAGE = 'NCVROC', dir_path)
 }
 
 evaluate_outer_folds_native_cpp <- function(x, y, fold_specs, min_items, max_items, cutoff_method, preselect_by, selection_criterion, preselect_top_n, prefer_fewer_items = TRUE, num_threads = 1L, schema_version = 1L, throw_on_error = TRUE) {
-    .Call(`_NCVROC_evaluate_outer_folds_native_cpp`, x, y, fold_specs, min_items, max_items, cutoff_method, preselect_by, selection_criterion, preselect_top_n, prefer_fewer_items, num_threads, schema_version, throw_on_error)
+    .Call('_NCVROC_evaluate_outer_folds_native_cpp', PACKAGE = 'NCVROC', x, y, fold_specs, min_items, max_items, cutoff_method, preselect_by, selection_criterion, preselect_top_n, prefer_fewer_items, num_threads, schema_version, throw_on_error)
 }
 
 native_outer_fold_result_roundtrip_cpp <- function(r_result) {
-    .Call(`_NCVROC_native_outer_fold_result_roundtrip_cpp`, r_result)
+    .Call('_NCVROC_native_outer_fold_result_roundtrip_cpp', PACKAGE = 'NCVROC', r_result)
 }
 
 native_eval_candidate_batches_cpp <- function(x, y, train_indices_list, task_fold_idx, task_repeat_id, task_outer_fold_id, task_model_size, task_local_rank_start_0, task_local_rank_end_0, task_level_start_0, cutoff_method, rank_by, preselect_top_n, prefer_fewer_items = TRUE, num_threads = 1L) {
-    .Call(`_NCVROC_native_eval_candidate_batches_cpp`, x, y, train_indices_list, task_fold_idx, task_repeat_id, task_outer_fold_id, task_model_size, task_local_rank_start_0, task_local_rank_end_0, task_level_start_0, cutoff_method, rank_by, preselect_top_n, prefer_fewer_items, num_threads)
+    .Call('_NCVROC_native_eval_candidate_batches_cpp', PACKAGE = 'NCVROC', x, y, train_indices_list, task_fold_idx, task_repeat_id, task_outer_fold_id, task_model_size, task_local_rank_start_0, task_local_rank_end_0, task_level_start_0, cutoff_method, rank_by, preselect_top_n, prefer_fewer_items, num_threads)
 }
 
 check_user_interrupt_cpp <- function() {
-    invisible(.Call(`_NCVROC_check_user_interrupt_cpp`))
+    invisible(.Call('_NCVROC_check_user_interrupt_cpp', PACKAGE = 'NCVROC'))
 }
 

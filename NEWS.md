@@ -1,3 +1,12 @@
+# NCVROC 0.34.1 (2026-11-16)
+
+## Bounded-Memory Native Streaming & Checkpointing for `classification_stability_roc()`
+
+* Added a bounded-memory `RcppParallel::parallelFor` native streaming engine (`cs_eval_candidate_batch_cpp()` and combinadic unranking) for `classification_stability_roc(mode = "full_procedure")`, eliminating full candidate-list materialization (`utils::combn`) across large item universes.
+* Added intra-search candidate/time-based rolling two-generation checkpoints (`.slot0.rds` / `.slot1.rds` with Win32 `MoveFileExW` durable replacement and UTF-8/UTF-16 wide-path handling) for both the reference full-data search (`ref_eval`) and every bootstrap replicate, plus per-replicate boundary persistence.
+* Added isolated run storage via `work_dir` / `run_id`, sync-root rejection, manifest/migration guards (`checkpoint_dir` and `result_file` consistency checks), and verified publication to external/synced directories via `ncvroc_publish_classification_stability()` with re-read and SHA-256 verification.
+* Added `coverage` accounting in `compare_classification_stability()` and expanded regression/streaming tests (`test-classification-stability-v0341.R`, 60 assertions).
+
 # NCVROC 0.34.0 (2026-11-14)
 
 ## Native Execution Diagnostics

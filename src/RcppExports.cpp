@@ -224,6 +224,64 @@ BEGIN_RCPP
     return rcpp_result_gen;
 END_RCPP
 }
+// cs_eval_candidate_batch_cpp
+List cs_eval_candidate_batch_cpp(NumericMatrix x_sample, IntegerVector y_sample, IntegerVector model_sizes, NumericVector size_offsets, double ordinal_start, double ordinal_end, std::string cutoff_method, std::string selection_metric, double sensitivity_min, double specificity_min, bool prefer_fewer_items, int num_threads);
+RcppExport SEXP _NCVROC_cs_eval_candidate_batch_cpp(SEXP x_sampleSEXP, SEXP y_sampleSEXP, SEXP model_sizesSEXP, SEXP size_offsetsSEXP, SEXP ordinal_startSEXP, SEXP ordinal_endSEXP, SEXP cutoff_methodSEXP, SEXP selection_metricSEXP, SEXP sensitivity_minSEXP, SEXP specificity_minSEXP, SEXP prefer_fewer_itemsSEXP, SEXP num_threadsSEXP) {
+BEGIN_RCPP
+    Rcpp::RObject rcpp_result_gen;
+    Rcpp::RNGScope rcpp_rngScope_gen;
+    Rcpp::traits::input_parameter< NumericMatrix >::type x_sample(x_sampleSEXP);
+    Rcpp::traits::input_parameter< IntegerVector >::type y_sample(y_sampleSEXP);
+    Rcpp::traits::input_parameter< IntegerVector >::type model_sizes(model_sizesSEXP);
+    Rcpp::traits::input_parameter< NumericVector >::type size_offsets(size_offsetsSEXP);
+    Rcpp::traits::input_parameter< double >::type ordinal_start(ordinal_startSEXP);
+    Rcpp::traits::input_parameter< double >::type ordinal_end(ordinal_endSEXP);
+    Rcpp::traits::input_parameter< std::string >::type cutoff_method(cutoff_methodSEXP);
+    Rcpp::traits::input_parameter< std::string >::type selection_metric(selection_metricSEXP);
+    Rcpp::traits::input_parameter< double >::type sensitivity_min(sensitivity_minSEXP);
+    Rcpp::traits::input_parameter< double >::type specificity_min(specificity_minSEXP);
+    Rcpp::traits::input_parameter< bool >::type prefer_fewer_items(prefer_fewer_itemsSEXP);
+    Rcpp::traits::input_parameter< int >::type num_threads(num_threadsSEXP);
+    rcpp_result_gen = Rcpp::wrap(cs_eval_candidate_batch_cpp(x_sample, y_sample, model_sizes, size_offsets, ordinal_start, ordinal_end, cutoff_method, selection_metric, sensitivity_min, specificity_min, prefer_fewer_items, num_threads));
+    return rcpp_result_gen;
+END_RCPP
+}
+// cs_unrank_combination_cpp
+IntegerVector cs_unrank_combination_cpp(int n_cols, int k, double local_rank_0);
+RcppExport SEXP _NCVROC_cs_unrank_combination_cpp(SEXP n_colsSEXP, SEXP kSEXP, SEXP local_rank_0SEXP) {
+BEGIN_RCPP
+    Rcpp::RObject rcpp_result_gen;
+    Rcpp::RNGScope rcpp_rngScope_gen;
+    Rcpp::traits::input_parameter< int >::type n_cols(n_colsSEXP);
+    Rcpp::traits::input_parameter< int >::type k(kSEXP);
+    Rcpp::traits::input_parameter< double >::type local_rank_0(local_rank_0SEXP);
+    rcpp_result_gen = Rcpp::wrap(cs_unrank_combination_cpp(n_cols, k, local_rank_0));
+    return rcpp_result_gen;
+END_RCPP
+}
+// cs_durable_replace_file_cpp
+bool cs_durable_replace_file_cpp(std::string temp_path, std::string target_path);
+RcppExport SEXP _NCVROC_cs_durable_replace_file_cpp(SEXP temp_pathSEXP, SEXP target_pathSEXP) {
+BEGIN_RCPP
+    Rcpp::RObject rcpp_result_gen;
+    Rcpp::RNGScope rcpp_rngScope_gen;
+    Rcpp::traits::input_parameter< std::string >::type temp_path(temp_pathSEXP);
+    Rcpp::traits::input_parameter< std::string >::type target_path(target_pathSEXP);
+    rcpp_result_gen = Rcpp::wrap(cs_durable_replace_file_cpp(temp_path, target_path));
+    return rcpp_result_gen;
+END_RCPP
+}
+// cs_check_durable_replace_cpp
+bool cs_check_durable_replace_cpp(std::string dir_path);
+RcppExport SEXP _NCVROC_cs_check_durable_replace_cpp(SEXP dir_pathSEXP) {
+BEGIN_RCPP
+    Rcpp::RObject rcpp_result_gen;
+    Rcpp::RNGScope rcpp_rngScope_gen;
+    Rcpp::traits::input_parameter< std::string >::type dir_path(dir_pathSEXP);
+    rcpp_result_gen = Rcpp::wrap(cs_check_durable_replace_cpp(dir_path));
+    return rcpp_result_gen;
+END_RCPP
+}
 // evaluate_outer_folds_native_cpp
 List evaluate_outer_folds_native_cpp(NumericMatrix x, IntegerVector y, List fold_specs, int min_items, int max_items, std::string cutoff_method, std::string preselect_by, std::string selection_criterion, int preselect_top_n, bool prefer_fewer_items, int num_threads, int schema_version, bool throw_on_error);
 RcppExport SEXP _NCVROC_evaluate_outer_folds_native_cpp(SEXP xSEXP, SEXP ySEXP, SEXP fold_specsSEXP, SEXP min_itemsSEXP, SEXP max_itemsSEXP, SEXP cutoff_methodSEXP, SEXP preselect_bySEXP, SEXP selection_criterionSEXP, SEXP preselect_top_nSEXP, SEXP prefer_fewer_itemsSEXP, SEXP num_threadsSEXP, SEXP schema_versionSEXP, SEXP throw_on_errorSEXP) {
@@ -305,6 +363,10 @@ static const R_CallMethodDef CallEntries[] = {
     {"_NCVROC_evaluate_candidate_stability_bootstrap_cpp", (DL_FUNC) &_NCVROC_evaluate_candidate_stability_bootstrap_cpp, 9},
     {"_NCVROC_evaluate_bootstrap_replicates_native_cpp", (DL_FUNC) &_NCVROC_evaluate_bootstrap_replicates_native_cpp, 13},
     {"_NCVROC_reduce_candidate_stability_replicates_cpp", (DL_FUNC) &_NCVROC_reduce_candidate_stability_replicates_cpp, 12},
+    {"_NCVROC_cs_eval_candidate_batch_cpp", (DL_FUNC) &_NCVROC_cs_eval_candidate_batch_cpp, 12},
+    {"_NCVROC_cs_unrank_combination_cpp", (DL_FUNC) &_NCVROC_cs_unrank_combination_cpp, 3},
+    {"_NCVROC_cs_durable_replace_file_cpp", (DL_FUNC) &_NCVROC_cs_durable_replace_file_cpp, 2},
+    {"_NCVROC_cs_check_durable_replace_cpp", (DL_FUNC) &_NCVROC_cs_check_durable_replace_cpp, 1},
     {"_NCVROC_evaluate_outer_folds_native_cpp", (DL_FUNC) &_NCVROC_evaluate_outer_folds_native_cpp, 13},
     {"_NCVROC_native_outer_fold_result_roundtrip_cpp", (DL_FUNC) &_NCVROC_native_outer_fold_result_roundtrip_cpp, 1},
     {"_NCVROC_native_eval_candidate_batches_cpp", (DL_FUNC) &_NCVROC_native_eval_candidate_batches_cpp, 15},

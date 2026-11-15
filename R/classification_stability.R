@@ -363,6 +363,23 @@
 #'   polling (default `25L`).
 #' @param force_recompute Logical(1), default `FALSE`.
 #' @param progress Logical(1), default `interactive()`.
+#' @param work_dir Optional local non-synced base directory for `runs/<run_id>/`
+#'   isolation (`checkpoints`, `temp`, `diagnostics`, `manifest.rds`). When `NULL`
+#'   (default), preserves legacy `result_file` behavior.
+#' @param run_id Optional unique run identifier under `work_dir/runs/<run_id>`.
+#'   Auto-generated for new runs when `NULL`; required when `resume = TRUE`.
+#' @param checkpoint_dir Optional directory override for checkpoints (requires `work_dir`).
+#' @param temp_dir Optional directory override for temp files (requires `work_dir`).
+#' @param diagnostics_dir Optional directory override for diagnostics (requires `work_dir`).
+#' @param checkpoint_every_candidates Positive numeric/integer(1), candidate
+#'   interval for intra-replicate 2-slot rolling checkpoints across all workers
+#'   (default `1000000L`).
+#' @param checkpoint_every_seconds Optional positive numeric(1) time-based
+#'   checkpoint cap at safe batch boundaries (default `NULL`, disabled).
+#' @param candidate_batch_size Optional positive integer(1) batch size per epoch;
+#'   must divide `checkpoint_every_candidates` evenly when specified.
+#' @param resume Logical(1), whether to resume an existing `run_id` under
+#'   `work_dir` (default `FALSE`).
 #'
 #' @return An S3 object of class `"classification_stability_result"`.
 #' @export
@@ -393,7 +410,16 @@ classification_stability_roc <- function(
     result_file        = NULL,
     checkpoint_every   = 25L,
     force_recompute    = FALSE,
-    progress           = interactive()
+    progress           = interactive(),
+    work_dir           = NULL,
+    run_id             = NULL,
+    checkpoint_dir     = NULL,
+    temp_dir           = NULL,
+    diagnostics_dir    = NULL,
+    checkpoint_every_candidates = 1000000L,
+    checkpoint_every_seconds    = NULL,
+    candidate_batch_size        = NULL,
+    resume             = FALSE
 ) {
   mode             <- match.arg(mode)
   resampling       <- match.arg(resampling)
@@ -419,6 +445,18 @@ classification_stability_roc <- function(
     stop("`checkpoint_every` must be a positive integer.", call. = FALSE)
   }
   checkpoint_every <- as.integer(checkpoint_every)
+  if (!is.numeric(checkpoint_every_candidates) || length(checkpoint_every_candidates) != 1L ||
+      is.na(checkpoint_every_candidates) || checkpoint_every_candidates < 1) {
+    stop("`checkpoint_every_candidates` must be a positive number.", call. = FALSE)
+  }
+  checkpoint_every_candidates <- as.numeric(checkpoint_every_candidates)
+  if (!is.null(checkpoint_every_seconds)) {
+    if (!is.numeric(checkpoint_every_seconds) || length(checkpoint_every_seconds) != 1L ||
+        is.na(checkpoint_every_seconds) || checkpoint_every_seconds <= 0) {
+      stop("`checkpoint_every_seconds` must be NULL or a positive number.", call. = FALSE)
+    }
+    checkpoint_every_seconds <- as.numeric(checkpoint_every_seconds)
+  }
 
   spec <- .cs_resolve_spec(
     mode               = mode,
@@ -462,7 +500,34 @@ classification_stability_roc <- function(
   x_mat <- as.matrix(data[, used_items, drop = FALSE])
   storage.mode(x_mat) <- "double"
 
-  # Build candidate combinations & enforce resource guard for full_procedure
+  # Resolve work_dir / run_id / checkpoint_dir / temp_dir / diagnostics_dir / result_file
+  work_layout <- .cs_resolve_work_layout(
+    work_dir        = work_dir,
+    run_id          = run_id,
+    checkpoint_dir  = checkpoint_dir,
+    temp_dir        = temp_dir,
+    diagnostics_dir = diagnostics_dir,
+    result_file     = result_file,
+    resume          = resume,
+    force_recompute = force_recompute
+  )
+  result_file <- work_layout$result_file
+
+  use_native_full <- (mode == "full_procedure" && engine == "Rcpp")
+  eff_threads <- if (parallel == "threads") {
+    if (!is.null(n_workers)) as.integer(n_workers) else max(1L, parallel::detectCores(logical = TRUE) - 1L)
+  } else {
+    1L
+  }
+  batch_size <- .cs_resolve_batch_size(checkpoint_every_candidates, candidate_batch_size)
+
+  # Build candidate metadata without eager combn() materialization for native streaming
+  size_counts <- numeric(0)
+  size_offsets <- numeric(0)
+  combo_list <- NULL
+  combo_sizes <- NULL
+  combo_names <- NULL
+
   if (mode == "fixed_candidate") {
     combo_list <- list(seq_along(used_items))
     combo_sizes <- length(used_items)
@@ -470,59 +535,32 @@ classification_stability_roc <- function(
     n_cands_total <- 1L
     cand_scope <- "fixed_candidate"
   } else {
-    n_cands_total <- sum(vapply(spec$model_sizes, function(sz) choose(length(used_items), sz), numeric(1)))
+    size_counts <- vapply(spec$model_sizes, function(sz) choose(length(used_items), sz), numeric(1))
+    size_offsets <- c(0, cumsum(size_counts))
+    n_cands_total <- size_offsets[length(size_offsets)]
+    if (!is.finite(n_cands_total) || n_cands_total > 9007199254740991) {
+      stop("Total candidate combinations exceed exact 53-bit integer precision limit.", call. = FALSE)
+    }
     if (n_cands_total > max_candidates) {
       stop(sprintf(
         "Estimated candidate combinations (%s) exceed `max_candidates` (%s). Supply a smaller candidate pool or increase `max_candidates` / use native streaming workflows.",
         format(n_cands_total, big.mark = ","), format(max_candidates, big.mark = ",")
       ), call. = FALSE)
     }
-    combo_list <- list()
-    for (sz in spec$model_sizes) {
-      cm <- utils::combn(seq_along(used_items), sz, simplify = FALSE)
-      combo_list <- c(combo_list, cm)
+    if (!use_native_full) {
+      combo_list <- list()
+      for (sz in spec$model_sizes) {
+        cm <- utils::combn(seq_along(used_items), sz, simplify = FALSE)
+        combo_list <- c(combo_list, cm)
+      }
+      combo_sizes <- vapply(combo_list, length, integer(1))
+      combo_names <- vapply(combo_list, function(idx) paste(used_items[idx], collapse = " + "), character(1))
     }
-    combo_sizes <- vapply(combo_list, length, integer(1))
-    combo_names <- vapply(combo_list, function(idx) paste(used_items[idx], collapse = " + "), character(1))
     cand_scope <- if (!is.null(selection_result)) {
       "restricted_candidate_pool"
     } else {
       "full_eligible_candidate_pool"
     }
-  }
-
-  # Fit reference model on original data
-  if (mode == "fixed_candidate") {
-    ref_eval <- .cs_eval_fixed_on_sample(
-      x_mat, y, seq_along(used_items),
-      spec$cutoff_method, spec$sensitivity_min, spec$specificity_min, no_feasible
-    )
-    ref_items_vec <- used_items
-    ref_items_str <- combo_names
-    ref_scores <- as.numeric(rowSums(x_mat))
-  } else {
-    ref_eval <- .cs_eval_full_on_sample_r(
-      x_mat, y, used_items, combo_list, combo_sizes, combo_names,
-      spec$selection_metric, spec$cutoff_method,
-      spec$sensitivity_min, spec$specificity_min,
-      spec$prefer_fewer_items, no_feasible
-    )
-    if (!is.na(ref_eval$selected_combo_idx)) {
-      ref_items_vec <- used_items[combo_list[[ref_eval$selected_combo_idx]]]
-      ref_items_str <- ref_eval$selected_items
-      ref_scores <- as.numeric(rowSums(x_mat[, combo_list[[ref_eval$selected_combo_idx]], drop = FALSE]))
-    } else {
-      ref_items_vec <- character(0)
-      ref_items_str <- NA_character_
-      ref_scores <- rep(NA_real_, n_obs)
-    }
-  }
-
-  ref_cutoff <- ref_eval$cutoff
-  ref_class <- if (!is.na(ref_cutoff) && !all(is.na(ref_scores))) {
-    as.integer(ref_scores >= ref_cutoff)
-  } else {
-    rep(NA_integer_, n_obs)
   }
 
   # Generate or validate bootstrap_indices in R (never inside native worker threads)
@@ -563,116 +601,302 @@ classification_stability_roc <- function(
       no_feasible        = no_feasible
     )
   )
+  analysis_identity <- .cp_hash_object(chk_key)
 
-  # Restore checkpoint if available and compatible
+  if (work_layout$enabled) {
+    .cs_check_manifest_migration(work_layout, analysis_identity, resume = resume, force_recompute = force_recompute)
+    .cs_write_manifest(work_layout, analysis_identity, status = "in_progress")
+  }
+
+  telemetry <- list(
+    ref_wall_ms = 0,
+    boot_wall_ms = 0,
+    barrier_wait_ms = 0,
+    checkpoint_write_ms = 0,
+    candidates_evaluated = 0,
+    n_checkpoints = 0L,
+    recovered_from_previous_generation = FALSE
+  )
+
+  # Restore checkpoint BEFORE reference model fit so interrupted reference searches resume cleanly
   completed_reps <- 0L
   valid_count <- integer(n_obs)
   pos_count <- integer(n_obs)
   flip_count <- integer(n_obs)
   rep_rows <- vector("list", bootstrap_reps)
+  ckpt_generation <- 0L
+  resume_rep_state <- NULL
+  ref_done <- FALSE
+  ref_eval <- NULL
+  ref_stream_state <- NULL
 
-  if (!is.null(result_file) && file.exists(result_file) && !isTRUE(force_recompute)) {
-    prev <- readRDS(result_file)
-    if (!is.null(prev$checkpoint_key) && identical(prev$checkpoint_key, chk_key)) {
-      completed_reps <- as.integer(prev$completed_reps)
+  if (!is.null(result_file) && !isTRUE(force_recompute)) {
+    rolling_env <- if (use_native_full) .cs_load_rolling_slot(result_file, analysis_identity) else NULL
+    if (!is.null(rolling_env)) {
+      p <- rolling_env$payload
+      ckpt_generation <- as.integer(rolling_env$generation)
+      completed_reps <- as.integer(p$completed_reps)
+      valid_count <- p$valid_count
+      pos_count <- p$pos_count
+      flip_count <- p$flip_count
       if (completed_reps > 0L) {
-        valid_count <- prev$valid_count
-        pos_count <- prev$pos_count
-        flip_count <- prev$flip_count
-        rep_rows[seq_len(completed_reps)] <- prev$rep_rows[seq_len(completed_reps)]
+        rep_rows[seq_len(completed_reps)] <- p$rep_rows[seq_len(completed_reps)]
       }
-    } else {
-      stop("Existing `result_file` checkpoint does not match current settings/data/indices. Set `force_recompute = TRUE` to overwrite.", call. = FALSE)
+      if (!is.null(p$resume_rep_state)) {
+        resume_rep_state <- p$resume_rep_state
+      }
+      if (!is.null(p$ref_done)) {
+        ref_done <- isTRUE(p$ref_done)
+        ref_eval <- p$ref_eval
+        ref_stream_state <- p$ref_stream_state
+      } else {
+        ref_done <- TRUE
+      }
+      telemetry$recovered_from_previous_generation <- isTRUE(rolling_env$recovered_from_previous)
+    } else if (file.exists(result_file)) {
+      prev <- readRDS(result_file)
+      if (!is.null(prev$checkpoint_key) && identical(prev$checkpoint_key, chk_key)) {
+        completed_reps <- as.integer(prev$completed_reps)
+        if (completed_reps > 0L) {
+          valid_count <- prev$valid_count
+          pos_count <- prev$pos_count
+          flip_count <- prev$flip_count
+          rep_rows[seq_len(completed_reps)] <- prev$rep_rows[seq_len(completed_reps)]
+        }
+      } else {
+        stop("Existing `result_file` checkpoint does not match current settings/data/indices. Set `force_recompute = TRUE` to overwrite.", call. = FALSE)
+      }
     }
   }
 
-  # Wave-based evaluation with cooperative interruption & atomic checkpointing
-  use_native_full <- (mode == "full_procedure" && engine == "Rcpp" &&
-                        spec$cutoff_method %in% c("youden", "closest_topleft", "clinical_constraint"))
-  eff_threads <- if (parallel == "threads") {
-    if (!is.null(n_workers)) as.integer(n_workers) else max(1L, parallel::detectCores(logical = TRUE) - 1L)
-  } else {
-    1L
-  }
-
-  cur_start <- completed_reps + 1L
-  while (cur_start <= bootstrap_reps) {
-    if (isTRUE(check_user_interrupt_cpp())) {
-      stop("Classification stability evaluation interrupted by user; completed waves saved if `result_file` was provided.", call. = FALSE)
-    }
-    cur_end <- min(cur_start + checkpoint_every - 1L, bootstrap_reps)
-    batch_ids <- cur_start:cur_end
-
-    if (use_native_full) {
-      combo_0based <- lapply(combo_list, function(v) as.integer(v) - 1L)
-      boot_wave_0 <- lapply(bootstrap_indices[batch_ids], function(v) as.integer(v) - 1L)
-      sens_min_c <- if (!is.null(spec$sensitivity_min)) as.numeric(spec$sensitivity_min) else -1.0
-      spec_min_c <- if (!is.null(spec$specificity_min)) as.numeric(spec$specificity_min) else -1.0
-      wave_df <- evaluate_bootstrap_replicates_native_cpp(
-        x                  = x_mat,
-        y                  = as.integer(y),
-        boot_indices_list  = boot_wave_0,
-        combo_0based       = combo_0based,
-        cutoff_method      = spec$cutoff_method,
-        selection_metric   = spec$selection_metric,
-        sensitivity_min    = sens_min_c,
-        specificity_min    = spec_min_c,
-        prefer_fewer_items = spec$prefer_fewer_items,
-        fallback_youden    = identical(no_feasible, "fallback_youden"),
-        need_oob           = FALSE,
-        ref_items_0based   = integer(0),
-        num_threads        = eff_threads
+  save_streaming_ckpt <- function(comp_reps,
+                                  cur_rep_state = NULL,
+                                  cur_ref_done = ref_done,
+                                  cur_ref_eval = ref_eval,
+                                  cur_ref_stream_state = NULL) {
+    if (is.null(result_file)) return(invisible(NULL))
+    ckpt_generation <<- ckpt_generation + 1L
+    telemetry$n_checkpoints <<- telemetry$n_checkpoints + 1L
+    .cs_save_rolling_slot(
+      base_path         = result_file,
+      generation        = ckpt_generation,
+      analysis_identity = analysis_identity,
+      payload = list(
+        ref_done         = isTRUE(cur_ref_done),
+        ref_eval         = cur_ref_eval,
+        ref_stream_state = cur_ref_stream_state,
+        completed_reps   = as.integer(comp_reps),
+        valid_count      = valid_count,
+        pos_count        = pos_count,
+        flip_count       = flip_count,
+        rep_rows         = if (comp_reps > 0L) rep_rows[seq_len(comp_reps)] else list(),
+        resume_rep_state = cur_rep_state
       )
+    )
+    int_after <- getOption("ncvroc.cs_test_interrupt_after_ckpts", NULL)
+    if (!is.null(int_after) && is.numeric(int_after) && telemetry$n_checkpoints >= int_after) {
+      stop("Simulated mid-replicate interruption after checkpoint.", call. = FALSE)
+    }
+  }
 
-      for (k in seq_along(batch_ids)) {
-        b <- batch_ids[k]
-        st_code <- wave_df$status_code[k]
-        c_idx <- wave_df$selected_combo_idx[k]
-        cut_b <- wave_df$selected_cutoff[k]
-        fb_b <- isTRUE(wave_df$fallback_used[k])
-        # status_code: 0=selected, 1=fallback_youden, 2=no_feasible_candidate, 3=invalid_evaluation
-        if (st_code == 3L) {
-          st_str <- "undefined_score"
-          reason_str <- "single_class_or_invalid_sample"
-          eval_ok <- FALSE
-        } else if (st_code == 2L) {
-          st_str <- "infeasible_selection"
-          reason_str <- "no_feasible_candidate"
-          eval_ok <- FALSE
-        } else if (st_code == 1L) {
-          st_str <- "infeasible_selection"
-          reason_str <- "no_feasible_candidate_fallback_youden"
-          eval_ok <- TRUE
+  # Fit reference model on original data (with intra-search checkpointing for native streaming)
+  if (mode == "fixed_candidate") {
+    ref_eval <- .cs_eval_fixed_on_sample(
+      x_mat, y, seq_along(used_items),
+      spec$cutoff_method, spec$sensitivity_min, spec$specificity_min, no_feasible
+    )
+    ref_items_vec <- used_items
+    ref_items_str <- combo_names
+    ref_scores <- as.numeric(rowSums(x_mat))
+  } else if (use_native_full) {
+    if (!isTRUE(ref_done) || is.null(ref_eval)) {
+      ref_cb <- if (!is.null(result_file)) {
+        function(phase_name, cursor_ord, best_st) {
+          save_streaming_ckpt(
+            comp_reps            = 0L,
+            cur_rep_state        = NULL,
+            cur_ref_done         = FALSE,
+            cur_ref_eval         = NULL,
+            cur_ref_stream_state = list(
+              rep_phase      = phase_name,
+              rep_cursor     = cursor_ord,
+              rep_best_state = best_st
+            )
+          )
+        }
+      } else {
+        NULL
+      }
+      ref_eval <- .cs_stream_eval_sample(
+        x_sample                    = x_mat,
+        y_sample                    = y,
+        used_items                  = used_items,
+        model_sizes                 = spec$model_sizes,
+        size_offsets                = size_offsets,
+        cutoff_method               = spec$cutoff_method,
+        selection_metric            = spec$selection_metric,
+        sensitivity_min             = spec$sensitivity_min,
+        specificity_min             = spec$specificity_min,
+        prefer_fewer_items          = spec$prefer_fewer_items,
+        no_feasible                 = no_feasible,
+        eff_threads                 = eff_threads,
+        batch_size                  = batch_size,
+        checkpoint_every_candidates = checkpoint_every_candidates,
+        checkpoint_every_seconds    = checkpoint_every_seconds,
+        resume_state                = ref_stream_state,
+        checkpoint_callback         = ref_cb
+      )
+      ref_done <- TRUE
+      telemetry$ref_wall_ms <- ref_eval$telemetry$wall_ms
+      telemetry$barrier_wait_ms <- telemetry$barrier_wait_ms + ref_eval$telemetry$barrier_wait_ms
+      telemetry$checkpoint_write_ms <- telemetry$checkpoint_write_ms + ref_eval$telemetry$checkpoint_write_ms
+      telemetry$candidates_evaluated <- telemetry$candidates_evaluated + ref_eval$telemetry$candidates_evaluated
+      if (!is.null(result_file)) {
+        t_w0 <- proc.time()[["elapsed"]]
+        save_streaming_ckpt(
+          comp_reps            = completed_reps,
+          cur_rep_state        = resume_rep_state,
+          cur_ref_done         = TRUE,
+          cur_ref_eval         = ref_eval,
+          cur_ref_stream_state = NULL
+        )
+        telemetry$checkpoint_write_ms <- telemetry$checkpoint_write_ms + (proc.time()[["elapsed"]] - t_w0) * 1000
+      }
+    }
+    if (length(ref_eval$selected_item_idx) > 0L) {
+      ref_items_vec <- used_items[ref_eval$selected_item_idx]
+      ref_items_str <- ref_eval$selected_items
+      ref_scores <- as.numeric(rowSums(x_mat[, ref_eval$selected_item_idx, drop = FALSE]))
+    } else {
+      ref_items_vec <- character(0)
+      ref_items_str <- NA_character_
+      ref_scores <- rep(NA_real_, n_obs)
+    }
+  } else {
+    ref_eval <- .cs_eval_full_on_sample_r(
+      x_mat, y, used_items, combo_list, combo_sizes, combo_names,
+      spec$selection_metric, spec$cutoff_method,
+      spec$sensitivity_min, spec$specificity_min,
+      spec$prefer_fewer_items, no_feasible
+    )
+    if (!is.na(ref_eval$selected_combo_idx)) {
+      ref_items_vec <- used_items[combo_list[[ref_eval$selected_combo_idx]]]
+      ref_items_str <- ref_eval$selected_items
+      ref_scores <- as.numeric(rowSums(x_mat[, combo_list[[ref_eval$selected_combo_idx]], drop = FALSE]))
+    } else {
+      ref_items_vec <- character(0)
+      ref_items_str <- NA_character_
+      ref_scores <- rep(NA_real_, n_obs)
+    }
+  }
+
+  ref_cutoff <- ref_eval$cutoff
+  ref_class <- if (!is.na(ref_cutoff) && !all(is.na(ref_scores))) {
+    as.integer(ref_scores >= ref_cutoff)
+  } else {
+    rep(NA_integer_, n_obs)
+  }
+
+  # Wave-based / intra-replicate streaming evaluation with cooperative interruption & checkpointing
+  if (use_native_full) {
+
+    start_b <- completed_reps + 1L
+    if (start_b <= bootstrap_reps) {
+      for (b in start_b:bootstrap_reps) {
+        if (isTRUE(check_user_interrupt_cpp())) {
+          stop("Classification stability evaluation interrupted by user; latest checkpoint preserved.", call. = FALSE)
+        }
+        idx_b <- bootstrap_indices[[b]]
+        x_b <- x_mat[idx_b, , drop = FALSE]
+        y_b <- y[idx_b]
+
+        rep_res_state <- if (!is.null(resume_rep_state) && identical(as.integer(resume_rep_state$rep_id), as.integer(b))) {
+          resume_rep_state
         } else {
-          st_str <- "valid"
-          reason_str <- NA_character_
-          eval_ok <- TRUE
+          NULL
+        }
+        resume_rep_state <- NULL
+
+        intra_cb <- if (!is.null(result_file)) {
+          function(phase_name, cursor_ord, best_st) {
+            save_streaming_ckpt(
+              comp_reps = b - 1L,
+              cur_rep_state = list(
+                rep_id         = as.integer(b),
+                rep_phase      = phase_name,
+                rep_cursor     = cursor_ord,
+                rep_best_state = best_st
+              )
+            )
+          }
+        } else {
+          NULL
         }
 
-        sel_items_b <- if (!is.na(c_idx)) combo_names[c_idx] else NA_character_
-        sel_n_b <- if (!is.na(c_idx)) as.integer(combo_sizes[c_idx]) else NA_integer_
+        ev <- .cs_stream_eval_sample(
+          x_sample                    = x_b,
+          y_sample                    = y_b,
+          used_items                  = used_items,
+          model_sizes                 = spec$model_sizes,
+          size_offsets                = size_offsets,
+          cutoff_method               = spec$cutoff_method,
+          selection_metric            = spec$selection_metric,
+          sensitivity_min             = spec$sensitivity_min,
+          specificity_min             = spec$specificity_min,
+          prefer_fewer_items          = spec$prefer_fewer_items,
+          no_feasible                 = no_feasible,
+          eff_threads                 = eff_threads,
+          batch_size                  = batch_size,
+          checkpoint_every_candidates = checkpoint_every_candidates,
+          checkpoint_every_seconds    = checkpoint_every_seconds,
+          resume_state                = rep_res_state,
+          checkpoint_callback         = intra_cb
+        )
 
-        if (eval_ok && !is.na(c_idx) && !is.na(cut_b)) {
-          orig_sc_b <- as.numeric(rowSums(x_mat[, combo_list[[c_idx]], drop = FALSE]))
-          pred_b <- as.integer(orig_sc_b >= cut_b)
+        telemetry$boot_wall_ms <- telemetry$boot_wall_ms + ev$telemetry$wall_ms
+        telemetry$barrier_wait_ms <- telemetry$barrier_wait_ms + ev$telemetry$barrier_wait_ms
+        telemetry$checkpoint_write_ms <- telemetry$checkpoint_write_ms + ev$telemetry$checkpoint_write_ms
+        telemetry$candidates_evaluated <- telemetry$candidates_evaluated + ev$telemetry$candidates_evaluated
+
+        eval_ok <- (ev$status == "valid") || (ev$status == "infeasible_selection" && isTRUE(ev$fallback_used))
+        if (eval_ok && length(ev$selected_item_idx) > 0L && !is.na(ev$cutoff)) {
+          orig_sc_b <- as.numeric(rowSums(x_mat[, ev$selected_item_idx, drop = FALSE]))
+          pred_b <- as.integer(orig_sc_b >= ev$cutoff)
           valid_count <- valid_count + 1L
           pos_count <- pos_count + pred_b
           if (!all(is.na(ref_class))) {
             flip_count <- flip_count + as.integer(pred_b != ref_class)
           }
         }
+
         rep_rows[[b]] <- data.frame(
           replicate_id   = b,
-          status         = st_str,
-          failure_reason = reason_str,
-          fallback_used  = fb_b,
-          cutoff         = if (eval_ok) cut_b else NA_real_,
-          selected_items = sel_items_b,
-          n_items        = sel_n_b,
+          status         = ev$status,
+          failure_reason = ev$failure_reason,
+          fallback_used  = isTRUE(ev$fallback_used),
+          cutoff         = if (eval_ok) ev$cutoff else NA_real_,
+          selected_items = ev$selected_items,
+          n_items        = ev$selected_n_items,
           stringsAsFactors = FALSE
         )
+        completed_reps <- b
+
+        if (!is.null(result_file)) {
+          t_w0 <- proc.time()[["elapsed"]]
+          save_streaming_ckpt(comp_reps = completed_reps, cur_rep_state = NULL)
+          telemetry$checkpoint_write_ms <- telemetry$checkpoint_write_ms + (proc.time()[["elapsed"]] - t_w0) * 1000
+        }
       }
-    } else {
+    }
+  } else {
+    cur_start <- completed_reps + 1L
+    while (cur_start <= bootstrap_reps) {
+      if (isTRUE(check_user_interrupt_cpp())) {
+        stop("Classification stability evaluation interrupted by user; completed waves saved if `result_file` was provided.", call. = FALSE)
+      }
+      cur_end <- min(cur_start + checkpoint_every - 1L, bootstrap_reps)
+      batch_ids <- cur_start:cur_end
+
       for (b in batch_ids) {
         idx_b <- bootstrap_indices[[b]]
         x_b <- x_mat[idx_b, , drop = FALSE]
@@ -727,23 +951,23 @@ classification_stability_roc <- function(
           stringsAsFactors = FALSE
         )
       }
-    }
 
-    completed_reps <- cur_end
-    if (!is.null(result_file)) {
-      .save_atomic_rds(
-        list(
-          checkpoint_key = chk_key,
-          completed_reps = completed_reps,
-          valid_count    = valid_count,
-          pos_count      = pos_count,
-          flip_count     = flip_count,
-          rep_rows       = rep_rows[seq_len(completed_reps)]
-        ),
-        result_file
-      )
+      completed_reps <- cur_end
+      if (!is.null(result_file)) {
+        .save_atomic_rds(
+          list(
+            checkpoint_key = chk_key,
+            completed_reps = completed_reps,
+            valid_count    = valid_count,
+            pos_count      = pos_count,
+            flip_count     = flip_count,
+            rep_rows       = rep_rows[seq_len(completed_reps)]
+          ),
+          result_file
+        )
+      }
+      cur_start <- cur_end + 1L
     }
-    cur_start <- cur_end + 1L
   }
 
   replicate_summary <- do.call(rbind, rep_rows)
@@ -852,18 +1076,22 @@ classification_stability_roc <- function(
         n_candidates_evaluated = n_cands_total
       ),
       settings = list(
-        outcome            = outcome,
-        resampling         = resampling,
-        bootstrap_reps     = bootstrap_reps,
-        cutoff_method      = spec$cutoff_method,
-        sensitivity_min    = spec$sensitivity_min,
-        specificity_min    = spec$specificity_min,
-        selection_metric   = spec$selection_metric,
-        prefer_fewer_items = spec$prefer_fewer_items,
-        no_feasible        = no_feasible,
-        engine             = if (use_native_full) "Rcpp" else "R",
-        parallel           = if (use_native_full) parallel else "none",
-        seed               = seed
+        outcome                     = outcome,
+        resampling                  = resampling,
+        bootstrap_reps              = bootstrap_reps,
+        cutoff_method               = spec$cutoff_method,
+        sensitivity_min             = spec$sensitivity_min,
+        specificity_min             = spec$specificity_min,
+        selection_metric            = spec$selection_metric,
+        prefer_fewer_items          = spec$prefer_fewer_items,
+        no_feasible                 = no_feasible,
+        engine                      = if (use_native_full) "Rcpp" else "R",
+        parallel                    = if (use_native_full) parallel else "none",
+        n_workers                   = eff_threads,
+        checkpoint_every_candidates = checkpoint_every_candidates,
+        checkpoint_every_seconds    = checkpoint_every_seconds,
+        candidate_batch_size        = batch_size,
+        seed                        = seed
       ),
       provenance = list(
         n_obs                    = n_obs,
@@ -871,26 +1099,45 @@ classification_stability_roc <- function(
         data_digest              = data_digest,
         full_data_digest         = .cp_hash_object(data),
         outcome_digest           = .cp_hash_object(y),
+        analysis_identity        = analysis_identity,
         rng_preserved            = !is.null(seed),
-        v031_audit_status        = spec$v031_audit_status
+        v031_audit_status        = spec$v031_audit_status,
+        work_layout              = if (work_layout$enabled) work_layout else NULL,
+        telemetry                = telemetry
       )
     ),
     class = "classification_stability_result"
   )
 
   if (!is.null(result_file)) {
-    .save_atomic_rds(
-      list(
-        checkpoint_key = chk_key,
-        completed_reps = bootstrap_reps,
-        valid_count    = valid_count,
-        pos_count      = pos_count,
-        flip_count     = flip_count,
-        rep_rows       = rep_rows,
-        final_result   = out
-      ),
-      result_file
+    final_obj <- list(
+      checkpoint_key = chk_key,
+      completed_reps = bootstrap_reps,
+      valid_count    = valid_count,
+      pos_count      = pos_count,
+      flip_count     = flip_count,
+      rep_rows       = rep_rows,
+      final_result   = out
     )
+    if (work_layout$enabled) {
+      tmp_res <- paste0(result_file, ".tmp.", Sys.getpid())
+      saveRDS(final_obj, file = tmp_res)
+      cs_durable_replace_file_cpp(
+        normalizePath(tmp_res, winslash = "/", mustWork = TRUE),
+        normalizePath(result_file, winslash = "/", mustWork = FALSE)
+      )
+      .cs_write_manifest(
+        work_layout,
+        analysis_identity,
+        status = "completed",
+        extra = list(
+          result_sha256 = .cp_hash_file(result_file),
+          telemetry     = telemetry
+        )
+      )
+    } else {
+      .save_atomic_rds(final_obj, result_file)
+    }
   }
 
   out
@@ -1065,6 +1312,7 @@ compare_classification_stability <- function(fixed_res, full_res, data = NULL) {
       comparable             = TRUE,
       n_common_valid         = as.integer(n_common),
       n_requested            = fixed_res$cutoff_summary$n_requested,
+      coverage               = as.numeric(n_common) / as.numeric(fixed_res$cutoff_summary$n_requested),
       fixed_failure_rate     = fixed_res$cutoff_summary$failure_rate,
       full_failure_rate      = full_res$cutoff_summary$failure_rate,
       fixed_mean_cii         = fixed_res$cii_summary$mean,

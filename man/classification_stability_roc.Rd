@@ -32,7 +32,13 @@ classification_stability_roc(
   result_file = NULL,
   checkpoint_every = 25L,
   force_recompute = FALSE,
-  progress = interactive()
+  progress = interactive(),
+  work_dir = NULL,
+  run_id = NULL,
+  checkpoint_every_candidates = 1000000L,
+  checkpoint_every_seconds = 1800,
+  candidate_batch_size = 50000L,
+  resume = FALSE
 )
 }
 \arguments{
@@ -99,6 +105,22 @@ polling (default `25L`).}
 \item{force_recompute}{Logical(1), default `FALSE`.}
 
 \item{progress}{Logical(1), default `interactive()`.}
+
+\item{work_dir}{Optional local non-synced directory for run isolation, manifest,
+and rolling checkpoints.}
+
+\item{run_id}{Optional run identifier under `work_dir/runs/`.}
+
+\item{checkpoint_every_candidates}{Numeric/integer(1), intra-search checkpoint
+cadence in candidates (default `1000000L`).}
+
+\item{checkpoint_every_seconds}{Optional numeric(1) time-based checkpoint
+cadence in seconds (default `1800`).}
+
+\item{candidate_batch_size}{Integer(1), native streaming batch size in
+candidates (default `50000L`).}
+
+\item{resume}{Logical(1), default `FALSE`.}
 }
 \value{
 An S3 object of class `"classification_stability_result"`.

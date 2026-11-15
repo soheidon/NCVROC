@@ -1,0 +1,75 @@
+NCVROC v0.34.1
+=== NCVROC v0.34.1 Pilot Report ===
+Env: R version 4.5.3 (2026-03-11 ucrt) | OS: Windows | CPU: 13th Gen Intel(R) Core(TM) i7-13700K (23 threads) | RAM: 63.8 GB | Storage: SSD | Compiler: G__~1.EXE (GCC) 14.3.0 | n_obs: 500 | items_universe: 103
+
+--- 1. Tiered Throughput (sizes 1:6, 1 ref + 3 boot) ---
+  items cands_per_rep ref_wall_ms boot_wall_ms total_elapsed_s cands_per_sec
+1    15          9948         8.5         23.7            0.89         44710
+2    22        110055        67.0        216.8            0.81        543481
+3    32       1149016       544.5       2064.1            3.15       1459068
+  barrier_wait_ms ckpt_write_ms n_ckpts
+1            11.3             0       4
+2            96.1            40       4
+3           690.2            70       8
+
+--- 2. Worker Scaling & Checkpoint Cadence (1.15M tier) ---
+  n_workers ckpt_cadence elapsed_s cands_per_sec barrier_wait_ms ckpt_write_ms
+1         1      1000000     14.05        163561             0.0            50
+2         8       100000      2.97        773748           447.7           200
+3         8      1000000      2.64        870467           369.9            30
+4        23       100000      2.15       1068852           535.1            90
+5        23      1000000      1.92       1196892           502.5             0
+6        23     10000000      1.80       1276684           345.4            10
+  n_ckpts
+1       4
+2      24
+3       4
+4      24
+5       4
+6       2
+
+--- 2b. Candidate Batch Size Sweep (1.15M tier) ---
+  batch_size elapsed_s cands_per_sec
+1      10000      2.03       1132035
+2      50000      1.78       1291029
+3     100000      1.61       1427349
+
+--- 3. Cutoff Method Throughput & Fallback (110k tier) ---
+                     cutoff_spec elapsed_s cands_per_sec n_fallback
+1                         youden      0.61        541254          0
+2        sensitivity_target(0.7)      0.59        559602          0
+3   clinical_constraint(0.6/0.6)      0.99        333500          2
+4 clinical_infeasible(0.99/0.99)      0.97        340376          2
+
+--- 4. Interruption, Resume, Checkpoint Size & Publish Verification ---
+Interrupt triggered: TRUE (after 0.450s)
+Slot0 bytes: 7128 | Slot1 bytes: 7224
+Resume elapsed: 0.670s | Replicates completed: 2
+Publish status: verified | RDS SHA-256: c6243191ef0c99e125be295989d3d3b5a41e2d0646fa166acd41faa47be51b76 | Publish+verify time: 0.030s
+
+Peak Process RSS: 89.9 MB
+
+--- 5. Size-Stratified Breakdown (k = 1..6, 32-item tier + 103-item universe counts) ---
+  model_size cands_32items cands_103items elapsed_s cands_per_sec
+1          1            32            103      0.39           164
+2          2           496           5253      0.50          1984
+3          3          4960         176851      0.41         24195
+4          4         35960        4421275      0.43        167256
+5          5        201376       87541245      0.58        694400
+6          6        906192     1429840335      1.46       1241359
+
+--- 6. >10M Candidate 10M-Cadence Verification (46 items = 10,917,019 cands/rep, 1 ref + 1 boot = 21,834,038 total) ---
+  cands_per_rep total_cands ckpt_cadence elapsed_s cands_per_sec ckpt_write_ms
+1      10917019    21834038      1000000     11.91       1833253           240
+2      10917019    21834038     10000000     11.83       1845650            60
+  n_ckpts
+1      22
+2       4
+
+--- 7. Full 103-item x (1 ref + 500 bootstrap) Projection & Storage ---
+Total candidates: ref = 1521985062 | 500 boot = 760992531000 | combined = 762514516062
+Optimistic (1845650 cands/s): ref = 0.23 h | 500 boot = 4.77 d | total = 4.78 d
+Median     (1250000 cands/s): ref = 0.34 h | 500 boot = 7.05 d | total = 7.06 d
+Conserv.   (900000 cands/s): ref = 0.47 h | 500 boot = 9.79 d | total = 9.81 d
+Storage est: 2-slot rolling ckpt ~14.0 KB + manifest <10 KB + final RDS/CSV <5 MB
+Go/No-Go Gate: HOLD full 103-item x 500-rep run until user reviews projected 4.78-9.81 days runtime.
