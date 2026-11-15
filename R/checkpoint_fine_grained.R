@@ -998,7 +998,8 @@
                                            resume,
                                            force_recompute,
                                            progress,
-                                           verbose) {
+                                           verbose,
+                                           outer_fold_progress = NULL) {
   prep <- .cp_prepare_run(
     x_mat               = x_mat,
     y_vec               = y_vec,
@@ -1027,10 +1028,29 @@
     verbose             = verbose
   )
   on.exit(.cp_release_lock(prep$lock_token), add = TRUE)
+  if (is.function(outer_fold_progress)) {
+    outer_fold_progress(0L, kind = "start")
+  }
+  if (is.function(outer_fold_progress) && length(prep$reused_idx) > 0L) {
+    outer_fold_progress(length(prep$reused_idx), kind = "reused")
+  }
 
   enum_desc <- .cp_build_enumeration_descriptor(items, min_items, max_items)
   batch_size <- .cp_resolve_candidate_batch_size()
   n_folds <- length(prep$fold_specs)
+  diag_run <- if (identical(engine, "Rcpp")) {
+    .ncvroc_diag_start_run(
+      backend = consumer_backend, n_rows = nrow(x_mat), n_items = ncol(x_mat),
+      n_folds = n_folds, candidate_count = enum_desc$total_combos * length(prep$compute_idx),
+      num_threads = as.integer(num_threads), checkpoint_enabled = TRUE
+    )
+  } else NULL
+  diag_status <- "ABORTED"
+  on.exit(.ncvroc_diag_end_run(diag_status), add = TRUE)
+  .ncvroc_diag_event("checkpoint_preflight_complete", backend = consumer_backend,
+                     detail = paste0("granularity=", checkpoint_granularity,
+                                     ";reused_folds=", length(prep$reused_idx),
+                                     ";compute_folds=", length(prep$compute_idx)))
 
   fold_inspections <- vector("list", n_folds)
   all_tasks <- list()
@@ -1168,23 +1188,55 @@
         .ncvroc_checkpoint_test_seams$native_call_count <-
           .ncvroc_checkpoint_test_seams$native_call_count + 1L
 
-        nat_res <- native_eval_candidate_batches_cpp(
-          x                       = x_mat,
-          y                       = as.integer(y_vec),
-          train_indices_list      = train_indices_list,
-          task_fold_idx           = task_fold_idx,
-          task_repeat_id          = task_repeat_id,
-          task_outer_fold_id      = task_outer_fold_id,
-          task_model_size         = task_model_size,
-          task_local_rank_start_0 = task_l_start_0,
-          task_local_rank_end_0   = task_l_end_0,
-          task_level_start_0      = task_level_start_0,
-          cutoff_method           = cutoff_method,
-          rank_by                 = preselect_by,
-          preselect_top_n         = as.integer(preselect_top_n),
-          prefer_fewer_items      = TRUE,
-          num_threads             = as.integer(num_threads)
+        task_diag <- data.frame(
+          repeat_id = task_repeat_id,
+          outer_fold_id = task_outer_fold_id,
+          model_size = task_model_size,
+          rank_start_1based = task_l_start_0 + 1,
+          rank_end_1based = task_l_end_0,
+          stringsAsFactors = FALSE
         )
+        nat_res <- .ncvroc_diag_batch_call(
+          call = function() native_eval_candidate_batches_cpp(
+            x                       = x_mat,
+            y                       = as.integer(y_vec),
+            train_indices_list      = train_indices_list,
+            task_fold_idx           = task_fold_idx,
+            task_repeat_id          = task_repeat_id,
+            task_outer_fold_id      = task_outer_fold_id,
+            task_model_size         = task_model_size,
+            task_local_rank_start_0 = task_l_start_0,
+            task_local_rank_end_0   = task_l_end_0,
+            task_level_start_0      = task_level_start_0,
+            cutoff_method           = cutoff_method,
+            rank_by                 = preselect_by,
+            preselect_top_n         = as.integer(preselect_top_n),
+            prefer_fewer_items      = TRUE,
+            num_threads             = as.integer(num_threads)
+          ),
+          tasks = task_diag, backend = consumer_backend,
+          num_threads = as.integer(num_threads), wave_size = n_t,
+          n_rows = min(vapply(unique_fold_idxs, function(fi) {
+            length(prep$fold_specs[[fi]]$train_indices)
+          }, integer(1L))),
+          n_items = length(items), stage = "fine_grained_candidate_batch"
+        )
+        for (ti in seq_len(n_t)) {
+          if (!isTRUE(nat_res[[ti]]$completed) || !identical(as.integer(nat_res[[ti]]$status_code), 0L)) {
+            .ncvroc_diag_event(
+              "native_batch_status_failure", backend = consumer_backend,
+              repeat_id = task_repeat_id[[ti]], outer_fold_id = task_outer_fold_id[[ti]],
+              model_size = task_model_size[[ti]],
+              rank_start_1based = task_l_start_0[[ti]] + 1,
+              rank_end_1based = task_l_end_0[[ti]],
+              batch_size = task_l_end_0[[ti]] - task_l_start_0[[ti]],
+              wave_size = n_t, num_threads = num_threads,
+              n_rows = length(prep$fold_specs[[wave_tasks[[ti]]$fold_idx]]$train_indices),
+              n_items = length(items), task_count = n_t,
+              detail = paste0("status_code=", as.integer(nat_res[[ti]]$status_code))
+            )
+          }
+        }
 
         for (ti in seq_len(n_t)) {
           t <- wave_tasks[[ti]]
@@ -1396,6 +1448,7 @@
         verbose             = verbose
       )
       prep$fold_producers[[idx]] <- consumer_backend
+      if (is.function(outer_fold_progress)) outer_fold_progress(1L, kind = "computed")
     }
   }
 
@@ -1433,7 +1486,9 @@
 
   prov <- .cp_build_provenance(prep, consumer_backend, resume, force_recompute)
   prov$fine_grained <- fg_stats
-  list(per_fold = per_fold, provenance = prov)
+  diag_status <- "COMPLETE"
+  list(per_fold = per_fold, provenance = prov,
+       diagnostics = if (is.null(diag_run)) NULL else diag_run)
 }
 
 # ---- Bounded streaming Native outer-fold execution (R3/R4: >2M capable) ----
@@ -1463,11 +1518,21 @@
                                               resume = TRUE,
                                               force_recompute = FALSE,
                                               progress = TRUE,
-                                              verbose = TRUE) {
+                                              verbose = TRUE,
+                                              outer_fold_progress = NULL) {
   enum_desc <- .cp_build_enumeration_descriptor(items, min_items, max_items)
   batch_size <- .cp_resolve_candidate_batch_size()
   n_folds <- length(outer_folds)
   has_cp <- !is.null(checkpoint_dir)
+  diag_run <- .ncvroc_diag_start_run(
+    backend = "native_streaming", n_rows = nrow(x_mat), n_items = ncol(x_mat),
+    n_folds = n_folds, candidate_count = enum_desc$total_combos * n_folds,
+    num_threads = as.integer(num_threads), checkpoint_enabled = has_cp
+  )
+  diag_status <- "ABORTED"
+  on.exit(.ncvroc_diag_end_run(diag_status), add = TRUE)
+  .ncvroc_diag_event("checkpoint_preflight_start", backend = "native_streaming",
+                     detail = paste0("enabled=", has_cp))
 
   if (has_cp) {
     prep <- .cp_prepare_run(
@@ -1500,12 +1565,23 @@
     on.exit(.cp_release_lock(prep$lock_token), add = TRUE)
     fold_specs <- prep$fold_specs
     compute_idx <- prep$compute_idx
+    if (is.function(outer_fold_progress)) {
+      outer_fold_progress(0L, kind = "start")
+    }
+    if (is.function(outer_fold_progress) && length(prep$reused_idx) > 0L) {
+      outer_fold_progress(length(prep$reused_idx), kind = "reused")
+    }
     per_fold <- vector("list", n_folds)
     for (i in prep$reused_idx) {
       per_fold[[i]] <- .canonical_to_r_aggregation_record(prep$final_canon[[i]])
     }
     split_hashes <- vapply(prep$states, `[[`, character(1L), "split_hash")
     paths <- prep$paths
+    .ncvroc_diag_event(
+      "checkpoint_preflight_complete", backend = "native_streaming",
+      detail = paste0("reused_folds=", length(prep$reused_idx),
+                      ";compute_folds=", length(compute_idx))
+    )
   } else {
     n_cands_shortlist <- as.integer(min(as.double(preselect_top_n), enum_desc$total_combos))
     fold_specs <- .build_native_outer_fold_specs(
@@ -1520,7 +1596,19 @@
     compute_idx <- seq_len(n_folds)
     per_fold <- vector("list", n_folds)
     paths <- NULL
+    .ncvroc_diag_event("checkpoint_preflight_complete", backend = "native_streaming",
+                       detail = "enabled=FALSE")
   }
+
+  candidate_progress_total <- as.double(enum_desc$total_combos) * length(compute_idx)
+  candidate_progress <- .progress_make(
+    total = candidate_progress_total,
+    label = "Native Streaming candidates",
+    enabled = isTRUE(progress),
+    progress_mode = "exact",
+    unit = "evaluated"
+  )
+  on.exit(candidate_progress$close(), add = TRUE)
 
   outer_folds_proxy <- vector("list", n_folds)
   names(outer_folds_proxy) <- vapply(fold_specs, function(s) s$fold_name, character(1L))
@@ -1533,6 +1621,13 @@
 
   for (idx in compute_idx) {
     spec <- fold_specs[[idx]]
+    .ncvroc_diag_event(
+      "outer_fold_start", backend = "native_streaming",
+      repeat_id = spec$repeat_id, outer_fold_id = spec$outer_fold_id,
+      n_rows = length(spec$train_indices), n_items = length(items),
+      num_threads = num_threads,
+      detail = paste0("fold=", spec$fold_name)
+    )
     top_k_acc <- NULL
 
     # Stream each model_size in bounded batches; never materialize full candidate list
@@ -1584,28 +1679,52 @@
         .ncvroc_checkpoint_test_seams$native_call_count <-
           as.integer(.ncvroc_checkpoint_test_seams$native_call_count) + 1L
 
-        nat_res <- native_eval_candidate_batches_cpp(
-          x                       = x_mat,
-          y                       = as.integer(y_vec),
-          train_indices_list      = list(as.integer(spec$train_indices)),
-          task_fold_idx           = rep(0L, n_w),
-          task_repeat_id          = rep(as.integer(spec$repeat_id), n_w),
-          task_outer_fold_id      = rep(as.integer(spec$outer_fold_id), n_w),
-          task_model_size         = rep(as.integer(k), n_w),
-          task_local_rank_start_0 = r_starts_0,
-          task_local_rank_end_0   = r_ends_0,
-          task_level_start_0      = rep(level_start_0, n_w),
-          cutoff_method           = cutoff_method,
-          rank_by                 = preselect_by,
-          preselect_top_n         = as.integer(preselect_top_n),
-          prefer_fewer_items      = TRUE,
-          num_threads             = as.integer(num_threads)
+        task_diag <- data.frame(
+          repeat_id = rep(as.integer(spec$repeat_id), n_w),
+          outer_fold_id = rep(as.integer(spec$outer_fold_id), n_w),
+          model_size = rep(as.integer(k), n_w),
+          rank_start_1based = r_starts_0 + 1,
+          rank_end_1based = r_ends_0,
+          stringsAsFactors = FALSE
+        )
+        nat_res <- .ncvroc_diag_batch_call(
+          call = function() native_eval_candidate_batches_cpp(
+            x                       = x_mat,
+            y                       = as.integer(y_vec),
+            train_indices_list      = list(as.integer(spec$train_indices)),
+            task_fold_idx           = rep(0L, n_w),
+            task_repeat_id          = rep(as.integer(spec$repeat_id), n_w),
+            task_outer_fold_id      = rep(as.integer(spec$outer_fold_id), n_w),
+            task_model_size         = rep(as.integer(k), n_w),
+            task_local_rank_start_0 = r_starts_0,
+            task_local_rank_end_0   = r_ends_0,
+            task_level_start_0      = rep(level_start_0, n_w),
+            cutoff_method           = cutoff_method,
+            rank_by                 = preselect_by,
+            preselect_top_n         = as.integer(preselect_top_n),
+            prefer_fewer_items      = TRUE,
+            num_threads             = as.integer(num_threads)
+          ),
+          tasks = task_diag, backend = "native_streaming",
+          num_threads = as.integer(num_threads), wave_size = n_w,
+          n_rows = length(spec$train_indices), n_items = length(items)
         )
 
         wave_dfs <- vector("list", n_w)
         for (wi in seq_len(n_w)) {
           r <- nat_res[[wi]]
           if (!isTRUE(r$completed) || r$status_code != 0L) {
+            .ncvroc_diag_event(
+              "native_batch_status_failure", backend = "native_streaming",
+              repeat_id = spec$repeat_id, outer_fold_id = spec$outer_fold_id,
+              model_size = k, rank_start_1based = r_starts_0[[wi]] + 1,
+              rank_end_1based = r_ends_0[[wi]],
+              batch_size = r_ends_0[[wi]] - r_starts_0[[wi]],
+              wave_size = n_w, num_threads = num_threads,
+              n_rows = length(spec$train_indices), n_items = length(items),
+              task_count = n_w,
+              detail = paste0("status_code=", as.integer(r$status_code))
+            )
             stop(
               sprintf(
                 "Native streaming batch failed for %s k=%d [%.0f, %.0f]: %s",
@@ -1623,13 +1742,26 @@
                     "auc", "cutoff", "sensitivity", "specificity", "youden",
                     "accuracy", "ppv", "npv")
           wave_dfs[[wi]] <- df[, cols, drop = FALSE]
+          candidate_progress$tick(r_ends_0[[wi]] - r_starts_0[[wi]])
           .ncvroc_checkpoint_test_seams$native_batches_executed <-
             as.integer(.ncvroc_checkpoint_test_seams$native_batches_executed) + 1L
         }
 
         # Exact bounded global Top-N reduction (keeps <= preselect_top_n rows)
+        .ncvroc_diag_event(
+          "top_n_merge_start", backend = "native_streaming",
+          repeat_id = spec$repeat_id, outer_fold_id = spec$outer_fold_id,
+          model_size = k, num_threads = num_threads,
+          detail = paste0("incoming_rows=", sum(vapply(wave_dfs, nrow, integer(1L))))
+        )
         merge_inputs <- if (is.null(top_k_acc)) wave_dfs else c(list(top_k_acc), wave_dfs)
         top_k_acc <- .cp_merge_top_candidates(merge_inputs, preselect_top_n, preselect_by)
+        .ncvroc_diag_event(
+          "top_n_merge_complete", backend = "native_streaming",
+          repeat_id = spec$repeat_id, outer_fold_id = spec$outer_fold_id,
+          model_size = k, num_threads = num_threads,
+          detail = paste0("retained_rows=", nrow(top_k_acc))
+        )
         .ncvroc_checkpoint_test_seams$interrupt_waves_completed <-
           as.integer(.ncvroc_checkpoint_test_seams$interrupt_waves_completed) + 1L
       }
@@ -1640,6 +1772,9 @@
       lapply(cand_f, function(f_idx) as.integer(f_idx + 1L))
     })
 
+    .ncvroc_diag_event("post_search_fold_evaluation_start", backend = "native_streaming",
+                       repeat_id = spec$repeat_id, outer_fold_id = spec$outer_fold_id,
+                       detail = paste0("shortlist_size=", nrow(top_k_acc)))
     r_fold <- .evaluate_outer_fold_from_candidates(
       top_candidates          = top_k_acc,
       i                       = idx,
@@ -1657,6 +1792,8 @@
       precomputed_inner_folds = precomputed_1based,
       return_canonical_diag   = TRUE
     )
+    .ncvroc_diag_event("post_search_fold_evaluation_complete", backend = "native_streaming",
+                       repeat_id = spec$repeat_id, outer_fold_id = spec$outer_fold_id)
 
     if (has_cp) {
       canon_res <- .r_fold_to_canonical(r_fold, spec, items, y_vec = y_vec)
@@ -1675,9 +1812,16 @@
       prep$final_canon[[idx]] <- canon_res
       prep$fold_producers[[idx]] <- "scope_b_native_outer_fold"
       per_fold[[idx]] <- .canonical_to_r_aggregation_record(canon_res)
+      .ncvroc_diag_event("checkpoint_fold_publish_complete", backend = "native_streaming",
+                         repeat_id = spec$repeat_id, outer_fold_id = spec$outer_fold_id)
     } else {
       per_fold[[idx]] <- r_fold
     }
+    if (is.function(outer_fold_progress)) {
+      outer_fold_progress(1L, kind = "computed")
+    }
+    .ncvroc_diag_event("outer_fold_complete", backend = "native_streaming",
+                       repeat_id = spec$repeat_id, outer_fold_id = spec$outer_fold_id)
   }
 
   prov <- if (has_cp) {
@@ -1685,5 +1829,7 @@
   } else {
     NULL
   }
-  list(per_fold = per_fold, provenance = prov)
+  diag_status <- "COMPLETE"
+  list(per_fold = per_fold, provenance = prov,
+       diagnostics = if (is.null(diag_run)) NULL else diag_run)
 }

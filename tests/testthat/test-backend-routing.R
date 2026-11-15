@@ -236,6 +236,29 @@ test_that("native_streaming supports checkpoint save/resume across granularities
     expect_equal(res_cp$summary, ref$summary, tolerance = 1e-12)
     expect_equal(res_cp$outer_predictions, ref$outer_predictions, tolerance = 1e-12)
 
+    # Identity and every completed fold envelope must carry the same
+    # namespace-derived version captured for this checkpoint run.
+    cp_paths <- NCVROC:::.cp_resolve_root(cp_dir)
+    identity_record <- readRDS(cp_paths$identity_file)
+    fold_envelope <- readRDS(file.path(
+      cp_paths$folds_dir,
+      NCVROC:::.cp_fold_filename(1L, 1L)
+    ))
+    expected_package_version <- NCVROC:::.cp_resolve_package_version()
+    expect_identical(identity_record$provenance$package_version, expected_package_version)
+    expect_identical(fold_envelope$producer$package_version, expected_package_version)
+
+    # A compatible checkpoint created by an earlier package version remains
+    # reusable because version provenance is outside the statistical identity.
+    identity_record$provenance$package_version <- "0.32.0"
+    saveRDS(identity_record, cp_paths$identity_file, compress = FALSE)
+    fold_files <- list.files(cp_paths$folds_dir, pattern = "\\.rds$", full.names = TRUE)
+    for (fold_file in fold_files) {
+      old_envelope <- readRDS(fold_file)
+      old_envelope$producer$package_version <- "0.32.0"
+      saveRDS(old_envelope, fold_file, compress = FALSE)
+    }
+
     # Resume on completed checkpoint directory reproduces identical results
     res_resume <- nested_sum_roc(
       df, "y", items, min_items = 1L, max_items = 3L,
@@ -245,6 +268,7 @@ test_that("native_streaming supports checkpoint save/resume across granularities
       resume = TRUE, progress = FALSE, verbose = FALSE
     )
     expect_equal(res_resume$summary, ref$summary, tolerance = 1e-12)
+    expect_equal(res_resume$settings$checkpoint_provenance$n_reused, length(res_resume$outer_results))
 
     # Incompatible run (different max_items) errors cleanly without corrupting checkpoint
     expect_error(

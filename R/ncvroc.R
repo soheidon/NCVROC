@@ -351,6 +351,11 @@
 
     # Large + none: stream chunks, keep only top-ranked in a buffer
     # for slicing final_model/final_candidates. Use streaming_top_n logic.
+    final_progress <- .progress_make(
+      total = total_combos, label = "Final search", enabled = progress,
+      progress_mode = "exact", unit = "candidates"
+    )
+    on.exit(final_progress$close(), add = TRUE)
     chunk_start <- 0.0
     best_so_far <- NULL
     while (chunk_start < total_combos) {
@@ -378,6 +383,7 @@
         list(combined$n_items)
       ))
       best_so_far <- utils::head(combined[ord, , drop = FALSE], 100L)
+      final_progress$tick(min(as.double(chunk_size), total_combos - chunk_start))
       chunk_start <- chunk_start + chunk_size
     }
     final_exhaustive_ranked <- best_so_far
@@ -521,7 +527,16 @@
         cl                 = NULL
       )
       first_chunk <- res_top
+      if (isTRUE(progress)) {
+        completed_text <- format(total_combos, scientific = FALSE, trim = TRUE, big.mark = ",")
+        message(sprintf("Final search candidates completed: %s/%s.", completed_text, completed_text))
+      }
     } else {
+      final_progress <- .progress_make(
+        total = total_combos, label = "Final search", enabled = progress,
+        progress_mode = "exact", unit = "candidates"
+      )
+      on.exit(final_progress$close(), add = TRUE)
       chunk_start <- 0.0
       chunk_index <- 0L
       first_chunk <- NULL
@@ -547,6 +562,7 @@
         .write_chunk_rds(chunk, chunk_dir, chunk_index)
         if (is.null(first_chunk)) first_chunk <- chunk
 
+        final_progress$tick(min(as.double(chunk_size), total_combos - chunk_start))
         chunk_start <- chunk_start + chunk_size
         chunk_index <- chunk_index + 1L
       }
@@ -926,6 +942,9 @@ ncvroc <- function(data,
       cache_load_result <- .load_cache(cache_dir, cache_key)
       if (!is.null(cache_load_result)) {
         cache_load_result$loaded_from_cache <- TRUE
+        if (isTRUE(progress)) {
+          message("Analysis complete (loaded from cache).")
+        }
         return(cache_load_result)
       }
     }
@@ -973,8 +992,15 @@ ncvroc <- function(data,
       "none"
     }
     final_n_workers <- if (parallel_mode == "hybrid") threads_per_worker else n_workers
+    if (isTRUE(progress)) {
+      final_candidates_total <- .count_total_combos(length(item_names), min_items, max_items)
+      message(sprintf(
+        "Final search: %s candidates.",
+        format(final_candidates_total, scientific = FALSE, trim = TRUE, big.mark = ",")
+      ))
+    }
 
-    eval_result <- tryCatch(
+    eval_result <- .progress_with_label("Final search", tryCatch(
       .evaluate_final_exhaustive(
         analysis_dat       = analysis_dat,
         outcome_name       = outcome_name,
@@ -1020,7 +1046,7 @@ ncvroc <- function(data,
         )
         stop(cond)
       }
-    )
+    ))
 
     final_exhaustive_ranked <- eval_result$final_exhaustive_ranked
     final_exhaustive_file   <- eval_result$final_exhaustive_file
@@ -1233,6 +1259,9 @@ ncvroc <- function(data,
   }
 
   class(result) <- "ncvroc_analysis"
+  if (isTRUE(progress)) {
+    message("Analysis complete.")
+  }
   result
 }
 

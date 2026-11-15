@@ -3,6 +3,7 @@
 
 #include <Rcpp.h>
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <functional>
 #include <map>
@@ -65,8 +66,18 @@ struct ThreadLocalBuffer {
   std::vector<double> sensitivity, specificity, youden_vals, accuracy;
   std::vector<double> ppv_vals, npv_vals;
   std::vector<int> cols;
+  // Reused counters for the common bounded-integer sum-score case.  The
+  // general map/sort path remains the fallback for arbitrary numeric scores.
+  static const int bounded_score_capacity = 257;
+  std::array<int, bounded_score_capacity> bounded_pos_counts;
+  std::array<int, bounded_score_capacity> bounded_neg_counts;
+  int bounded_counts_max;
 
-  explicit ThreadLocalBuffer(int n) : scores(n) {}
+  explicit ThreadLocalBuffer(int n)
+    : scores(n),
+      bounded_pos_counts{},
+      bounded_neg_counts{},
+      bounded_counts_max(-1) {}
 };
 
 // Pure C++ ROC & optimal cutoff evaluation from already-computed buf.scores[0..n-1] and y_vals[0..n-1].
@@ -86,6 +97,144 @@ static inline void evaluate_roc_from_scores(
     double& out_ppv_val,
     double& out_npv_val
 ) {
+  if (buf.bounded_counts_max >= 0) {
+    std::fill_n(buf.bounded_pos_counts.begin(), buf.bounded_counts_max + 1, 0);
+    std::fill_n(buf.bounded_neg_counts.begin(), buf.bounded_counts_max + 1, 0);
+    buf.bounded_counts_max = -1;
+  }
+
+  // Sum scores from bounded nonnegative integer items (including the 0/1/2
+  // item coding used by CBCL) have a small discrete score range. Count those
+  // values directly instead of allocating map nodes and sorting a temporary
+  // score vector for every candidate. Preserve the general implementation
+  // below for continuous, negative, non-finite, or larger-range scores.
+  bool bounded_integer_scores = true;
+  int bounded_max = -1;
+  for (int i = 0; i < n; ++i) {
+    const double score = buf.scores[i];
+    if (!std::isfinite(score) || score < 0.0 ||
+        score >= ThreadLocalBuffer::bounded_score_capacity ||
+        std::floor(score) != score) {
+      bounded_integer_scores = false;
+      break;
+    }
+    const int score_index = static_cast<int>(score);
+    if (score_index > bounded_max) bounded_max = score_index;
+    if (y_vals[i] == 1) {
+      ++buf.bounded_pos_counts[score_index];
+    } else {
+      ++buf.bounded_neg_counts[score_index];
+    }
+  }
+
+  if (bounded_integer_scores && bounded_max >= 0) {
+    buf.bounded_counts_max = bounded_max;
+  } else {
+    // Clear any partial counts from a score vector that left the fast path.
+    if (bounded_max >= 0) {
+      std::fill_n(buf.bounded_pos_counts.begin(), bounded_max + 1, 0);
+      std::fill_n(buf.bounded_neg_counts.begin(), bounded_max + 1, 0);
+    }
+  }
+
+  if (bounded_integer_scores && bounded_max >= 0) {
+    // Keep the repeated bounded-score path allocation-free. In particular,
+    // do not append threshold values to std::vector for every candidate.
+    buf.pos_counts.clear();
+    buf.neg_counts.clear();
+    if (total_pos == 0 || total_neg == 0) {
+      out_auc_val = NA_REAL;
+      out_cutoff_val = NA_REAL;
+      out_sensitivity_val = NA_REAL;
+      out_specificity_val = NA_REAL;
+      out_youden_val = NA_REAL;
+      out_accuracy_val = NA_REAL;
+      out_ppv_val = NA_REAL;
+      out_npv_val = NA_REAL;
+      return;
+    }
+
+    double auc_sum = 0.0;
+    for (int positive_score = 0; positive_score <= bounded_max; ++positive_score) {
+      const int positive_count = buf.bounded_pos_counts[positive_score];
+      if (positive_count == 0) continue;
+      for (int negative_score = 0; negative_score <= bounded_max; ++negative_score) {
+        const int negative_count = buf.bounded_neg_counts[negative_score];
+        if (negative_count == 0) continue;
+        const double pair_count = static_cast<double>(positive_count) * negative_count;
+        if (positive_score > negative_score) auc_sum += pair_count;
+        else if (positive_score == negative_score) auc_sum += 0.5 * pair_count;
+      }
+    }
+    out_auc_val = auc_sum / (static_cast<double>(total_pos) * total_neg);
+
+    const int total_n = total_pos + total_neg;
+    int cumulative_pos = 0;
+    int cumulative_neg = 0;
+    bool have_cutoff = false;
+    double best_youden = -2.0;
+    double best_sensitivity = -1.0;
+    double best_specificity = -1.0;
+    double best_cutoff = R_PosInf;
+    double best_distance = R_PosInf;
+
+    for (int score = bounded_max; score >= 0; --score) {
+      const int pos_at_score = buf.bounded_pos_counts[score];
+      const int neg_at_score = buf.bounded_neg_counts[score];
+      if (pos_at_score == 0 && neg_at_score == 0) continue;
+
+      cumulative_pos += pos_at_score;
+      cumulative_neg += neg_at_score;
+      const double sensitivity = cumulative_pos / static_cast<double>(total_pos);
+      const double specificity = (total_neg - cumulative_neg) / static_cast<double>(total_neg);
+      const double youden = sensitivity + specificity - 1.0;
+      const double accuracy = (cumulative_pos + total_neg - cumulative_neg) /
+        static_cast<double>(total_n);
+      const double ppv = cumulative_pos + cumulative_neg > 0
+        ? cumulative_pos / static_cast<double>(cumulative_pos + cumulative_neg)
+        : NA_REAL;
+      const double npv = (total_neg - cumulative_neg) + (total_pos - cumulative_pos) > 0
+        ? (total_neg - cumulative_neg) /
+          static_cast<double>((total_neg - cumulative_neg) + (total_pos - cumulative_pos))
+        : NA_REAL;
+      const double cutoff = static_cast<double>(score);
+
+      bool better = false;
+      if (cutoff_method == CUTOFF_YOUDEN) {
+        better = youden > best_youden ||
+          (youden == best_youden && sensitivity > best_sensitivity) ||
+          (youden == best_youden && sensitivity == best_sensitivity &&
+           specificity > best_specificity) ||
+          (youden == best_youden && sensitivity == best_sensitivity &&
+           specificity == best_specificity && cutoff < best_cutoff);
+      } else if (cutoff_method == CUTOFF_CLOSEST_TOPLEFT) {
+        const double distance = std::sqrt(
+          (1.0 - sensitivity) * (1.0 - sensitivity) +
+          (1.0 - specificity) * (1.0 - specificity));
+        better = distance < best_distance ||
+          (distance == best_distance && youden > best_youden) ||
+          (distance == best_distance && youden == best_youden && cutoff < best_cutoff);
+        if (better) best_distance = distance;
+      }
+
+      if (better || !have_cutoff) {
+        have_cutoff = true;
+        best_youden = youden;
+        best_sensitivity = sensitivity;
+        best_specificity = specificity;
+        best_cutoff = cutoff;
+        out_cutoff_val = cutoff;
+        out_sensitivity_val = sensitivity;
+        out_specificity_val = specificity;
+        out_youden_val = youden;
+        out_accuracy_val = accuracy;
+        out_ppv_val = ppv;
+        out_npv_val = npv;
+      }
+    }
+    return;
+  }
+
   buf.pos_counts.clear();
   buf.neg_counts.clear();
   for (int i = 0; i < n; i++) {
@@ -110,12 +259,12 @@ static inline void evaluate_roc_from_scores(
 
   double auc_sum = 0.0;
   for (const auto& p : buf.pos_counts) {
-    double sp = p.first;
-    int pc = p.second;
+    const double sp = p.first;
+    const int pc = p.second;
     for (const auto& neg : buf.neg_counts) {
-      double sn = neg.first;
-      int nc = neg.second;
-      double pair_count = (double)pc * nc;
+      const double sn = neg.first;
+      const int nc = neg.second;
+      const double pair_count = static_cast<double>(pc) * nc;
       if (sp > sn) {
         auc_sum += pair_count;
       } else if (sp == sn) {

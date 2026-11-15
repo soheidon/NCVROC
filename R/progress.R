@@ -14,6 +14,15 @@
   as.integer(max(minimum, min(maximum, ceiling(total_candidates / target_batches))))
 }
 
+.progress_with_label <- function(label, expr) {
+  if (!is.character(label) || length(label) != 1L || is.na(label) || !nzchar(label)) {
+    stop("`label` must be a non-empty character scalar.", call. = FALSE)
+  }
+  old <- options(NCVROC.internal_progress_label = label)
+  on.exit(options(old), add = TRUE)
+  force(expr)
+}
+
 .progress_capability <- function(workflow, backend, enabled = TRUE,
                                  exact_candidates = FALSE,
                                  observed_unit = "candidate") {
@@ -145,6 +154,11 @@
                            unit = "complete",
                            interactive_override = NULL) {
   progress_mode <- match.arg(progress_mode)
+  label_override <- getOption("NCVROC.internal_progress_label", NULL)
+  if (is.character(label_override) && length(label_override) == 1L &&
+      !is.na(label_override) && nzchar(label_override)) {
+    label <- label_override
+  }
   total_num <- as.numeric(total)
   if (!isTRUE(enabled) || !is.numeric(total_num) || !is.finite(total_num) || total_num <= 0) {
     return(list(

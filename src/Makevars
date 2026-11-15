@@ -1,2 +1,9 @@
 PKG_CXXFLAGS += $(shell "${R_HOME}/bin/Rscript" -e "RcppParallel::CxxFlags()")
 PKG_LIBS += $(shell "${R_HOME}/bin/Rscript" -e "RcppParallel::RcppParallelLibs()")
+
+# Opt-in native diagnostic build; keep normal package builds unchanged.
+ifeq ($(NCVROC_NATIVE_DEBUG),1)
+override CXXFLAGS := $(filter-out -O%,$(CXXFLAGS)) -O0 -g -fstack-protector-all
+PKG_CXXFLAGS += -g -DNCVROC_NATIVE_DEBUG -fstack-protector-all -D_GLIBCXX_ASSERTIONS
+override DLLFLAGS :=
+endif

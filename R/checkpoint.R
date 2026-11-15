@@ -297,6 +297,39 @@
 
 # ---- Analysis & split identity ----
 
+# Resolve version metadata from the namespace that is actually executing this
+# code. This keeps checkpoint provenance explicit even when package-description
+# lookup cannot locate the active package installation.
+.cp_resolve_package_version <- function(package_name = "NCVROC") {
+  if (!is.character(package_name) || length(package_name) != 1L ||
+      is.na(package_name) || !nzchar(package_name)) {
+    stop("`package_name` must be a non-empty character scalar.", call. = FALSE)
+  }
+  if (!(package_name %in% loadedNamespaces())) {
+    stop(
+      sprintf("Cannot resolve checkpoint package version: namespace '%s' is not loaded.", package_name),
+      call. = FALSE
+    )
+  }
+
+  version <- as.character(getNamespaceVersion(package_name))
+  if (length(version) != 1L || is.na(version) || !nzchar(version)) {
+    stop(
+      sprintf("Cannot resolve a valid version from loaded namespace '%s'.", package_name),
+      call. = FALSE
+    )
+  }
+  unname(version)
+}
+
+.cp_validate_resolved_package_version <- function(package_version) {
+  if (!is.character(package_version) || length(package_version) != 1L ||
+      is.na(package_version) || !nzchar(package_version)) {
+    stop("Checkpoint package version must be a non-empty character scalar.", call. = FALSE)
+  }
+  unname(package_version)
+}
+
 .cp_build_split_descriptor <- function(spec) {
   inner_1based <- lapply(spec$inner_folds, function(cand_folds) {
     lapply(cand_folds, function(f_idx) as.integer(f_idx) + 1L)
@@ -339,7 +372,13 @@
                                         inner_repeats,
                                         stratified,
                                         seed,
-                                        producer_backend = NULL) {
+                                        producer_backend = NULL,
+                                        package_version = NULL) {
+  if (is.null(package_version)) {
+    package_version <- .cp_resolve_package_version()
+  }
+  package_version <- .cp_validate_resolved_package_version(package_version)
+
   x_canon <- unname(as.matrix(x_mat))
   storage.mode(x_canon) <- "double"
 
@@ -381,8 +420,6 @@
     seed                = if (is.null(seed)) NULL else as.integer(seed)
   )
 
-  pkg_ver <- as.character(utils::packageVersion("NCVROC"))
-
   core <- list(
     format_id               = .CHECKPOINT_CANONICAL_IDENTITY_FORMAT_ID,
     schema_version          = .CHECKPOINT_CANONICAL_IDENTITY_SCHEMA_VERSION,
@@ -403,7 +440,7 @@
     core                   = core,
     provenance             = list(
       created_at       = format(Sys.time(), "%Y-%m-%dT%H:%M:%OS3%z"),
-      package_version  = pkg_ver,
+      package_version  = package_version,
       producer_backend = if (is.null(producer_backend)) NA_character_ else as.character(producer_backend),
       r_version        = paste(R.version$major, R.version$minor, sep = "."),
       pid              = Sys.getpid(),
@@ -417,8 +454,14 @@
   .cp_assert_contained(paths$root_canonical, id_file, must_exist = FALSE)
 
   if (!file.exists(id_file)) {
-    existing_folds   <- list.files(paths$folds_dir, all.files = TRUE, no.. = TRUE)
-    existing_pending <- list.files(paths$pending_dir, all.files = TRUE, no.. = TRUE)
+    existing_folds <- .cp_filter_windows_desktop_ini(
+      paths$folds_dir,
+      list.files(paths$folds_dir, all.files = TRUE, no.. = TRUE)
+    )
+    existing_pending <- .cp_filter_windows_desktop_ini(
+      paths$pending_dir,
+      list.files(paths$pending_dir, all.files = TRUE, no.. = TRUE)
+    )
     if (length(existing_folds) > 0L || length(existing_pending) > 0L) {
       stop(
         "Checkpoint directory is missing identity.rds while fold or pending artifacts exist. Refusing to overwrite or adopt unverified artifacts.",
@@ -935,6 +978,9 @@
                                     canon_payload,
                                     producer_backend,
                                     backend_provenance = producer_backend) {
+  package_version <- .cp_validate_resolved_package_version(
+    identity_record$provenance$package_version
+  )
   list(
     format_id               = .CHECKPOINT_CANONICAL_FORMAT_ID,
     schema_version          = .CHECKPOINT_CANONICAL_ENVELOPE_SCHEMA_VERSION,
@@ -951,7 +997,7 @@
     producer                = list(
       backend                 = as.character(producer_backend),
       backend_provenance      = as.character(backend_provenance),
-      package_version         = as.character(utils::packageVersion("NCVROC")),
+      package_version         = package_version,
       payload_schema_version  = .CHECKPOINT_CANONICAL_PAYLOAD_SCHEMA_VERSION,
       envelope_schema_version = .CHECKPOINT_CANONICAL_ENVELOPE_SCHEMA_VERSION,
       statistical_contract_id = .CHECKPOINT_STATISTICAL_CONTRACT_ID
@@ -971,6 +1017,52 @@
 
 # ---- Inspection & classification ----
 
+# Windows Explorer may place a desktop.ini file in a checkpoint's folds
+# directory. Ignore only this exact OS metadata name, and only when it is a
+# plain regular file. Any uncertain file type remains an unexpected artifact.
+.cp_is_ignorable_windows_desktop_ini <- function(directory,
+                                                 entry,
+                                                 windows = identical(.Platform$OS.type, "windows"),
+                                                 readlink_fn = Sys.readlink) {
+  if (!isTRUE(windows) || !is.character(entry) || length(entry) != 1L ||
+      is.na(entry) || !identical(tolower(entry), "desktop.ini")) {
+    return(FALSE)
+  }
+
+  path <- file.path(directory, entry)
+  info <- suppressWarnings(file.info(path))
+  if (nrow(info) != 1L || is.na(info$isdir[[1L]]) || isTRUE(info$isdir[[1L]])) {
+    return(FALSE)
+  }
+
+  # Sys.readlink returns an empty string for an ordinary file. A link target,
+  # missing result, or lookup error is not sufficient evidence to ignore it.
+  link_target <- suppressWarnings(tryCatch(
+    readlink_fn(path),
+    error = function(e) NA_character_
+  ))
+  is.character(link_target) && length(link_target) == 1L &&
+    !is.na(link_target) && !nzchar(link_target)
+}
+
+.cp_filter_windows_desktop_ini <- function(directory,
+                                          entries,
+                                          windows = identical(.Platform$OS.type, "windows"),
+                                          readlink_fn = Sys.readlink) {
+  if (!is.character(entries) || !length(entries)) {
+    return(entries)
+  }
+  ignore <- vapply(entries, function(entry) {
+    .cp_is_ignorable_windows_desktop_ini(
+      directory = directory,
+      entry = entry,
+      windows = windows,
+      readlink_fn = readlink_fn
+    )
+  }, logical(1L))
+  entries[!ignore]
+}
+
 .cp_inspect_directory <- function(paths, identity_record, fold_specs_ordered, items, y_vec = NULL) {
   expected_files <- vapply(fold_specs_ordered, function(s) {
     .cp_fold_filename(s$repeat_id, s$outer_fold_id)
@@ -978,6 +1070,10 @@
 
   # Check for unexpected/orphan files in folds/
   actual_folds_entries <- list.files(paths$folds_dir, all.files = TRUE, no.. = TRUE)
+  actual_folds_entries <- .cp_filter_windows_desktop_ini(
+    paths$folds_dir,
+    actual_folds_entries
+  )
   unexpected_folds <- setdiff(actual_folds_entries, expected_files)
   if (length(unexpected_folds) > 0L) {
     stop(
@@ -990,6 +1086,10 @@
 
   # Check for leftover pending artifacts
   actual_pending <- list.files(paths$pending_dir, all.files = TRUE, no.. = TRUE)
+  actual_pending <- .cp_filter_windows_desktop_ini(
+    paths$pending_dir,
+    actual_pending
+  )
   if (length(actual_pending) > 0L) {
     stop(
       "Unresolved pending checkpoint artifact(s) in pending/: ",
@@ -1246,6 +1346,10 @@
                             consumer_backend,
                             progress,
                             verbose) {
+  # Resolve version metadata before any checkpoint path/lock/artifact mutation,
+  # then carry this exact value through identity and every fold envelope.
+  package_version <- .cp_resolve_package_version()
+
   total_combos <- .count_total_combos(length(items), min_items, max_items)
   n_candidates <- as.integer(min(preselect_top_n, total_combos))
 
@@ -1286,7 +1390,8 @@
       inner_repeats       = inner_repeats,
       stratified          = stratified,
       seed                = seed,
-      producer_backend    = consumer_backend
+      producer_backend    = consumer_backend,
+      package_version     = package_version
     )
     .cp_validate_or_create_identity(paths, id_rec)
     id_rec
@@ -1582,7 +1687,8 @@ ncvroc_clear_cancel <- function(checkpoint_dir) {
                                                  force_recompute,
                                                  progress,
                                                  verbose,
-                                                 schema_version = 1L) {
+                                                 schema_version = 1L,
+                                                 outer_fold_progress = NULL) {
   prep <- .cp_prepare_run(
     x_mat               = x_mat,
     y_vec               = y_vec,
@@ -1611,6 +1717,12 @@ ncvroc_clear_cancel <- function(checkpoint_dir) {
     verbose             = verbose
   )
   on.exit(.cp_release_lock(prep$lock_token), add = TRUE)
+  if (is.function(outer_fold_progress)) {
+    outer_fold_progress(0L, kind = "start")
+  }
+  if (is.function(outer_fold_progress) && length(prep$reused_idx) > 0L) {
+    outer_fold_progress(length(prep$reused_idx), kind = "reused")
+  }
 
   if (isTRUE(.ncvroc_checkpoint_test_seams$fail_before_compute)) {
     stop("Simulated failure before computing remaining folds.", call. = FALSE)
@@ -1692,6 +1804,7 @@ ncvroc_clear_cancel <- function(checkpoint_dir) {
         )
         prep$final_canon[[idx]] <- canon_res
         prep$fold_producers[[idx]] <- "scope_b_native_outer_fold"
+        if (is.function(outer_fold_progress)) outer_fold_progress(1L, kind = "computed")
         .ncvroc_checkpoint_test_seams$interrupt_waves_completed <-
           as.integer(.ncvroc_checkpoint_test_seams$interrupt_waves_completed) + 1L
       }
@@ -1775,6 +1888,7 @@ ncvroc_clear_cancel <- function(checkpoint_dir) {
             )
             prep$final_canon[[idx]] <- canon_res
             prep$fold_producers[[idx]] <- "scope_b_native_outer_fold"
+            if (is.function(outer_fold_progress)) outer_fold_progress(1L, kind = "computed")
           } else if (is.null(first_failure)) {
             first_failure <- nat_res
           }
@@ -1846,7 +1960,8 @@ ncvroc_clear_cancel <- function(checkpoint_dir) {
                                                    resume,
                                                    force_recompute,
                                                    progress,
-                                                   verbose) {
+                                                   verbose,
+                                                   outer_fold_progress = NULL) {
   prep <- .cp_prepare_run(
     x_mat               = x_mat,
     y_vec               = y_vec,
@@ -1875,6 +1990,12 @@ ncvroc_clear_cancel <- function(checkpoint_dir) {
     verbose             = verbose
   )
   on.exit(.cp_release_lock(prep$lock_token), add = TRUE)
+  if (is.function(outer_fold_progress)) {
+    outer_fold_progress(0L, kind = "start")
+  }
+  if (is.function(outer_fold_progress) && length(prep$reused_idx) > 0L) {
+    outer_fold_progress(length(prep$reused_idx), kind = "reused")
+  }
 
   if (isTRUE(.ncvroc_checkpoint_test_seams$fail_before_compute)) {
     stop("Simulated failure before computing remaining folds.", call. = FALSE)
@@ -1995,6 +2116,7 @@ ncvroc_clear_cancel <- function(checkpoint_dir) {
       )
       prep$final_canon[[idx]] <- canon_res
       prep$fold_producers[[idx]] <- "r_serial"
+      if (is.function(outer_fold_progress)) outer_fold_progress(1L, kind = "computed")
       .ncvroc_checkpoint_test_seams$interrupt_waves_completed <-
         as.integer(.ncvroc_checkpoint_test_seams$interrupt_waves_completed) + 1L
     }

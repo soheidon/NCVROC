@@ -1,5 +1,10 @@
 # NCVROC 0.34.0 (2026-11-14)
 
+## Native Execution Diagnostics
+
+* Added opt-in `ncvroc_enable_native_diagnostics()` event logs around Native Streaming candidate batches. Logs are flushed before native work and after successful return, so an unhandled process crash leaves the last active fold/model-size/candidate-rank range visible without recording row-level data or candidate names.
+* Added explicit Windows LocalDumps configuration helpers. Existing registry keys are not overwritten; minidumps are the default, full dumps require an explicit choice and warning, and only NCVROC-marked settings can be removed.
+
 ## Generalized Model Selection Stability Framework
 
 * Added `feature_selection_stability()` (with `print()` and `summary()` S3 methods) implementing Nogueira et al. (2018) chance-corrected feature selection stability index over a fixed `eligible_features` universe, preserving unclipped negative finite-sample estimates down to `-1/(M - 1)`, returning `status = "undefined"` on degenerate boundaries (`M < 2`, `d = 0`, all empty, all full), and blocking asymptotic i.i.d. CIs on dependent resamples by default.

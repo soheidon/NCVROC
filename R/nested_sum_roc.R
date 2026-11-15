@@ -884,7 +884,8 @@
                                              inner_repeats = 1L,
                                              seed = NULL,
                                              num_threads = 1L,
-                                             schema_version = 1L) {
+                                             schema_version = 1L,
+                                             outer_fold_progress = NULL) {
   total_combos <- .count_total_combos(length(items), min_items, max_items)
   n_candidates <- as.integer(min(preselect_top_n, total_combos))
   fold_specs <- .build_native_outer_fold_specs(
@@ -897,26 +898,40 @@
     seed          = seed
   )
 
-  raw_results <- evaluate_outer_folds_native_cpp(
-    x                   = x_mat,
-    y                   = y_vec,
-    fold_specs          = fold_specs,
-    min_items           = as.integer(min_items),
-    max_items           = as.integer(max_items),
-    cutoff_method       = cutoff_method,
-    preselect_by        = preselect_by,
-    selection_criterion = selection_criterion,
-    preselect_top_n     = as.integer(preselect_top_n),
-    prefer_fewer_items  = TRUE,
-    num_threads         = as.integer(num_threads),
-    schema_version      = as.integer(schema_version)
-  )
-
-  canonical_results <- Map(
-    function(nat_res, spec) .native_fold_to_canonical(nat_res, spec, items, y_vec = y_vec),
-    raw_results,
-    fold_specs
-  )
+  raw_results <- vector("list", length(fold_specs))
+  canonical_results <- vector("list", length(fold_specs))
+  # Preserve the one-call fast path for serial execution. With multiple native
+  # threads, bounded waves expose exact completed-fold boundaries on the R
+  # main thread without callbacks from TBB workers.
+  wave_size <- if (as.integer(num_threads) > 1L) as.integer(num_threads) else length(fold_specs)
+  wave_starts <- seq.int(1L, length(fold_specs), by = max(1L, wave_size))
+  for (wave_start in wave_starts) {
+    wave_idx <- seq.int(wave_start, min(length(fold_specs), wave_start + wave_size - 1L))
+    wave_results <- evaluate_outer_folds_native_cpp(
+      x                   = x_mat,
+      y                   = y_vec,
+      fold_specs          = fold_specs[wave_idx],
+      min_items           = as.integer(min_items),
+      max_items           = as.integer(max_items),
+      cutoff_method       = cutoff_method,
+      preselect_by        = preselect_by,
+      selection_criterion = selection_criterion,
+      preselect_top_n     = as.integer(preselect_top_n),
+      prefer_fewer_items  = TRUE,
+      num_threads         = as.integer(num_threads),
+      schema_version      = as.integer(schema_version)
+    )
+    for (j in seq_along(wave_idx)) {
+      idx <- wave_idx[[j]]
+      raw_results[[idx]] <- wave_results[[j]]
+      canonical_results[[idx]] <- .native_fold_to_canonical(
+        wave_results[[j]], fold_specs[[idx]], items, y_vec = y_vec
+      )
+    }
+    if (is.function(outer_fold_progress)) {
+      outer_fold_progress(length(wave_idx), kind = "computed")
+    }
+  }
 
   list(
     raw_results = raw_results,
@@ -1553,6 +1568,48 @@ nested_sum_roc <- function(data,
     y, k = outer_k, repeats = outer_repeats, seed = seed
   )
   n_folds <- length(outer_folds)
+  outer_progress <- NULL
+  start_outer_progress <- function() {
+    if (is.null(outer_progress)) {
+      outer_progress <<- .progress_make(
+        total = n_folds,
+        label = "Outer folds",
+        enabled = isTRUE(progress),
+        progress_mode = "exact",
+        unit = "complete"
+      )
+    }
+    invisible(NULL)
+  }
+  # For checkpointed runs, defer even the initial 0% rendering until the
+  # checkpoint preflight has validated the directory and identity.
+  if (is.null(checkpoint_dir)) start_outer_progress()
+  on.exit(if (!is.null(outer_progress)) outer_progress$close(), add = TRUE)
+  outer_progress_done <- 0L
+  outer_progress_reused <- 0L
+  outer_progress_computed <- 0L
+  outer_fold_progress <- function(n = 1L, kind = "computed") {
+    if (identical(kind, "start")) {
+      start_outer_progress()
+      return(invisible(NULL))
+    }
+    n <- suppressWarnings(as.integer(n))
+    if (length(n) != 1L || is.na(n) || n <= 0L) return(invisible(NULL))
+    n <- min(n, n_folds - outer_progress_done)
+    if (n <= 0L) return(invisible(NULL))
+    start_outer_progress()
+    if (identical(kind, "reused")) {
+      outer_progress_reused <<- outer_progress_reused + n
+      if (isTRUE(progress)) {
+        message(sprintf("Outer folds reused from checkpoint: %d/%d.", n, n_folds))
+      }
+    } else {
+      outer_progress_computed <<- outer_progress_computed + n
+    }
+    outer_progress_done <<- outer_progress_done + n
+    outer_progress$tick(n)
+    invisible(NULL)
+  }
 
   # ---- Resolve parallel execution ----
   execution_metadata <- NULL
@@ -1695,7 +1752,8 @@ nested_sum_roc <- function(data,
         inner_k             = inner_k,
         inner_repeats       = inner_repeats,
         seed                = seed,
-        num_threads         = actual_workers
+        num_threads         = actual_workers,
+        outer_fold_progress = outer_fold_progress
       )
     } else if (identical(checkpoint_granularity, "outer_fold")) {
       native_out <- .run_native_outer_folds_checkpointed(
@@ -1723,7 +1781,8 @@ nested_sum_roc <- function(data,
         resume              = resume,
         force_recompute     = force_recompute,
         progress            = progress,
-        verbose             = verbose
+        verbose             = verbose,
+        outer_fold_progress = outer_fold_progress
       )
       settings$checkpoint_provenance <- native_out$provenance
     } else {
@@ -1756,14 +1815,12 @@ nested_sum_roc <- function(data,
         resume                 = resume,
         force_recompute        = force_recompute,
         progress               = progress,
-        verbose                = verbose
+        verbose                = verbose,
+        outer_fold_progress    = outer_fold_progress
       )
       settings$checkpoint_provenance <- native_out$provenance
     }
     per_fold <- native_out$per_fold
-    if (verbose) {
-      message("All outer folds complete.")
-    }
   } else if (parallel_mode == "native_streaming") {
     x_mat <- as.matrix(full_data[, items, drop = FALSE])
     if (verbose) {
@@ -1797,7 +1854,8 @@ nested_sum_roc <- function(data,
         resume              = resume,
         force_recompute     = force_recompute,
         progress            = progress,
-        verbose             = verbose
+        verbose             = verbose,
+        outer_fold_progress = outer_fold_progress
       )
     } else {
       stream_out <- .run_fine_grained_checkpointed(
@@ -1829,16 +1887,17 @@ nested_sum_roc <- function(data,
         resume                 = resume,
         force_recompute        = force_recompute,
         progress               = progress,
-        verbose                = verbose
+        verbose                = verbose,
+        outer_fold_progress    = outer_fold_progress
       )
     }
     if (!is.null(stream_out$provenance)) {
       settings$checkpoint_provenance <- stream_out$provenance
     }
-    per_fold <- stream_out$per_fold
-    if (verbose) {
-      message("All outer folds complete.")
+    if (!is.null(stream_out$diagnostics)) {
+      settings$native_diagnostics <- stream_out$diagnostics
     }
+    per_fold <- stream_out$per_fold
   } else if (parallel_mode == "native_tbb") {
     x_mat <- as.matrix(full_data[, items, drop = FALSE])
 
@@ -1905,9 +1964,7 @@ nested_sum_roc <- function(data,
         progress            = FALSE,
         verbose             = verbose
       )
-    }
-    if (verbose) {
-      message("All outer folds complete.")
+      outer_fold_progress(1L, kind = "computed")
     }
   } else if (parallel_mode %in% c("outer", "hybrid") && actual_workers > 1L) {
     cl <- parallel::makePSOCKcluster(actual_workers)
@@ -1959,21 +2016,11 @@ nested_sum_roc <- function(data,
       )
     }
 
-    prg <- .progress_make(
-      n_folds,
-      label = "NCVROC",
-      enabled = progress,
-      progress_mode = "exact",
-      unit = "outer folds complete"
-    )
     if (verbose) {
       message("Running ", n_folds, " outer folds in parallel...")
     }
     per_fold <- parallel::parLapply(cl, seq_len(n_folds), fold_worker)
-    prg$finish()
-    if (verbose) {
-      message("All outer folds complete.")
-    }
+    outer_fold_progress(n_folds, kind = "computed")
 
   } else if (parallel_mode == "chunks" && actual_workers > 1L) {
     # Persistent chunk cluster reused across all outer folds
@@ -2036,6 +2083,7 @@ nested_sum_roc <- function(data,
         progress_callback   = cb_i
       )
       prg_i$finish()
+      outer_fold_progress(1L, kind = "computed")
     }
 
   } else if (parallel_mode %in% c("threads", "hybrid")) {
@@ -2079,6 +2127,7 @@ nested_sum_roc <- function(data,
         progress_callback   = cb_i
       )
       prg_i$finish()
+      outer_fold_progress(1L, kind = "computed")
     }
 
   } else if (!is.null(checkpoint_dir)) {
@@ -2111,7 +2160,8 @@ nested_sum_roc <- function(data,
         resume              = resume,
         force_recompute     = force_recompute,
         progress            = progress,
-        verbose             = verbose
+        verbose             = verbose,
+        outer_fold_progress = outer_fold_progress
       )
     } else {
       cp_out <- .run_fine_grained_checkpointed(
@@ -2143,7 +2193,8 @@ nested_sum_roc <- function(data,
         resume                 = resume,
         force_recompute        = force_recompute,
         progress               = progress,
-        verbose                = verbose
+        verbose                = verbose,
+        outer_fold_progress    = outer_fold_progress
       )
     }
     settings$checkpoint_provenance <- cp_out$provenance
@@ -2190,6 +2241,7 @@ nested_sum_roc <- function(data,
         progress_callback   = cb_i
       )
       prg_i$finish()
+      outer_fold_progress(1L, kind = "computed")
     }
   }
 
@@ -2202,7 +2254,15 @@ nested_sum_roc <- function(data,
     settings$execution_plan <- execution_metadata
   }
 
-  .aggregate_nested_outer_folds(per_fold, n_folds, settings)
+  result <- .aggregate_nested_outer_folds(per_fold, n_folds, settings)
+  if (isTRUE(progress) && identical(outer_progress_done, n_folds)) {
+    message(sprintf(
+      "Outer folds computed this run: %d/%d; reused: %d/%d.",
+      outer_progress_computed, n_folds, outer_progress_reused, n_folds
+    ))
+    message("All outer folds complete.")
+  }
+  result
 }
 
 # ---- S3 methods ----

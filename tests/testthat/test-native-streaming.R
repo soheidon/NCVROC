@@ -35,6 +35,10 @@ test_that("64-bit binomial counts and tail rank/unrank slices match CBCL103 scal
   expect_true(isTRUE(res_tail[[1L]]$completed))
   expect_equal(res_tail[[1L]]$rank_end - res_tail[[1L]]$rank_start + 1, 25)
   expect_equal(nrow(res_tail[[1L]]$candidates), 5L)
+  expect_identical(
+    res_tail[[1L]]$candidates,
+    NCVROC:::.cp_sort_candidates(res_tail[[1L]]$candidates, "auc")
+  )
 
   # The very last combination rank (c6 - 1) is the final rank of choose(103, 6)
   last_slice <- NCVROC:::native_eval_candidate_batches_cpp(
@@ -58,6 +62,108 @@ test_that("64-bit binomial counts and tail rank/unrank slices match CBCL103 scal
   expect_equal(last_slice[[1L]]$candidates$local_rank, c6 - 1)
   expect_equal(last_slice[[1L]]$rank_start, c6 - 1)
   expect_equal(last_slice[[1L]]$rank_end, c6 - 1)
+})
+
+test_that("native streaming bounded top-N heap matches the full candidate ordering", {
+  set.seed(734)
+  n <- 24L
+  p <- 8L
+  k <- 3L
+  X <- matrix(rnorm(n * p), nrow = n, ncol = p)
+  y <- rep(c(0L, 1L), length.out = n)
+  n_candidates <- choose(p, k)
+
+  evaluate <- function(top_n) {
+    NCVROC:::native_eval_candidate_batches_cpp(
+      x = X,
+      y = y,
+      train_indices_list = list(seq_len(n) - 1L),
+      task_fold_idx = 0L,
+      task_repeat_id = 1L,
+      task_outer_fold_id = 1L,
+      task_model_size = k,
+      task_local_rank_start_0 = 0,
+      task_local_rank_end_0 = n_candidates,
+      task_level_start_0 = 0,
+      cutoff_method = "youden",
+      rank_by = "auc",
+      preselect_top_n = as.integer(top_n),
+      prefer_fewer_items = TRUE,
+      num_threads = 1L
+    )[[1L]]
+  }
+
+  all_candidates <- evaluate(n_candidates)$candidates
+  expected <- NCVROC:::.cp_sort_candidates(all_candidates, "auc")
+  top_n <- 13L
+  top_result <- evaluate(top_n)
+  actual <- top_result$candidates
+
+  expect_true(isTRUE(top_result$completed))
+  expect_identical(actual, expected[seq_len(top_n), , drop = FALSE])
+})
+
+test_that("bounded integer sum-score ROC matches the R reference for 0/1/2 items", {
+  set.seed(735)
+  n <- 30L
+  p <- 6L
+  k <- 3L
+  X <- matrix(sample(0:2, n * p, replace = TRUE), nrow = n, ncol = p)
+  y <- rep(c(0L, 1L), each = n / 2L)
+  n_candidates <- choose(p, k)
+  combos <- utils::combn(seq_len(p), k)
+
+  for (cutoff_method in c("youden", "closest_topleft")) {
+    native <- NCVROC:::native_eval_candidate_batches_cpp(
+      x = X,
+      y = y,
+      train_indices_list = list(seq_len(n) - 1L),
+      task_fold_idx = 0L,
+      task_repeat_id = 1L,
+      task_outer_fold_id = 1L,
+      task_model_size = k,
+      task_local_rank_start_0 = 0,
+      task_local_rank_end_0 = n_candidates,
+      task_level_start_0 = 0,
+      cutoff_method = cutoff_method,
+      rank_by = "auc",
+      preselect_top_n = as.integer(n_candidates),
+      prefer_fewer_items = TRUE,
+      num_threads = 1L
+    )[[1L]]
+
+    expect_true(isTRUE(native$completed))
+    actual <- native$candidates[order(native$candidates$local_rank), , drop = FALSE]
+    expected <- lapply(seq_len(n_candidates), function(rank) {
+      scores <- rowSums(X[, combos[, rank], drop = FALSE])
+      score_levels <- sort(unique(scores))
+      pos_counts <- table(factor(scores[y == 1L], levels = score_levels))
+      neg_counts <- table(factor(scores[y == 0L], levels = score_levels))
+      names(pos_counts) <- names(neg_counts) <- as.character(score_levels)
+      roc <- NCVROC:::compute_roc_metrics_from_table(pos_counts, neg_counts)
+      auc <- NCVROC:::compute_auc_from_table(pos_counts, neg_counts)
+      cutoff <- NCVROC:::find_optimal_cutoff(roc, method = cutoff_method)
+      data.frame(
+        local_rank = rank,
+        n_items = k,
+        auc = auc,
+        cutoff = cutoff$cutoff[[1L]],
+        sensitivity = cutoff$sensitivity[[1L]],
+        specificity = cutoff$specificity[[1L]],
+        youden = cutoff$youden[[1L]],
+        accuracy = cutoff$accuracy[[1L]],
+        ppv = cutoff$ppv[[1L]],
+        npv = cutoff$npv[[1L]]
+      )
+    })
+    expected <- do.call(rbind, expected)
+
+    expect_equal(actual$local_rank, expected$local_rank)
+    expect_equal(actual$n_items, expected$n_items)
+    for (metric in c("auc", "cutoff", "sensitivity", "specificity", "youden", "accuracy", "ppv", "npv")) {
+      expect_equal(actual[[metric]], expected[[metric]], tolerance = 1e-14)
+    }
+  }
 })
 
 test_that("Legacy single-pass guards retain 2,000,000 limit while native_streaming accepts >2,000,000 config", {

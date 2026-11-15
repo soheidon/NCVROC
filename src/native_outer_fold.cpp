@@ -1040,6 +1040,74 @@ struct PrebuiltFoldTrainData {
   std::vector<int> y_train;
 };
 
+// Bounded top-N heap with explicit sift operations. Keeping the heap logic
+// local avoids relying on library heap algorithms from the long-running
+// Native Streaming worker while preserving NestedCandidateComparator's exact
+// ordering and the existing O(log N) update cost.
+class CandidateTopHeap {
+ public:
+  CandidateTopHeap(int capacity, const NestedCandidateComparator& comparator)
+    : capacity_(capacity), comparator_(comparator) {
+    values_.reserve(static_cast<std::size_t>(capacity_));
+  }
+
+  std::size_t size() const { return values_.size(); }
+  bool empty() const { return values_.empty(); }
+  const CandidateRecord& worst() const { return values_.front(); }
+
+  void offer(const CandidateRecord& candidate) {
+    if (static_cast<int>(values_.size()) < capacity_) {
+      values_.push_back(candidate);
+      sift_up(values_.size() - 1);
+    } else if (comparator_(candidate, values_.front())) {
+      values_.front() = candidate;
+      sift_down(0);
+    }
+  }
+
+  CandidateRecord pop_worst() {
+    CandidateRecord result = values_.front();
+    if (values_.size() == 1) {
+      values_.pop_back();
+      return result;
+    }
+    values_.front() = values_.back();
+    values_.pop_back();
+    sift_down(0);
+    return result;
+  }
+
+ private:
+  int capacity_;
+  NestedCandidateComparator comparator_;
+  std::vector<CandidateRecord> values_;
+
+  void sift_up(std::size_t child) {
+    while (child > 0) {
+      const std::size_t parent = (child - 1) / 2;
+      // The root must be the worst retained candidate. A better parent must
+      // therefore move below its worse child.
+      if (!comparator_(values_[parent], values_[child])) break;
+      std::swap(values_[parent], values_[child]);
+      child = parent;
+    }
+  }
+
+  void sift_down(std::size_t parent) {
+    const std::size_t count = values_.size();
+    while (parent < count / 2) {
+      std::size_t worse_child = parent * 2 + 1;
+      const std::size_t right = worse_child + 1;
+      if (right < count && comparator_(values_[worse_child], values_[right])) {
+        worse_child = right;
+      }
+      if (!comparator_(values_[parent], values_[worse_child])) break;
+      std::swap(values_[parent], values_[worse_child]);
+      parent = worse_child;
+    }
+  }
+};
+
 struct CandidateBatchWorker : public RcppParallel::Worker {
   int n_cols;
   const std::vector<PrebuiltFoldTrainData>& fold_data;
@@ -1087,7 +1155,7 @@ struct CandidateBatchWorker : public RcppParallel::Worker {
         }
         std::vector<double> single_level_start(1, task.level_start_0);
         ThreadLocalBuffer buf(fd.n_train);
-        std::priority_queue<CandidateRecord, std::vector<CandidateRecord>, NestedCandidateComparator> heap(comp);
+        CandidateTopHeap heap(preselect_top_n, comp);
 
         double start_g = task.level_start_0 + task.local_rank_start_0;
         double end_g = task.level_start_0 + task.local_rank_end_0;
@@ -1135,21 +1203,13 @@ struct CandidateBatchWorker : public RcppParallel::Worker {
           cand.n_positive = fd.total_pos;
           cand.n_negative = fd.total_neg;
 
-          if ((int)heap.size() < preselect_top_n) {
-            heap.push(cand);
-          } else if (comp(cand, heap.top())) {
-            heap.pop();
-            heap.push(cand);
-          }
+          heap.offer(cand);
         }
 
         res.top_candidates.clear();
         res.top_candidates.reserve(heap.size());
-        while (!heap.empty()) {
-          res.top_candidates.push_back(heap.top());
-          heap.pop();
-        }
-        std::sort(res.top_candidates.begin(), res.top_candidates.end(), comp);
+        while (!heap.empty()) res.top_candidates.push_back(heap.pop_worst());
+        std::reverse(res.top_candidates.begin(), res.top_candidates.end());
         res.completed = true;
         res.status_code = 0;
       } catch (const std::exception& e) {
